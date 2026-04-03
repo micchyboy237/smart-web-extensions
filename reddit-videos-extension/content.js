@@ -1,12 +1,13 @@
-// content.js - Reddit Auto Video Player (v5 - Aggressive Unmute on Play)
+// content.js - Reddit Auto Video Player (v6 - MutationObserver + New Videos)
 
-const DEFAULT_VOLUME = 0.3; // You can change this (0.2 ~ 0.5 recommended)
+const DEFAULT_VOLUME = 0.3; // Change as needed (0.2–0.5 recommended)
 
 (function () {
   "use strict";
 
   let isEnabled = false;
   let currentPlayingPost = null;
+  let mutationObserver = null;
 
   function log(message, type = "info") {
     const styles = {
@@ -68,7 +69,108 @@ const DEFAULT_VOLUME = 0.3; // You can change this (0.2 ~ 0.5 recommended)
     });
   }
 
-  // ==================== MAIN PLAY FUNCTION ====================
+  // ==================== UNMUTE + VOLUME HELPER ====================
+  function applyUnmuteAndVolume(video, isNewVideo = false) {
+    if (!video) return;
+
+    const videoId = video.src
+      ? video.src.split("/").pop().slice(0, 20) + "..."
+      : "unknown";
+
+    const logState = (eventName) => {
+      console.log(
+        `%c[Reddit Video State] ${eventName.padEnd(12)} | ` +
+          `paused:${video.paused} | ` +
+          `muted:${video.muted} | ` +
+          `volume:${video.volume.toFixed(2)} | ` +
+          `readyState:${video.readyState} | ` +
+          `currentTime:${video.currentTime.toFixed(1)}s | ` +
+          `src: ${videoId}`,
+        "color:#00B0FF; font-weight:bold",
+      );
+    };
+
+    // Log initial state
+    logState("INITIAL");
+
+    // === Unmute + Volume Logic ===
+    const unmuteAndSetVolume = () => {
+      const wasMuted = video.muted;
+      const oldVolume = video.volume;
+
+      video.muted = false;
+      video.volume = DEFAULT_VOLUME;
+
+      if (wasMuted || oldVolume !== DEFAULT_VOLUME) {
+        log(
+          `🔊 Unmuted + set volume to ${DEFAULT_VOLUME} (${isNewVideo ? "NEW video" : "existing"})`,
+          "success",
+        );
+        logState("UNMUTE_APPLIED");
+      }
+    };
+
+    // Attach comprehensive state listeners
+    const eventsToLog = [
+      "play",
+      "playing",
+      "pause",
+      "ended",
+      "volumechange",
+      "mutedchange", // Note: mutedchange is not standard, but safe
+      "canplay",
+      "canplaythrough",
+      "loadedmetadata",
+      "waiting",
+      "seeking",
+      "seeked",
+      "timeupdate",
+      "error",
+    ];
+
+    eventsToLog.forEach((eventName) => {
+      video.addEventListener(
+        eventName,
+        () => {
+          logState(eventName.toUpperCase());
+
+          // Auto-unmute on key playback events
+          if (["play", "playing", "canplay"].includes(eventName)) {
+            setTimeout(unmuteAndSetVolume, 10);
+          }
+        },
+        { once: eventName === "ended" },
+      ); // ended only once
+    });
+
+    // Extra aggressive unmute attempts
+    video.muted = true;
+    video.volume = DEFAULT_VOLUME;
+
+    setTimeout(unmuteAndSetVolume, 50);
+    setTimeout(unmuteAndSetVolume, 200);
+    setTimeout(unmuteAndSetVolume, 600);
+
+    // Also listen for any external mute attempts (Reddit often forces mute)
+    const originalMutedSetter = Object.getOwnPropertyDescriptor(
+      HTMLVideoElement.prototype,
+      "muted",
+    );
+    if (originalMutedSetter) {
+      Object.defineProperty(video, "muted", {
+        set: function (value) {
+          originalMutedSetter.set.call(this, value);
+          if (value === true) {
+            logState("FORCED_MUTE_DETECTED");
+            setTimeout(unmuteAndSetVolume, 30);
+          }
+        },
+        get: originalMutedSetter.get,
+      });
+    }
+  }
+
+  // ==================== MAIN PLAY FUNCTION (for auto-play chain) ====================
   async function playVideoInPost(post) {
     const player = post.querySelector("shreddit-player");
     const video = player ? getVideoFromPlayer(player) : null;
@@ -76,14 +178,14 @@ const DEFAULT_VOLUME = 0.3; // You can change this (0.2 ~ 0.5 recommended)
 
     currentPlayingPost = post;
 
-    // Pause all others
+    // Pause others
     document.querySelectorAll("video").forEach((v) => {
       if (v !== video) v.pause();
     });
 
     log("▶️ Starting playback for post", "success");
 
-    // Clean previous ended listener
+    // Clean old ended listener
     if (video._redditAutoEnded) {
       video.removeEventListener("ended", video._redditAutoEnded);
       delete video._redditAutoEnded;
@@ -101,34 +203,12 @@ const DEFAULT_VOLUME = 0.3; // You can change this (0.2 ~ 0.5 recommended)
 
     video.addEventListener("ended", video._redditAutoEnded, { once: true });
 
-    // === Aggressive unmute strategy ===
-    const unmuteAndSetVolume = () => {
-      if (video.muted || video.volume !== DEFAULT_VOLUME) {
-        video.muted = false;
-        video.volume = DEFAULT_VOLUME;
-        log(
-          `🔊 Successfully unmuted + set volume to ${DEFAULT_VOLUME}`,
-          "success",
-        );
-      }
-    };
-
-    // Try to unmute on every possible event that fires after playback starts
-    video.addEventListener("play", unmuteAndSetVolume, { once: true });
-    // video.addEventListener("playing", unmuteAndSetVolume, { once: true });
-    // video.addEventListener("volumechange", unmuteAndSetVolume);
-    // video.addEventListener("canplay", unmuteAndSetVolume, { once: true });
-
-    // Force start muted (this is required for autoplay to succeed)
-    video.muted = true;
-    video.volume = DEFAULT_VOLUME;
-    video.currentTime = 0;
+    // Apply unmute logic
+    applyUnmuteAndVolume(video);
 
     try {
       await video.play();
-      log("✅ play() started (initially muted)", "success");
-      // Immediate unmute attempt right after play() succeeds
-      setTimeout(unmuteAndSetVolume, 50);
+      log("✅ play() started", "success");
     } catch (err) {
       log(`❌ Play failed: ${err.message}`, "error");
     }
@@ -161,7 +241,58 @@ const DEFAULT_VOLUME = 0.3; // You can change this (0.2 ~ 0.5 recommended)
     document.querySelectorAll("video").forEach((v) => v.pause());
   }
 
-  // UI + Keyboard (kept simple)
+  // ==================== MUTATION OBSERVER FOR NEW VIDEOS ====================
+  function setupMutationObserver() {
+    if (mutationObserver) mutationObserver.disconnect();
+
+    mutationObserver = new MutationObserver((mutations) => {
+      if (!isEnabled) return;
+
+      for (const mutation of mutations) {
+        if (mutation.type === "childList") {
+          mutation.addedNodes.forEach((node) => {
+            if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+            // Check if the added node (or its descendants) contains a new video post
+            const posts =
+              node.matches && node.matches("shreddit-post")
+                ? [node]
+                : Array.from(node.querySelectorAll?.("shreddit-post") || []);
+
+            for (const post of posts) {
+              const player = post.querySelector("shreddit-player");
+              if (!player) continue;
+
+              const video = getVideoFromPlayer(player);
+              if (video && (video.src || video.currentSrc)) {
+                log("🆕 New video detected via MutationObserver", "info");
+
+                // Apply unmute + volume immediately to the new video
+                applyUnmuteAndVolume(video);
+
+                // Optional: auto-play the new video if it's near the viewport
+                const rect = post.getBoundingClientRect();
+                if (rect.top < window.innerHeight * 0.8 && rect.bottom > 0) {
+                  setTimeout(() => {
+                    if (isEnabled) playVideoInPost(post);
+                  }, 600);
+                }
+              }
+            }
+          });
+        }
+      }
+    });
+
+    mutationObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    log("🔍 MutationObserver active for new videos", "success");
+  }
+
+  // ==================== UI ====================
   function createUI() {
     const container = document.createElement("div");
     Object.assign(container.style, {
@@ -205,8 +336,14 @@ const DEFAULT_VOLUME = 0.3; // You can change this (0.2 ~ 0.5 recommended)
         `Auto-play ${isEnabled ? "ENABLED" : "DISABLED"}`,
         isEnabled ? "success" : "warning",
       );
-      if (isEnabled) startAutoPlay();
-      else stopAutoPlay();
+
+      if (isEnabled) {
+        startAutoPlay();
+        setupMutationObserver();
+      } else {
+        stopAutoPlay();
+        if (mutationObserver) mutationObserver.disconnect();
+      }
     });
 
     return checkbox;
@@ -216,10 +353,12 @@ const DEFAULT_VOLUME = 0.3; // You can change this (0.2 ~ 0.5 recommended)
     const checkbox = createUI();
     isEnabled = true;
 
-    log("Extension loaded (v5 - Aggressive unmute)", "success");
+    log("Extension loaded (v6 - MutationObserver for new videos)", "success");
 
-    // Give Reddit time to load videos
-    setTimeout(startAutoPlay, 1600);
+    setTimeout(() => {
+      startAutoPlay();
+      setupMutationObserver();
+    }, 1600);
   }
 
   if (document.readyState === "loading") {
