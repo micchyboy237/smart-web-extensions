@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body {
+        width: 520px;
+        padding: 15px;
+        font-family: system-ui, sans-serif;
+        line-height: 1.4;
+      }
+      label {
+        display: block;
+        margin-top: 12px;
+        font-weight: 600;
+        font-size: 13px;
+      }
+      input {
+        width: 100%;
+        padding: 8px;
+        font-size: 14px;
+        margin-top: 4px;
+        font-family: monospace;
+      }
+      button {
+        padding: 10px;
+        font-size: 14px;
+        background: #4285f4;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #3367d6;
+      }
+      .full-width-btn {
+        width: 100%;
+        margin-top: 15px;
+      }
+      .note {
+        font-size: 12px;
+        color: #666;
+      }
+      hr {
+        margin: 20px 0;
+        border: none;
+        border-top: 1px solid #eee;
+      }
+      #previewHeader {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      #dataList {
+        max-height: 320px;
+        overflow-y: auto;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        padding: 8px;
+        background: #fafafa;
+      }
+      #dataList ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      #dataList li {
+        padding: 10px;
+        border-bottom: 1px solid #eee;
+      }
+      #dataList li:last-child {
+        border-bottom: none;
+      }
+      #dataList strong {
+        display: block;
+        color: #222;
+        margin-bottom: 4px;
+      }
+      #dataList a {
+        color: #0066cc;
+        word-break: break-all;
+        font-size: 13px;
+      }
+      .status {
+        margin-top: 8px;
+        font-size: 13px;
+        color: #28a745;
+      }
+      .error {
+        color: #d32f2f;
+        padding: 10px;
+        background: #ffebee;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="previewHeader">
+      <h4>Live Data Preview (<span id="itemCount">0</span> items)</h4>
+    </div>
+    <div id="dataList"></div>
+
+    <script src="db.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "LLM Dynamic Script Injector",
+  "version": "1.0",
+  "description": "Send prompt to local server → inject generated JS into page",
+  "permissions": ["scripting", "activeTab", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+}

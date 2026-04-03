@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Reddit Auto Video Player",
+  "version": "1.0",
+  "description": "Automatically plays Reddit videos one by one and scrolls to the next after each finishes",
+  "content_scripts": [
+    {
+      "matches": ["https://*.reddit.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
