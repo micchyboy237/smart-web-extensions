@@ -1,4 +1,4 @@
-// content.js - Reddit Auto Video Player (v7.1 - Manual Pause Respected)
+// content.js - Reddit Auto Video Player (v7.2 - Auto-Next with Auto-Play)
 
 const DEFAULT_VOLUME = 0.2;
 
@@ -68,7 +68,7 @@ const DEFAULT_VOLUME = 0.2;
     });
   }
 
-  // ==================== UNMUTE + VOLUME (RESPECTS MANUAL PAUSE) ====================
+  // ==================== UNMUTE + VOLUME HELPER ====================
   function applyUnmuteAndVolume(video, isNewVideo = false) {
     if (!video) return;
 
@@ -76,7 +76,6 @@ const DEFAULT_VOLUME = 0.2;
       ? video.src.split("/").pop().slice(0, 20) + "..."
       : "unknown";
 
-    // Flag to know if user manually paused this video
     if (video._redditUserPaused === undefined) {
       video._redditUserPaused = false;
     }
@@ -91,7 +90,7 @@ const DEFAULT_VOLUME = 0.2;
     };
 
     const unmuteAndSetVolume = () => {
-      if (video._redditUserPaused) return; // ← Respect manual pause
+      if (video._redditUserPaused) return;
 
       video.muted = false;
       video.volume = DEFAULT_VOLUME;
@@ -115,13 +114,12 @@ const DEFAULT_VOLUME = 0.2;
           logState(eventName.toUpperCase());
 
           if (eventName === "pause") {
-            // User manually paused → remember this
             video._redditUserPaused = true;
-            log("⏸️ User manually paused video - respecting pause", "warning");
+            log("⏸️ User manually paused - respecting pause", "warning");
           }
 
           if (eventName === "play" || eventName === "playing") {
-            video._redditUserPaused = false; // User started playing again
+            video._redditUserPaused = false;
           }
 
           if (
@@ -135,29 +133,28 @@ const DEFAULT_VOLUME = 0.2;
       );
     });
 
-    // Initial setup
     video.muted = true;
     video.volume = DEFAULT_VOLUME;
     setTimeout(unmuteAndSetVolume, 100);
   }
 
   // ==================== MAIN PLAY FUNCTION ====================
-  async function playVideoInPost(post) {
+  async function playVideoInPost(post, isAutoNext = false) {
     if (!post) return;
 
     const player = post.querySelector("shreddit-player");
     const video = player ? getVideoFromPlayer(player) : null;
     if (!video) return;
 
-    // If user manually paused this video, do NOT auto-play it
-    if (video._redditUserPaused) {
+    // Respect manual pause (except for auto-next chain)
+    if (video._redditUserPaused && !isAutoNext) {
       log("⏸️ Skipping auto-play - user manually paused this video", "warning");
       return;
     }
 
     cleanupPreviousPlayer();
 
-    // Pause all others
+    // Pause all other videos
     document.querySelectorAll("video").forEach((v) => {
       if (v !== video) v.pause();
     });
@@ -165,22 +162,29 @@ const DEFAULT_VOLUME = 0.2;
     currentPlayingPost = post;
 
     log(
-      `▶️ Now playing: ${post.getAttribute("post-id") || "clicked post"}`,
+      `▶️ Now playing: ${post.getAttribute("post-id") || "video post"}`,
       "success",
     );
 
-    // Auto-next on ended
+    // Setup auto-next on ended
     if (video._redditAutoEnded)
       video.removeEventListener("ended", video._redditAutoEnded);
+
     video._redditAutoEnded = async () => {
       if (!isEnabled) return;
       const next = getNextVideoPost(post);
       if (next) {
+        log("⏭️ Video ended - scrolling to next", "info");
         smoothScrollToPost(next);
+
         const nextVideo = await waitForVideoInPost(next);
-        if (nextVideo) playVideoInPost(next);
+        if (nextVideo) {
+          // Pass isAutoNext = true so it forces play even if previously paused
+          playVideoInPost(next, true);
+        }
       }
     };
+
     video.addEventListener("ended", video._redditAutoEnded, { once: true });
 
     applyUnmuteAndVolume(video);
@@ -209,7 +213,7 @@ const DEFAULT_VOLUME = 0.2;
     document.querySelectorAll("video").forEach((v) => v.pause());
   }
 
-  // ==================== MUTATION OBSERVER (No more aggressive auto-play) ====================
+  // ==================== MUTATION OBSERVER (No aggressive auto-play) ====================
   function setupMutationObserver() {
     if (mutationObserver) mutationObserver.disconnect();
 
@@ -236,7 +240,6 @@ const DEFAULT_VOLUME = 0.2;
       childList: true,
       subtree: true,
     });
-
     log("🔍 MutationObserver active", "success");
   }
 
@@ -254,7 +257,6 @@ const DEFAULT_VOLUME = 0.2;
 
     applyUnmuteAndVolume(video, true);
 
-    // Only add click listeners (no auto-play here anymore)
     if (!post._redditClickListenerAdded) {
       addClickListenersToPosts();
     }
@@ -265,7 +267,7 @@ const DEFAULT_VOLUME = 0.2;
     getVideoPosts().forEach((post) => processNewPost(post));
   }
 
-  // Click handler remains the same (user-initiated play)
+  // Click handler (user-initiated play)
   function addClickListenersToPosts() {
     getVideoPosts().forEach((post) => {
       if (post._redditClickListenerAdded) return;
@@ -273,18 +275,14 @@ const DEFAULT_VOLUME = 0.2;
       post.style.cursor = "pointer";
 
       post.addEventListener("click", (e) => {
-        if (
-          ["A", "BUTTON", "SHREDDIT-VOTE-BUTTON", "FACEPLATE-NUMBER"].includes(
-            e.target.tagName,
-          ) ||
-          e.target.closest("shreddit-vote-button, faceplate-number, a")
-        ) {
-          return;
-        }
+        const ignored = e.target.closest(
+          "a, button, shreddit-vote-button, faceplate-number",
+        );
+        if (ignored) return;
 
         if (!isEnabled) return;
 
-        log("🖱️ User clicked video post", "info");
+        log("🖱️ User clicked on video post", "info");
         smoothScrollToPost(post);
         setTimeout(() => playVideoInPost(post), 300);
       });
@@ -372,7 +370,7 @@ const DEFAULT_VOLUME = 0.2;
   function init() {
     createUI();
     isEnabled = true;
-    log("Extension loaded (v7.1 - Manual Pause Respected)", "success");
+    log("Extension loaded (v7.2 - Auto-Next with Auto-Play)", "success");
 
     setTimeout(() => {
       startAutoPlay();
