@@ -1,4 +1,4 @@
-// content.js - Reddit Auto Video Player (v7.2 - Auto-Next with Auto-Play)
+// content.js - Reddit Auto Video Player (v7.3 - Arrow Key Navigation)
 
 const DEFAULT_VOLUME = 0.2;
 
@@ -41,6 +41,12 @@ const DEFAULT_VOLUME = 0.2;
     return idx >= 0 && idx + 1 < posts.length ? posts[idx + 1] : null;
   }
 
+  function getPreviousVideoPost(currentPost) {
+    const posts = getVideoPosts();
+    const idx = posts.indexOf(currentPost);
+    return idx > 0 ? posts[idx - 1] : null;
+  }
+
   function smoothScrollToPost(post) {
     if (!post) return;
     const target = post.querySelector("shreddit-player") || post;
@@ -76,9 +82,7 @@ const DEFAULT_VOLUME = 0.2;
       ? video.src.split("/").pop().slice(0, 20) + "..."
       : "unknown";
 
-    if (video._redditUserPaused === undefined) {
-      video._redditUserPaused = false;
-    }
+    if (video._redditUserPaused === undefined) video._redditUserPaused = false;
 
     const logState = (eventName) => {
       console.log(
@@ -91,7 +95,6 @@ const DEFAULT_VOLUME = 0.2;
 
     const unmuteAndSetVolume = () => {
       if (video._redditUserPaused) return;
-
       video.muted = false;
       video.volume = DEFAULT_VOLUME;
       log(`🔊 Unmuted + volume set to ${DEFAULT_VOLUME}`, "success");
@@ -117,7 +120,6 @@ const DEFAULT_VOLUME = 0.2;
             video._redditUserPaused = true;
             log("⏸️ User manually paused - respecting pause", "warning");
           }
-
           if (eventName === "play" || eventName === "playing") {
             video._redditUserPaused = false;
           }
@@ -138,7 +140,7 @@ const DEFAULT_VOLUME = 0.2;
     setTimeout(unmuteAndSetVolume, 100);
   }
 
-  // ==================== MAIN PLAY FUNCTION ====================
+  // ==================== PLAY VIDEO (with isAutoNext flag) ====================
   async function playVideoInPost(post, isAutoNext = false) {
     if (!post) return;
 
@@ -146,7 +148,7 @@ const DEFAULT_VOLUME = 0.2;
     const video = player ? getVideoFromPlayer(player) : null;
     if (!video) return;
 
-    // Respect manual pause (except for auto-next chain)
+    // Respect manual pause unless it's auto-next or arrow navigation
     if (video._redditUserPaused && !isAutoNext) {
       log("⏸️ Skipping auto-play - user manually paused this video", "warning");
       return;
@@ -154,7 +156,7 @@ const DEFAULT_VOLUME = 0.2;
 
     cleanupPreviousPlayer();
 
-    // Pause all other videos
+    // Pause all others
     document.querySelectorAll("video").forEach((v) => {
       if (v !== video) v.pause();
     });
@@ -166,7 +168,7 @@ const DEFAULT_VOLUME = 0.2;
       "success",
     );
 
-    // Setup auto-next on ended
+    // Auto-next on ended
     if (video._redditAutoEnded)
       video.removeEventListener("ended", video._redditAutoEnded);
 
@@ -174,14 +176,10 @@ const DEFAULT_VOLUME = 0.2;
       if (!isEnabled) return;
       const next = getNextVideoPost(post);
       if (next) {
-        log("⏭️ Video ended - scrolling to next", "info");
+        log("⏭️ Video ended - moving to next", "info");
         smoothScrollToPost(next);
-
         const nextVideo = await waitForVideoInPost(next);
-        if (nextVideo) {
-          // Pass isAutoNext = true so it forces play even if previously paused
-          playVideoInPost(next, true);
-        }
+        if (nextVideo) playVideoInPost(next, true);
       }
     };
 
@@ -213,7 +211,52 @@ const DEFAULT_VOLUME = 0.2;
     document.querySelectorAll("video").forEach((v) => v.pause());
   }
 
-  // ==================== MUTATION OBSERVER (No aggressive auto-play) ====================
+  // ==================== ARROW KEY NAVIGATION ====================
+  function setupKeyboardNavigation() {
+    document.addEventListener("keydown", async (e) => {
+      if (!isEnabled) return;
+      if (
+        e.target.tagName === "INPUT" ||
+        e.target.tagName === "TEXTAREA" ||
+        e.target.isContentEditable
+      )
+        return;
+
+      let targetPost = null;
+      let isAutoNext = false;
+
+      if (e.key === "ArrowRight") {
+        targetPost = currentPlayingPost
+          ? getNextVideoPost(currentPlayingPost)
+          : getVideoPosts()[0];
+        isAutoNext = true;
+        log("➡️ Right Arrow - Next video", "info");
+      } else if (e.key === "ArrowLeft") {
+        targetPost = currentPlayingPost
+          ? getPreviousVideoPost(currentPlayingPost)
+          : getVideoPosts()[0];
+        isAutoNext = true;
+        log("⬅️ Left Arrow - Previous video", "info");
+      }
+
+      if (targetPost) {
+        e.preventDefault(); // Prevent page scroll
+
+        smoothScrollToPost(targetPost);
+        const video = await waitForVideoInPost(targetPost);
+
+        if (video) {
+          setTimeout(() => {
+            playVideoInPost(targetPost, isAutoNext);
+          }, 400); // Small delay after scroll
+        }
+      }
+    });
+
+    log("⌨️ Keyboard navigation (← → arrows) enabled", "success");
+  }
+
+  // ==================== MUTATION OBSERVER ====================
   function setupMutationObserver() {
     if (mutationObserver) mutationObserver.disconnect();
 
@@ -262,12 +305,6 @@ const DEFAULT_VOLUME = 0.2;
     }
   }
 
-  function scanForAllVideos() {
-    if (!isEnabled) return;
-    getVideoPosts().forEach((post) => processNewPost(post));
-  }
-
-  // Click handler (user-initiated play)
   function addClickListenersToPosts() {
     getVideoPosts().forEach((post) => {
       if (post._redditClickListenerAdded) return;
@@ -275,11 +312,10 @@ const DEFAULT_VOLUME = 0.2;
       post.style.cursor = "pointer";
 
       post.addEventListener("click", (e) => {
-        const ignored = e.target.closest(
-          "a, button, shreddit-vote-button, faceplate-number",
-        );
-        if (ignored) return;
-
+        if (
+          e.target.closest("a, button, shreddit-vote-button, faceplate-number")
+        )
+          return;
         if (!isEnabled) return;
 
         log("🖱️ User clicked on video post", "info");
@@ -340,7 +376,7 @@ const DEFAULT_VOLUME = 0.2;
     });
 
     const label = document.createElement("label");
-    label.textContent = "Auto-play videos + scroll";
+    label.textContent = "Auto-play videos + scroll (← → arrows)";
     label.style.cursor = "pointer";
     label.style.fontWeight = "600";
 
@@ -357,6 +393,7 @@ const DEFAULT_VOLUME = 0.2;
       if (isEnabled) {
         startAutoPlay();
         setupMutationObserver();
+        setupKeyboardNavigation();
         setTimeout(addClickListenersToPosts, 1000);
       } else {
         stopAutoPlay();
@@ -370,11 +407,12 @@ const DEFAULT_VOLUME = 0.2;
   function init() {
     createUI();
     isEnabled = true;
-    log("Extension loaded (v7.2 - Auto-Next with Auto-Play)", "success");
+    log("Extension loaded (v7.3 - Arrow Key Navigation)", "success");
 
     setTimeout(() => {
       startAutoPlay();
       setupMutationObserver();
+      setupKeyboardNavigation();
       addClickListenersToPosts();
     }, 1600);
   }
