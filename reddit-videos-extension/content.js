@@ -1,6 +1,6 @@
-// content.js - Reddit Auto Video Player (v7 - Click to Play + Listener Management)
+// content.js - Reddit Auto Video Player (v7.1 - Manual Pause Respected)
 
-const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
+const DEFAULT_VOLUME = 0.2;
 
 (function () {
   "use strict";
@@ -30,20 +30,9 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
     return Array.from(document.querySelectorAll("shreddit-post")).filter(
       (post) => {
         const player = post.querySelector("shreddit-player");
-        const video = player ? getVideoFromPlayer(player) : null;
-        return video;
+        return player && getVideoFromPlayer(player);
       },
     );
-  }
-
-  function getVideos() {
-    // Returns all <video> elements from all video posts currently available
-    return getVideoPosts()
-      .map((post) => {
-        const player = post.querySelector("shreddit-player");
-        return player || null;
-      })
-      .filter(Boolean); // Remove nulls
   }
 
   function getNextVideoPost(currentPost) {
@@ -79,7 +68,7 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
     });
   }
 
-  // ==================== UNMUTE + VOLUME HELPER ====================
+  // ==================== UNMUTE + VOLUME (RESPECTS MANUAL PAUSE) ====================
   function applyUnmuteAndVolume(video, isNewVideo = false) {
     if (!video) return;
 
@@ -87,33 +76,26 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
       ? video.src.split("/").pop().slice(0, 20) + "..."
       : "unknown";
 
+    // Flag to know if user manually paused this video
+    if (video._redditUserPaused === undefined) {
+      video._redditUserPaused = false;
+    }
+
     const logState = (eventName) => {
       console.log(
         `%c[Reddit Video State] ${eventName.padEnd(12)} | ` +
-          `paused:${video.paused} | ` +
-          `muted:${video.muted} | ` +
-          `volume:${video.volume.toFixed(2)} | ` +
-          `readyState:${video.readyState} | ` +
-          `currentTime:${video.currentTime.toFixed(1)}s | ` +
-          `src: ${videoId}`,
+          `paused:${video.paused} | muted:${video.muted} | volume:${video.volume.toFixed(2)} | ` +
+          `readyState:${video.readyState} | currentTime:${video.currentTime.toFixed(1)}s | src: ${videoId}`,
         "color:#00B0FF; font-weight:bold",
       );
     };
 
     const unmuteAndSetVolume = () => {
-      const wasMuted = video.muted;
-      const oldVolume = video.volume;
+      if (video._redditUserPaused) return; // ← Respect manual pause
 
       video.muted = false;
       video.volume = DEFAULT_VOLUME;
-
-      if (wasMuted || oldVolume !== DEFAULT_VOLUME) {
-        log(
-          `🔊 Unmuted + set volume to ${DEFAULT_VOLUME} (${isNewVideo ? "NEW video" : "existing"})`,
-          "success",
-        );
-        logState("UNMUTE_APPLIED");
-      }
+      log(`🔊 Unmuted + volume set to ${DEFAULT_VOLUME}`, "success");
     };
 
     const eventsToLog = [
@@ -123,12 +105,6 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
       "ended",
       "volumechange",
       "canplay",
-      "canplaythrough",
-      "loadedmetadata",
-      "waiting",
-      "seeking",
-      "seeked",
-      "timeupdate",
       "error",
     ];
 
@@ -137,7 +113,21 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
         eventName,
         () => {
           logState(eventName.toUpperCase());
-          if (["play", "playing", "canplay"].includes(eventName)) {
+
+          if (eventName === "pause") {
+            // User manually paused → remember this
+            video._redditUserPaused = true;
+            log("⏸️ User manually paused video - respecting pause", "warning");
+          }
+
+          if (eventName === "play" || eventName === "playing") {
+            video._redditUserPaused = false; // User started playing again
+          }
+
+          if (
+            ["play", "playing", "canplay"].includes(eventName) &&
+            !video._redditUserPaused
+          ) {
             setTimeout(unmuteAndSetVolume, 10);
           }
         },
@@ -145,25 +135,10 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
       );
     });
 
-    // Aggressive unmute attempts
+    // Initial setup
     video.muted = true;
     video.volume = DEFAULT_VOLUME;
-    setTimeout(unmuteAndSetVolume, 50);
-    setTimeout(unmuteAndSetVolume, 200);
-    setTimeout(unmuteAndSetVolume, 600);
-  }
-
-  // ==================== CLEAN LISTENERS FROM PREVIOUS PLAYER ====================
-  function cleanupPreviousPlayer() {
-    if (!currentPlayingPost) return;
-
-    const player = currentPlayingPost.querySelector("shreddit-player");
-    const video = player ? getVideoFromPlayer(player) : null;
-
-    if (video && video._redditAutoEnded) {
-      video.removeEventListener("ended", video._redditAutoEnded);
-      delete video._redditAutoEnded;
-    }
+    setTimeout(unmuteAndSetVolume, 100);
   }
 
   // ==================== MAIN PLAY FUNCTION ====================
@@ -174,10 +149,15 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
     const video = player ? getVideoFromPlayer(player) : null;
     if (!video) return;
 
-    // Cleanup previous player’s listeners
+    // If user manually paused this video, do NOT auto-play it
+    if (video._redditUserPaused) {
+      log("⏸️ Skipping auto-play - user manually paused this video", "warning");
+      return;
+    }
+
     cleanupPreviousPlayer();
 
-    // Pause all other videos
+    // Pause all others
     document.querySelectorAll("video").forEach((v) => {
       if (v !== video) v.pause();
     });
@@ -189,7 +169,9 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
       "success",
     );
 
-    // Set up auto-next on ended
+    // Auto-next on ended
+    if (video._redditAutoEnded)
+      video.removeEventListener("ended", video._redditAutoEnded);
     video._redditAutoEnded = async () => {
       if (!isEnabled) return;
       const next = getNextVideoPost(post);
@@ -199,10 +181,8 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
         if (nextVideo) playVideoInPost(next);
       }
     };
-
     video.addEventListener("ended", video._redditAutoEnded, { once: true });
 
-    // Apply unmute + volume control
     applyUnmuteAndVolume(video);
 
     try {
@@ -213,26 +193,14 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
     }
   }
 
-  function startAutoPlay() {
-    log("=== Starting Auto-Play Sequence ===", "info");
-
-    const posts = getVideoPosts();
-    if (posts.length === 0) {
-      log("No videos found on page", "warning");
-      return;
+  function cleanupPreviousPlayer() {
+    if (!currentPlayingPost) return;
+    const player = currentPlayingPost.querySelector("shreddit-player");
+    const video = player ? getVideoFromPlayer(player) : null;
+    if (video && video._redditAutoEnded) {
+      video.removeEventListener("ended", video._redditAutoEnded);
+      delete video._redditAutoEnded;
     }
-
-    let startPost = posts[0];
-    for (const p of posts) {
-      const r = p.getBoundingClientRect();
-      if (r.top < window.innerHeight * 0.75 && r.bottom > 100) {
-        startPost = p;
-        break;
-      }
-    }
-
-    smoothScrollToPost(startPost);
-    setTimeout(() => isEnabled && playVideoInPost(startPost), 800);
   }
 
   function stopAutoPlay() {
@@ -241,43 +209,7 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
     document.querySelectorAll("video").forEach((v) => v.pause());
   }
 
-  // ==================== CLICK HANDLER FOR ALL POSTS ====================
-  function addClickListenersToPosts() {
-    const posts = getVideoPosts();
-
-    posts.forEach((post) => {
-      // Avoid adding duplicate listeners
-      if (post._redditClickListenerAdded) return;
-
-      post.style.cursor = "pointer"; // Visual feedback
-
-      post.addEventListener("click", (e) => {
-        // Ignore clicks on interactive elements like upvote, comments, etc.
-        const ignoredTags = [
-          "A",
-          "BUTTON",
-          "SHREDDIT-VOTE-BUTTON",
-          "FACEPLATE-NUMBER",
-        ];
-        if (
-          ignoredTags.includes(e.target.tagName) ||
-          e.target.closest("shreddit-vote-button, faceplate-number, a")
-        ) {
-          return;
-        }
-
-        if (!isEnabled) return;
-
-        log("🖱️ User clicked on a video post", "info");
-        smoothScrollToPost(post);
-        setTimeout(() => playVideoInPost(post), 300);
-      });
-
-      post._redditClickListenerAdded = true;
-    });
-  }
-
-  // ==================== IMPROVED MUTATION OBSERVER ====================
+  // ==================== MUTATION OBSERVER (No more aggressive auto-play) ====================
   function setupMutationObserver() {
     if (mutationObserver) mutationObserver.disconnect();
 
@@ -290,12 +222,8 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
         mutation.addedNodes.forEach((node) => {
           if (node.nodeType !== Node.ELEMENT_NODE) return;
 
-          // Find all shreddit-post (new or in subtree)
-          const newPosts = [];
-          if (node.matches?.("shreddit-post")) newPosts.push(node);
-          newPosts.push(
-            ...Array.from(node.querySelectorAll?.("shreddit-post") || []),
-          );
+          const newPosts = node.matches?.("shreddit-post") ? [node] : [];
+          newPosts.push(...(node.querySelectorAll?.("shreddit-post") || []));
 
           for (const post of newPosts) {
             processNewPost(post);
@@ -305,81 +233,82 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
     });
 
     mutationObserver.observe(document.documentElement, {
-      // Better root: documentElement
       childList: true,
       subtree: true,
     });
 
-    log(
-      "🔍 Improved MutationObserver active (watching documentElement)",
-      "success",
-    );
-
-    // Also run once immediately and after a delay to catch already-loaded or late-initialized videos
-    setTimeout(scanForAllVideos, 800);
-    setTimeout(scanForAllVideos, 2500);
+    log("🔍 MutationObserver active", "success");
   }
 
-  // ==================== PROCESS A NEW/EXISTING POST ====================
   function processNewPost(post) {
-    if (!post || post._redditVideoProcessed) return;
+    if (post._redditVideoProcessed) return;
 
     const player = post.querySelector("shreddit-player");
     if (!player) return;
 
-    let video = getVideoFromPlayer(player);
-
-    // If video not ready yet, wait a bit and retry (common with shadow DOM)
-    if (!video || (!video.src && !video.currentSrc)) {
-      setTimeout(() => {
-        video = getVideoFromPlayer(player);
-        if (video) handleNewVideo(post, video);
-      }, 400);
-      return;
-    }
-
-    handleNewVideo(post, video);
-  }
-
-  function handleNewVideo(post, video) {
+    const video = getVideoFromPlayer(player);
     if (!video) return;
 
-    post._redditVideoProcessed = true; // Prevent duplicate processing
-
-    log("🆕 New video post detected and processed", "info");
+    post._redditVideoProcessed = true;
+    log("🆕 New video post detected", "info");
 
     applyUnmuteAndVolume(video, true);
 
-    // Add click listener if needed
+    // Only add click listeners (no auto-play here anymore)
     if (!post._redditClickListenerAdded) {
       addClickListenersToPosts();
     }
-
-    // Optional: auto-play if visible
-    const rect = post.getBoundingClientRect();
-    if (rect.top < window.innerHeight * 0.85 && rect.bottom > -100) {
-      setTimeout(() => {
-        if (isEnabled && (!currentPlayingPost || currentPlayingPost !== post)) {
-          playVideoInPost(post);
-        }
-      }, 600);
-    }
   }
 
-  // ==================== FULL PAGE SCAN (backup for late-loaded videos) ====================
   function scanForAllVideos() {
     if (!isEnabled) return;
+    getVideoPosts().forEach((post) => processNewPost(post));
+  }
 
-    const posts = getVideoPosts();
-    log(`📡 Scanning page - found ${posts.length} video posts`, "info");
+  // Click handler remains the same (user-initiated play)
+  function addClickListenersToPosts() {
+    getVideoPosts().forEach((post) => {
+      if (post._redditClickListenerAdded) return;
 
-    posts.forEach((post) => {
-      const player = post.querySelector("shreddit-player");
-      const video = player ? getVideoFromPlayer(player) : null;
-      if (video) {
-        handleNewVideo(post, video);
-      }
+      post.style.cursor = "pointer";
+
+      post.addEventListener("click", (e) => {
+        if (
+          ["A", "BUTTON", "SHREDDIT-VOTE-BUTTON", "FACEPLATE-NUMBER"].includes(
+            e.target.tagName,
+          ) ||
+          e.target.closest("shreddit-vote-button, faceplate-number, a")
+        ) {
+          return;
+        }
+
+        if (!isEnabled) return;
+
+        log("🖱️ User clicked video post", "info");
+        smoothScrollToPost(post);
+        setTimeout(() => playVideoInPost(post), 300);
+      });
+
+      post._redditClickListenerAdded = true;
     });
+  }
+
+  function startAutoPlay() {
+    log("=== Starting Auto-Play Sequence ===", "info");
+    const posts = getVideoPosts();
+    if (posts.length === 0) return;
+
+    let startPost = posts[0];
+    for (const p of posts) {
+      const r = p.getBoundingClientRect();
+      if (r.top < window.innerHeight * 0.75 && r.bottom > 100) {
+        startPost = p;
+        break;
+      }
+    }
+
+    smoothScrollToPost(startPost);
+    setTimeout(() => isEnabled && playVideoInPost(startPost), 800);
   }
 
   // ==================== UI ====================
@@ -440,66 +369,10 @@ const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
     return checkbox;
   }
 
-  function logVideos() {
-    const videos = getVideos(); // This uses your existing getVideos()
-
-    log(`📊 Found ${videos.length} video player(s) on the page`, "info");
-
-    if (videos.length === 0) {
-      log("No video players detected at this moment.", "warning");
-      return;
-    }
-
-    videos.forEach((player, index) => {
-      const post = player.closest("shreddit-post");
-      const video = getVideoFromPlayer(player);
-
-      const postId = post?.getAttribute("post-id") || "unknown";
-      const videoSrc = video?.src || video?.currentSrc || "no src";
-      const shortSrc =
-        videoSrc.length > 60 ? videoSrc.substring(0, 57) + "..." : videoSrc;
-
-      log(
-        `Video ${index + 1}/${videos.length} | ` +
-          `Post ID: ${postId} | ` +
-          `Player: ${player.tagName} | ` +
-          `Video readyState: ${video?.readyState || 0} | ` +
-          `Paused: ${video?.paused} | ` +
-          `Muted: ${video?.muted} | ` +
-          `Src: ${shortSrc}`,
-        "info",
-      );
-
-      // Extra detailed log for the actual <video> element
-      if (video) {
-        console.groupCollapsed(
-          `%c[Reddit Auto Video] Detailed Video Info #${index + 1}`,
-          "color:#FF4500; font-weight:bold",
-        );
-        console.log("Video Element:", video);
-        console.log("Source:", video.src || video.currentSrc);
-        console.log("Duration:", video.duration);
-        console.log("Current Time:", video.currentTime);
-        console.log("Paused:", video.paused);
-        console.log("Muted:", video.muted);
-        console.log("Volume:", video.volume);
-        console.log("Ready State:", video.readyState);
-        console.log("Parent Post:", post);
-        console.groupEnd();
-      }
-    });
-  }
-
   function init() {
-    const checkbox = createUI();
+    createUI();
     isEnabled = true;
-
-    log(
-      "Extension loaded (v7 - Click to Play + Listener Management)",
-      "success",
-    );
-
-    logVideos();
+    log("Extension loaded (v7.1 - Manual Pause Respected)", "success");
 
     setTimeout(() => {
       startAutoPlay();
