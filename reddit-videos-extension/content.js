@@ -115,9 +115,9 @@ const DEFAULT_VOLUME = 0.3; // You can change this (0.2 ~ 0.5 recommended)
 
     // Try to unmute on every possible event that fires after playback starts
     video.addEventListener("play", unmuteAndSetVolume, { once: true });
-    video.addEventListener("playing", unmuteAndSetVolume, { once: true });
-    video.addEventListener("volumechange", unmuteAndSetVolume);
-    video.addEventListener("canplay", unmuteAndSetVolume, { once: true });
+    // video.addEventListener("playing", unmuteAndSetVolume, { once: true });
+    // video.addEventListener("volumechange", unmuteAndSetVolume);
+    // video.addEventListener("canplay", unmuteAndSetVolume, { once: true });
 
     // Force start muted (this is required for autoplay to succeed)
     video.muted = true;
@@ -129,8 +129,6 @@ const DEFAULT_VOLUME = 0.3; // You can change this (0.2 ~ 0.5 recommended)
       log("✅ play() started (initially muted)", "success");
       // Immediate unmute attempt right after play() succeeds
       setTimeout(unmuteAndSetVolume, 50);
-      setTimeout(unmuteAndSetVolume, 300);
-      setTimeout(unmuteAndSetVolume, 800);
     } catch (err) {
       log(`❌ Play failed: ${err.message}`, "error");
     }
