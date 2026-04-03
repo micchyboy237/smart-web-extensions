@@ -1,6 +1,6 @@
 // content.js - Reddit Auto Video Player (v6 - MutationObserver + New Videos)
 
-const DEFAULT_VOLUME = 0.3; // Change as needed (0.2–0.5 recommended)
+const DEFAULT_VOLUME = 0.2; // Change as needed (0.2–0.5 recommended)
 
 (function () {
   "use strict";
