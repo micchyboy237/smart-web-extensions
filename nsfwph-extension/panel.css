@@ -191,3 +191,29 @@
   height: 100%;
   background: #25253a;
 }
+
+/* Gallery button inside video card */
+.video-card .gallery-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  border: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  opacity: 0.85;
+  transition: all 0.2s;
+}
+
+.video-card:hover .gallery-btn {
+  opacity: 1;
+  background: rgba(0, 212, 255, 0.8);
+}

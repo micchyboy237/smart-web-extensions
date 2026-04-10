@@ -2,6 +2,7 @@
 let videos = new Map(); // video element → entry
 let videoCards = new Map(); // video element → card DOM element
 let videoCounter = 0;
+const MAX_GALLERY_ITEMS = 6;
 const SELECTOR = ".message-inner video";
 let panel = null;
 let isPanelVisible = true;
@@ -116,9 +117,12 @@ function createVideoCard(entry) {
        <div class="video-info">
          <div class="video-header">
            <strong>${entry.id}</strong>
-           <span class="video-status ${entry.info.paused ? "paused" : "playing"}">
-             ${entry.info.paused ? "⏸" : "▶"}
-           </span>
+           <div class="video-actions">
+             <span class="video-status ${entry.info.paused ? "paused" : "playing"}">
+               ${entry.info.paused ? "⏸" : "▶"}
+             </span>
+             <button class="gallery-btn" title="Open preview gallery">📷</button>
+           </div>
          </div>
          <div class="video-src" title="${entry.info.src}">
            ${entry.info.src}
@@ -130,6 +134,7 @@ function createVideoCard(entry) {
      </div>
    `;
 
+  // Add click handler for entire card: play/pause and scroll into view
   card.addEventListener("click", () => {
     const videoEl = entry.element;
     if (videoEl) {
@@ -138,6 +143,15 @@ function createVideoCard(entry) {
       videoEl.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   });
+
+  // Gallery button handler - prevents card click
+  const galleryBtn = card.querySelector(".gallery-btn");
+  if (galleryBtn) {
+    galleryBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openGallery(entry);
+    });
+  }
 
   return card;
 }
