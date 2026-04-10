@@ -154,3 +154,28 @@
   overflow: auto;
   color: #0f0;
 }
+
+/* Video preview styles */
+.preview-container {
+  margin: 8px 0 10px;
+  min-height: 96px;
+  background: #1a1a2e;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.preview-container video {
+  width: 100%;
+  height: auto;
+  max-height: 96px;
+  display: block;
+  object-fit: cover;
+}
+
+.thumb-placeholder {
+  padding: 38px 12px;
+  text-align: center;
+  color: #777;
+  font-size: 13px;
+  background: #25253a;
+}
