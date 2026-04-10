@@ -109,20 +109,24 @@ function createVideoCard(entry) {
   card.dataset.videoId = entry.id;
 
   card.innerHTML = `
-     <div class="video-header">
-       <strong>${entry.id}</strong>
-       <span class="video-status ${entry.info.paused ? "paused" : "playing"}">
-         ${entry.info.paused ? "⏸ Paused" : "▶ Playing"}
-       </span>
-     </div>
-     <div class="preview-container">
-       <div class="thumb-placeholder">Loading preview...</div>
-     </div>
-     <div class="video-src">
-       ${entry.info.src.length > 70 ? entry.info.src.substring(0, 67) + "..." : entry.info.src}
-     </div>
-     <div class="video-meta">
-       <span>Time: ${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s</span>
+     <div class="video-row">
+       <div class="preview-container">
+         <div class="thumb-placeholder"></div>
+       </div>
+       <div class="video-info">
+         <div class="video-header">
+           <strong>${entry.id}</strong>
+           <span class="video-status ${entry.info.paused ? "paused" : "playing"}">
+             ${entry.info.paused ? "⏸" : "▶"}
+           </span>
+         </div>
+         <div class="video-src" title="${entry.info.src}">
+           ${entry.info.src}
+         </div>
+         <div class="video-meta">
+           ${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s
+         </div>
+       </div>
      </div>
    `;
 
