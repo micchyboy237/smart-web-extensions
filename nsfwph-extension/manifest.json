@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Videos Overlay Viewer",
+  "description": "Automatically shows floating panel for .message-inner video elements",
+  "version": "1.2",
+  "action": {
+    "default_title": "Video Observer (Floating Panel)"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://nsfwph.org/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [],
+  "host_permissions": ["https://nsfwph.org/*"]
+}
