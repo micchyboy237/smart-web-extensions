@@ -1,9 +1,15 @@
 // content.js - Stable DOM + better preview + detailed logs
+
 let videos = new Map(); // video element → entry
 let videoCards = new Map(); // video element → card DOM element
 let videoCounter = 0;
 const MAX_GALLERY_ITEMS = 6;
 const SELECTOR = ".message-inner video";
+
+// NEW: Hover preview settings (2-3 second running chunks spread throughout the video)
+const NUM_PREVIEW_CHUNKS = 5;
+const CHUNK_PLAY_DURATION_MS = 400; // 0.4s per chunk → ~2s full cycle that loops
+
 let panel = null;
 let isPanelVisible = true;
 
@@ -30,6 +36,91 @@ function getVideoInfo(video) {
     duration: video.duration || 0,
     paused: video.paused,
   };
+}
+
+// NEW helper: makes the preview play multiple short chunks from different parts of the video when you hover
+function setupHoverPreview(previewVideo, originalVideo) {
+  let isHovering = false;
+  let chunkTimeout = null;
+  let currentChunkIndex = 0;
+
+  const getChunkStarts = () => {
+    const duration = originalVideo.duration || previewVideo.duration || 0;
+    if (!duration || isNaN(duration) || duration < 1) return null;
+
+    const chunkDurationSec = CHUNK_PLAY_DURATION_MS / 1000;
+    const numChunks = NUM_PREVIEW_CHUNKS;
+    const chunkStarts = [];
+    // Spread chunks evenly across the whole video, making sure they fit
+    const spacing =
+      (duration - chunkDurationSec) / (numChunks > 1 ? numChunks - 1 : 1);
+    for (let i = 0; i < numChunks; i++) {
+      let start = i * spacing;
+      // Never go past the end of the video
+      if (start + chunkDurationSec > duration)
+        start = duration - chunkDurationSec;
+      chunkStarts.push(Math.max(0, start));
+    }
+    return chunkStarts;
+  };
+
+  const playNextChunk = (chunkStarts) => {
+    if (!isHovering || !chunkStarts) return;
+
+    const startTime = chunkStarts[currentChunkIndex];
+    previewVideo.currentTime = startTime;
+
+    previewVideo
+      .play()
+      .then(() => {
+        chunkTimeout = setTimeout(() => {
+          if (!isHovering) return;
+          previewVideo.pause();
+          currentChunkIndex = (currentChunkIndex + 1) % NUM_PREVIEW_CHUNKS;
+          playNextChunk(chunkStarts);
+        }, CHUNK_PLAY_DURATION_MS);
+      })
+      .catch((err) => {
+        log(`Chunk play failed (hover preview)`, err.message);
+        currentChunkIndex = (currentChunkIndex + 1) % NUM_PREVIEW_CHUNKS;
+        chunkTimeout = setTimeout(() => playNextChunk(chunkStarts), 100);
+      });
+  };
+
+  previewVideo.addEventListener("mouseenter", () => {
+    isHovering = true;
+    currentChunkIndex = 0;
+    const chunkStarts = getChunkStarts();
+
+    if (!chunkStarts) {
+      // Very short video or still loading → simple fallback
+      previewVideo.currentTime = 0.8;
+      previewVideo.play();
+      setTimeout(() => {
+        if (isHovering) previewVideo.pause();
+      }, 2000);
+      return;
+    }
+
+    log(
+      `Hover preview started – playing ${NUM_PREVIEW_CHUNKS} chunks spread throughout the video`,
+    );
+    playNextChunk(chunkStarts);
+  });
+
+  previewVideo.addEventListener("mouseleave", () => {
+    isHovering = false;
+    if (chunkTimeout) {
+      clearTimeout(chunkTimeout);
+      chunkTimeout = null;
+    }
+    previewVideo.pause();
+    // Return to the nice initial frame so the card looks clean again
+    if (previewVideo.readyState >= 2) {
+      previewVideo.currentTime = 0.8;
+    }
+    log(`Hover preview stopped`);
+  });
 }
 
 function createSinglePreview(originalVideo, entryId) {
@@ -99,6 +190,9 @@ function createSinglePreview(originalVideo, entryId) {
       // We will handle replacement in update logic
     }
   }, 4200);
+
+  // NEW: Attach the hover-chunk feature (this is what gives you the 2-3 second running preview)
+  setupHoverPreview(preview, originalVideo);
 
   return preview;
 }
