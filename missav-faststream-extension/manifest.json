@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "MissAV FastStream",
+  "description": "Fast HLS streaming for MissAV / surrit.com. Auto-detects playlist.m3u8 + video.m3u8, injects optimized hls.js player with large buffer + prefetch, hides original player.",
+  "version": "1.0.0",
+  "permissions": ["storage"],
+  "host_permissions": ["*://*.missav.ws/*", "*://*.surrit.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.missav.ws/*", "*://*.surrit.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["hls.js", "hls.worker.js", "injector.js"],
+      "matches": ["*://*.missav.ws/*", "*://*.surrit.com/*"]
+    }
+  ]
+}
