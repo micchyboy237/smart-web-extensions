@@ -1,376 +1,287 @@
-// injector.js - Runs in the PAGE'S MAIN WORLD (real fetch/XHR + player context)
+// injector.js - Persistent Lead Buffer Engine (v2 - Netflix-style)
 
 (() => {
-  if (window.__FASTSTREAM_INITIALIZED__) {
-    console.warn("[FastStream] արդեն initialized — skipping");
-    return;
-  }
+  if (window.__FASTSTREAM_INITIALIZED__) return;
   window.__FASTSTREAM_INITIALIZED__ = true;
-  console.log("✅ [MissAV FastStream] 🚀 Main-world injector loaded");
 
   let hlsInstance = null;
   let workerUrl = null;
   let masterPlaylistUrl = null;
   let playerCreated = false;
-  let panel = null;
-  let lastFragTime = 0;
-  let updateInterval = null; // NEW: throttle panel updates
-  let fragCounter = 0; // NEW: reduce update frequency
-  let observer = null;
+
+  let controllerInterval = null;
+
   const cleanupListeners = [];
+
+  // 🆕 JPEG detection + boost state
   let lastJpegUrl = null;
   let lastJpegTime = 0;
-  let lastJpegTriggerTime = 0; // NEW: global throttle
-  let jpegBoostApplied = false; // NEW: one-time boost guard
+  let jpegBoostUntil = 0;
+
+  let perfObserver = null;
+
+  // 🎯 Buffer model
+  const BUFFER_TARGET = 35;
+  const BUFFER_MIN = 25;
+  const BUFFER_MAX = 55;
+
+  // 🎯 Pressure tuning
+  const PRESSURE_GAIN = 20; // how aggressively we expand buffer window
+  const JPEG_BOOST_DURATION = 4000;
+  const JPEG_DEDUPE_WINDOW = 2000;
 
   function addListener(target, type, handler) {
     target.addEventListener(type, handler);
     cleanupListeners.push(() => target.removeEventListener(type, handler));
   }
 
+  function getBufferAhead(video) {
+    if (!video || !video.buffered.length) return 0;
+    return video.buffered.end(0) - video.currentTime;
+  }
+
+  // 🧠 Core Controller (continuous, no toggling)
+  function startController(video) {
+    if (controllerInterval) return;
+
+    controllerInterval = setInterval(() => {
+      if (!hlsInstance || !video) return;
+
+      const bufferAhead = getBufferAhead(video);
+      controlBuffer(bufferAhead);
+    }, 400);
+  }
+
+  function controlBuffer(bufferAhead) {
+    const config = hlsInstance.config;
+
+    // 🎯 Normalize pressure (0 → 1)
+    const pressure = Math.max(
+      0,
+      Math.min(1, (BUFFER_TARGET - bufferAhead) / BUFFER_TARGET),
+    );
+
+    // 🆕 Apply JPEG-triggered boost (no reset, just more pressure)
+    const now = Date.now();
+    const boostActive = now < jpegBoostUntil;
+
+    const boostGain = boostActive ? PRESSURE_GAIN * 1.5 : PRESSURE_GAIN;
+
+    // 🎯 Smooth buffer window expansion (with boost)
+    const dynamicBuffer = BUFFER_TARGET + pressure * boostGain;
+
+    config.maxBufferLength = Math.min(dynamicBuffer, BUFFER_MAX);
+    config.maxMaxBufferLength = BUFFER_MAX + 15;
+
+    // 🔥 ALWAYS keep forward loading active
+    config.startFragPrefetch = true;
+
+    // 🧠 ABR Coupling (boost-aware)
+    adaptBitrate(bufferAhead, pressure, boostActive);
+  }
+
+  function adaptBitrate(bufferAhead, pressure, boostActive) {
+    if (!hlsInstance) return;
+
+    // 🔴 Low buffer → reduce quality aggressively
+    if (bufferAhead < BUFFER_MIN) {
+      const safeLevel = Math.max(0, hlsInstance.currentLevel - 1);
+      hlsInstance.autoLevelCapping = safeLevel;
+      return;
+    }
+
+    // 🟡 Medium pressure → stabilize
+    if (pressure > 0.3) {
+      hlsInstance.autoLevelCapping = hlsInstance.currentLevel;
+      return;
+    }
+
+    // 🆕 During boost → slightly conservative ABR
+    if (boostActive) {
+      hlsInstance.autoLevelCapping = hlsInstance.currentLevel;
+      return;
+    }
+
+    // 🟢 Healthy buffer → allow full ABR
+    hlsInstance.autoLevelCapping = -1;
+  }
+
+  function createFastPlayer() {
+    if (hlsInstance || !masterPlaylistUrl || !workerUrl) return;
+    playerCreated = true;
+
+    const video = document.querySelector("video");
+    if (!video) return;
+
+    video.pause();
+    video.src = "";
+    video.load();
+
+    if (Hls.isSupported()) {
+      hlsInstance = new Hls({
+        autoStartLoad: true,
+        startPosition: -1,
+
+        // 🎯 Initial buffer config (controller will take over)
+        maxBufferLength: BUFFER_TARGET,
+        maxMaxBufferLength: BUFFER_MAX + 15,
+        backBufferLength: 20,
+        maxBufferSize: 70 * 1024 * 1024,
+
+        // 🔥 NEVER disable (persistent pipeline)
+        startFragPrefetch: true,
+
+        maxBufferHole: 0.3,
+        maxFragLookUpTolerance: 0.2,
+
+        // 📉 Stable ABR
+        abrEwmaFastVoD: 3.0,
+        abrEwmaSlowVoD: 9.0,
+        abrBandWidthFactor: 0.85,
+        abrBandWidthUpFactor: 0.7,
+
+        maxStarvationDelay: 2,
+        maxLoadingDelay: 2,
+
+        capLevelToPlayerSize: true,
+        enableWorker: false,
+        workerPath: workerUrl,
+
+        debug: false,
+      });
+
+      hlsInstance.loadSource(masterPlaylistUrl);
+      hlsInstance.attachMedia(video);
+
+      hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+        startController(video);
+        video.play().catch(() => {});
+      });
+
+      // 🔁 Seek = no reset (controller adapts)
+      addListener(video, "seeking", () => {});
+    }
+  }
+
   function hookNetworkRequests() {
     if (!window.__FASTSTREAM_FETCH_HOOKED__) {
       window.__FASTSTREAM_FETCH_HOOKED__ = true;
 
-      // === NEW: Also catch the video*.jpeg thumbnail (your example request) ===
       const originalFetch = window.fetch;
       window.fetch = async function (input, init) {
         const url = typeof input === "string" ? input : input?.url || "";
-        const response = await originalFetch(input, init);
+        const res = await originalFetch(input, init);
 
-        if (url.includes("playlist.m3u8") || url.includes("video.m3u8")) {
-          const isMaster = url.includes("playlist.m3u8");
-          console.log(
-            `✅ [MissAV FastStream] 📡 FETCH caught HLS ${isMaster ? "MASTER" : "MEDIA"} playlist →`,
-            url,
-          );
+        if (url.includes("playlist.m3u8")) {
           window.postMessage(
-            {
-              type: "FASTSTREAM_HLS_DETECTED",
-              url: url,
-              isMasterPlaylist: isMaster,
-              isJpegTrigger: false,
-            },
+            { type: "FASTSTREAM_HLS_DETECTED", url, isMasterPlaylist: true },
             "*",
           );
         }
 
-        // NEW: Detect video*.jpeg on surrit.com (the thumbnail you showed)
-        if (url.includes("surrit.com") && /video\d+\.jpeg/.test(url)) {
-          console.log(
-            "✅ [MissAV FastStream] 📸 JPEG thumbnail detected →",
-            url,
-          );
-          window.postMessage(
-            {
-              type: "FASTSTREAM_JPEG_DETECTED",
-              url: url,
-            },
-            "*",
-          );
-        }
-
-        return response;
-      };
-    }
-
-    if (!window.__FASTSTREAM_XHR_HOOKED__) {
-      window.__FASTSTREAM_XHR_HOOKED__ = true;
-
-      // Override XMLHttpRequest
-      const OriginalXHR = window.XMLHttpRequest;
-      window.XMLHttpRequest = function () {
-        const xhr = new OriginalXHR();
-        const open = xhr.open;
-        xhr.open = function (method, url) {
-          if (
-            typeof url === "string" &&
-            (url.includes("playlist.m3u8") || url.includes("video.m3u8"))
-          ) {
-            const isMaster = url.includes("playlist.m3u8");
-            console.log(
-              `✅ [MissAV FastStream] 📡 XHR caught HLS ${isMaster ? "MASTER" : "MEDIA"} playlist →`,
-              url,
-            );
-            window.postMessage(
-              {
-                type: "FASTSTREAM_HLS_DETECTED",
-                url: url,
-                isMasterPlaylist: isMaster,
-              },
-              "*",
-            );
-          }
-          // Also catch JPEG via XHR (some sites use XHR for images)
-          if (
-            typeof url === "string" &&
-            url.includes("surrit.com") &&
-            /video\d+\.jpeg/.test(url)
-          ) {
-            console.log(
-              "✅ [MissAV FastStream] 📸 JPEG thumbnail detected via XHR →",
-              url,
-            );
-            window.postMessage({ type: "FASTSTREAM_JPEG_DETECTED", url }, "*");
-          }
-          return open.apply(this, arguments);
-        };
-        return xhr;
-      };
-    }
-  }
-
-  // Receive config (worker URL) from content script
-  function handleConfigMessage(event) {
-    if (event.data && event.data.type === "FASTSTREAM_CONFIG") {
-      workerUrl = event.data.workerUrl;
-      console.log(
-        "✅ [MissAV FastStream] 🔧 Received worker URL in main world:",
-        workerUrl,
-      );
-    }
-  }
-
-  // Receive start-player command + create player in main world
-  function handleStartPlayer(event) {
-    if (event.data && event.data.type === "FASTSTREAM_START_PLAYER") {
-      if (playerCreated) {
-        console.log(
-          "⚠️ [MissAV FastStream] Player already created — ignoring duplicate START_PLAYER",
-        );
-        return;
-      }
-      masterPlaylistUrl = event.data.url;
-      console.log(
-        "🔄 [MissAV FastStream] 🎬 Received START_PLAYER command →",
-        masterPlaylistUrl,
-      );
-      createFastPlayer(true); // called from playlist
-    }
-  }
-
-  // NEW handler for JPEG detection
-  function handleJpegDetected(event) {
-    if (!event.data || event.source !== window) return;
-    if (event.data?.type === "FASTSTREAM_JPEG_DETECTED") {
-      const now = Date.now();
-
-      // NEW: global throttle (max once every 3s)
-      if (now - lastJpegTriggerTime < 3000) return;
-
-      // NEW: only allow one boost per session
-      if (jpegBoostApplied) return;
-
-      lastJpegTriggerTime = now;
-      jpegBoostApplied = true;
-
-      console.log(
-        "🔥 [MissAV FastStream] JPEG triggered prioritization (throttled)",
-      );
-
-      if (!playerCreated && masterPlaylistUrl) {
-        createFastPlayer(false);
-      }
-
-      if (hlsInstance) {
-        // UPDATED: Soft boost only (no forced reload / no aggressive expansion)
-        hlsInstance.config.startFragPrefetch = false;
-
-        console.log("🚀 Soft prioritization applied (no aggressive prefetch)");
-      }
-    }
-  }
-
-  function createFastPlayer(fromPlaylist) {
-    if (hlsInstance || !masterPlaylistUrl || !workerUrl) return;
-    playerCreated = true;
-    console.log("✅ [MissAV FastStream] 🎬 Reusing existing video element");
-
-    // Reuse the original video element on the page
-    const video = document.querySelector("video");
-    if (!video) {
-      console.warn("⚠️ No existing video element found – falling back");
-      return;
-    }
-    // Reuse and reset video element
-    video.controls = true;
-    video.style.background = "#000";
-    video.pause();
-    video.muted = true;
-    // Clear any previous source/buffer to help GC
-    if (video.src) video.src = "";
-    video.load();
-
-    console.log("✅ [MissAV FastStream] ✅ Reusing page's own element");
-
-    if (Hls.isSupported()) {
-      // Latest hls.js v1.6.16 style config with FastStream-inspired prefetch, FIXED: tighter buffer/GC
-      hlsInstance = new Hls({
-        autoStartLoad: fromPlaylist,
-        startPosition: -1,
-        // UPDATED: Balanced buffering (prevents aggressive continuous downloading)
-        maxBufferLength: 20, // forward buffer target
-        maxMaxBufferLength: 40, // hard cap
-        backBufferLength: 15,
-        maxBufferSize: 40 * 1024 * 1024, // reduced memory footprint
-
-        maxBufferHole: 0.5,
-        maxFragLookUpTolerance: 0.25,
-        startFragPrefetch: false, // disable aggressive prefetch
-
-        testBandwidth: false,
-        lowLatencyMode: false,
-
-        enableWorker: false,
-        workerPath: workerUrl,
-        abrEwmaFastVoD: 4.0,
-        abrEwmaSlowVoD: 8.0,
-        abrBandWidthFactor: 0.95,
-        abrBandWidthUpFactor: 0.8,
-        maxStarvationDelay: 4,
-        maxLoadingDelay: 4,
-        debug: false,
-        capLevelToPlayerSize: true,
-        // enableSoftwareAES: true (if needed for encrypted streams)
-      });
-      console.log(
-        "✅ [MissAV FastStream] ⚙️ Fast HLS config applied (large buffer + prefetch)",
-      );
-      hlsInstance.loadSource(masterPlaylistUrl);
-      hlsInstance.attachMedia(video);
-
-      hlsInstance.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
-        console.log(
-          "✅ [MissAV FastStream] 📜 Master playlist parsed — quality levels ready",
-        );
-        video.play().catch(() => {});
-        console.log("✅ [MissAV FastStream] ▶️ Auto-play started");
-        console.log("🎉 [MissAV FastStream] ✅ EXTENSION FULLY ACTIVE");
-
-        // Create/update floating panel once
-        if (!panel) {
-          panel = document.createElement("div");
-          panel.style.cssText =
-            "position:fixed; bottom:20px; right:20px; background:rgba(0,0,0,0.85);" +
-            "color:#0f0; padding:12px; border-radius:8px; font-family:monospace;" +
-            "font-size:13px; z-index:999999; min-width:240px; box-shadow:0 0 15px rgba(0,255,0,0.3);";
-          document.body.appendChild(panel);
-        }
-
-        // FIXED: Throttled panel updates (every ~800ms or on every 3rd frag)
-        if (!updateInterval) {
-          updateInterval = setInterval(() => {
-            if (panel && hlsInstance) updatePanel();
-          }, 800);
-        }
-
-        hlsInstance.on(Hls.Events.FRAG_LOADED, (event, data) => {
-          fragCounter++;
+        // 🆕 JPEG detection (deduped, zero spam)
+        if (/video\d+\.(jpe?g)/i.test(url)) {
           const now = Date.now();
-          let speedKbps = 0;
-          if (lastFragTime && data.frag?.duration) {
-            speedKbps = Math.round(
-              (data.frag.duration * 1000) / (now - lastFragTime),
-            );
-          }
-          lastFragTime = now;
 
-          // Update panel less aggressively
-          if (fragCounter % 3 === 0 || speedKbps > 500) {
-            updatePanel(data, speedKbps);
-          }
-        });
+          if (url !== lastJpegUrl || now - lastJpegTime > JPEG_DEDUPE_WINDOW) {
+            lastJpegUrl = url;
+            lastJpegTime = now;
 
-        // Still listen for buffer changes but don't spam
-        hlsInstance.on(Hls.Events.BUFFER_APPENDED, () => {
-          if (panel && fragCounter % 5 === 0) updatePanel();
-        });
-      });
+            console.log("[FastStream] 📸 JPEG fragment detected →", url);
+
+            // 🆕 Activate temporary pressure boost
+            jpegBoostUntil = now + JPEG_BOOST_DURATION;
+          }
+        }
+
+        return res;
+      };
     }
   }
 
-  function updatePanel(fragData = null, speedKbps = 0) {
-    if (!panel || !hlsInstance) return;
+  function startJpegObserver() {
+    if (perfObserver) return;
 
-    // FIXED: More defensive buffer calculation (handles live/VOD better)
-    const buffer = hlsInstance.media
-      ? hlsInstance.media.buffered.length > 0
-        ? (
-            hlsInstance.media.buffered.end(0) - hlsInstance.media.currentTime
-          ).toFixed(1)
-        : "0"
-      : "0";
+    try {
+      perfObserver = new PerformanceObserver((list) => {
+        const entries = list.getEntries();
 
-    const queued = hlsInstance.bufferController ? "many" : "~10";
+        for (const entry of entries) {
+          const url = entry.name;
 
-    // FIXED: Cleaner template + avoid repeated large string creation
-    panel.innerHTML = `
-      🚀 FastStream Live<br>
-      Speed: ${speedKbps} kB/s<br>
-      Buffer: ${buffer}s ahead<br>
-      Fragments queued: ${queued}<br>
-      JPEG trigger: active ✅<br>
-      Back-buffer: ${hlsInstance.config.backBufferLength}s (evicting old)
-    `;
+          if (!/video\d+\.(jpe?g)/i.test(url)) continue;
+
+          const now = Date.now();
+
+          if (url === lastJpegUrl && now - lastJpegTime < JPEG_DEDUPE_WINDOW) {
+            continue;
+          }
+
+          lastJpegUrl = url;
+          lastJpegTime = now;
+
+          console.log("[FastStream] 📸 JPEG fragment detected (perf) →", url);
+
+          jpegBoostUntil = now + JPEG_BOOST_DURATION;
+        }
+      });
+
+      perfObserver.observe({
+        type: "resource",
+        buffered: true,
+      });
+
+      console.log("[FastStream] 👁️ PerformanceObserver active");
+    } catch (e) {
+      console.warn("[FastStream] PerformanceObserver failed:", e);
+    }
   }
 
-  // NEW: Cleanup function (call on page unload or when recreating player)
+  function handleStartPlayer(event) {
+    if (event.data?.type === "FASTSTREAM_START_PLAYER") {
+      if (playerCreated) return;
+      masterPlaylistUrl = event.data.url;
+      createFastPlayer();
+    }
+  }
+
+  function handleConfigMessage(event) {
+    if (event.data?.type === "FASTSTREAM_CONFIG") {
+      workerUrl = event.data.workerUrl;
+    }
+  }
+
   function cleanup() {
-    // remove listeners
     cleanupListeners.forEach((fn) => fn());
     cleanupListeners.length = 0;
 
-    // disconnect observer
-    if (observer) {
-      observer.disconnect();
-      observer = null;
+    if (controllerInterval) {
+      clearInterval(controllerInterval);
+      controllerInterval = null;
     }
 
     if (hlsInstance) {
-      try {
-        hlsInstance.stopLoad();
-        hlsInstance.detachMedia();
-        hlsInstance.destroy(); // IMPORTANT: frees workers, buffers, events
-      } catch (e) {
-        console.warn("[MissAV FastStream] Cleanup error:", e);
-      }
+      hlsInstance.destroy();
       hlsInstance = null;
     }
-    if (updateInterval) {
-      clearInterval(updateInterval);
-      updateInterval = null;
+
+    if (perfObserver) {
+      perfObserver.disconnect();
+      perfObserver = null;
     }
-    if (panel) {
-      panel.remove();
-      panel = null;
-    }
+
+    // 🆕 reset jpeg state
+    lastJpegUrl = null;
+    lastJpegTime = 0;
+    jpegBoostUntil = 0;
+
     playerCreated = false;
-    lastFragTime = 0;
-    fragCounter = 0;
-    console.log("🧹 [MissAV FastStream] Cleanup completed");
   }
 
-  // Setup all listeners
   addListener(window, "message", handleConfigMessage);
   addListener(window, "message", handleStartPlayer);
-  addListener(window, "message", handleJpegDetected);
   addListener(window, "beforeunload", cleanup);
 
-  // Optional: also listen for video element removal if the site replaces it
-  observer = new MutationObserver((mutations) => {
-    if (!document.querySelector("video") && hlsInstance) {
-      console.warn("[MissAV FastStream] Video element removed – cleaning up");
-      cleanup();
-    }
-  });
-  observer.observe(document.body || document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
-
   hookNetworkRequests();
-  console.log("✅ [MissAV FastStream] 🎯 Network hooks active + ready");
-
-  // Expose cleanup for content script if needed
-  window.FastStreamCleanup = cleanup;
+  startJpegObserver();
 })();
