@@ -1,5 +1,13 @@
 // gallery.js
 
+// Reuse the enforceSinglePlayback from content.js (we'll expose it simply)
+let enforceSinglePlayback = null;
+
+// This will be called from content.js after init
+window.setGalleryPlaybackController = function (controller) {
+  enforceSinglePlayback = controller;
+};
+
 const GALLERY_ID = "video-gallery-modal";
 
 function createGalleryModal() {
@@ -18,8 +26,21 @@ function createGalleryModal() {
 
   document.body.appendChild(modal);
 
-  modal.querySelector(".gallery-close").onclick = () => modal.remove();
-  modal.querySelector(".gallery-overlay").onclick = () => modal.remove();
+  // Pause all gallery videos when closing
+  modal.querySelector(".gallery-close").onclick = () => {
+    modal.querySelectorAll("video").forEach((v) => {
+      v.pause();
+      if (enforceSinglePlayback) enforceSinglePlayback(null); // clear global
+    });
+    modal.remove();
+  };
+  modal.querySelector(".gallery-overlay").onclick = () => {
+    modal.querySelectorAll("video").forEach((v) => {
+      v.pause();
+      if (enforceSinglePlayback) enforceSinglePlayback(null); // clear global
+    });
+    modal.remove();
+  };
 
   return modal;
 }
@@ -74,6 +95,12 @@ function extractFrame(videoSrc, time) {
           },
           { once: true },
         );
+
+        // For fallback video, also respect single playback
+        if (enforceSinglePlayback) {
+          // Optionally we could add event listeners or call on .play(), depending on desired UX.
+          // For now, left as hook point.
+        }
 
         resolve(fallback);
       }

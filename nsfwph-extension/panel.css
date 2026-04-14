@@ -217,3 +217,35 @@
   opacity: 1;
   background: rgba(0, 212, 255, 0.8);
 }
+
+/* Time selections row (new feature) */
+.time-selections {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #444;
+}
+
+.time-selections small {
+  display: block;
+  color: #888;
+  font-size: 10px;
+  margin-bottom: 4px;
+  user-select: none;
+}
+
+.time-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.time-frame {
+  width: 48px;
+  height: 27px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #111;
+  flex-shrink: 0;
+}
