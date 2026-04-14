@@ -256,16 +256,20 @@
    Feels clean, modern, and easy to see which video is playing.
    ───────────────────────────────────────────────────────────── */
 .message-inner video.video-observer-playing {
-  transform: scale(1.28) translateX(14%); /* even bigger + shift right */
+  transform: scale(1.28) translateX(14%); /* 28% bigger + shift right */
   transition:
     transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
     box-shadow 0.4s ease,
     outline 0.4s ease,
-    filter 0.4s ease;
+    filter 0.4s ease,
+    background 0.3s ease;
   box-shadow: 0 0 45px 20px rgba(0, 212, 255, 0.85);
   outline: 4px solid rgba(0, 212, 255, 0.35);
   z-index: 9999; /* pops above other elements */
   filter: brightness(1.15); /* slightly stronger pop */
+
+  /* Solid dark background to cleanly cover any text or elements behind the playing video */
+  background: #0f0f1a;
 }
 
 /* When not playing, return to normal instantly (smooth transition handles it) */
