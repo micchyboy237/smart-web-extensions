@@ -173,19 +173,10 @@
       }
 
       if (hlsInstance) {
-        // Prioritize succeeding fragments ONCE
-        hlsInstance.config.startFragPrefetch = true;
-        hlsInstance.config.maxBufferLength = 60;
-        hlsInstance.config.maxMaxBufferLength = 120;
+        // UPDATED: Soft boost only (no forced reload / no aggressive expansion)
+        hlsInstance.config.startFragPrefetch = false;
 
-        // Avoid repeated startLoad spam
-        try {
-          hlsInstance.startLoad(-1);
-        } catch (e) {
-          console.warn("[MissAV FastStream] startLoad skipped:", e);
-        }
-
-        console.log("🚀 Prioritized succeeding fragments (one-time boost)");
+        console.log("🚀 Soft prioritization applied (no aggressive prefetch)");
       }
     }
   }
@@ -217,16 +208,19 @@
       hlsInstance = new Hls({
         autoStartLoad: fromPlaylist,
         startPosition: -1,
-        // FIXED: Much tighter buffers to prevent linear growth
-        maxBufferLength: 30, // forward buffer target
-        maxMaxBufferLength: 60, // hard cap (was 120)
-        backBufferLength: 15, // CRITICAL: was default Infinity → now evicts old segments
-        maxBufferSize: 60 * 1024 * 1024, // 60 MiB max (was 120 MiB)
+        // UPDATED: Balanced buffering (prevents aggressive continuous downloading)
+        maxBufferLength: 20, // forward buffer target
+        maxMaxBufferLength: 40, // hard cap
+        backBufferLength: 15,
+        maxBufferSize: 40 * 1024 * 1024, // reduced memory footprint
+
         maxBufferHole: 0.5,
         maxFragLookUpTolerance: 0.25,
-        startFragPrefetch: true, // pre-download succeeding fragments
+        startFragPrefetch: false, // disable aggressive prefetch
+
         testBandwidth: false,
         lowLatencyMode: false,
+
         enableWorker: false,
         workerPath: workerUrl,
         abrEwmaFastVoD: 4.0,
