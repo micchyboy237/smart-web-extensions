@@ -4,6 +4,13 @@
 
   console.log("🔥 [FastStream] injector loaded");
 
+  // Buffer thresholds - consistent for page load and seeks
+  const BUFFER_LOW = 5;
+  const BOOST_DURATION = 8000; // 8 seconds - same for everything
+  const INITIAL_BUFFER_TARGET = 12; // for page load
+  const SEEK_BUFFER_TARGET = 8; // lower threshold for seeks (trigger boost easier)
+  const SEEK_BOOST_RATE = 1.2; // stronger boost after seek
+
   function formatTime(t) {
     return t.toFixed(2) + "s";
   }
@@ -22,7 +29,6 @@
         )}]`,
       );
     }
-
     console.log("📊 [BUFFER]", label, {
       currentTime: formatTime(video.currentTime),
       bufferAhead: formatTime(getBufferAhead(video)),
@@ -36,6 +42,31 @@
 
     console.log("🎬 [FastStream] Video detected:", video);
 
+    let boostTimeout = null;
+
+    video.addEventListener("seeking", () => {
+      console.log("⏩ seeking started");
+      if (boostTimeout) clearTimeout(boostTimeout);
+    });
+
+    // Early check for page-load buffering (runs once)
+    setTimeout(() => {
+      const ahead = getBufferAhead(video);
+      if (ahead < INITIAL_BUFFER_TARGET && !video.__hasBoostedOnLoad) {
+        console.log(
+          `📈 Page load buffer low (${formatTime(ahead)}), triggering 8s boost...`,
+        );
+        boostBufferAfterSeek(video, false); // false = gentle boost for load
+        video.__hasBoostedOnLoad = true;
+      }
+    }, 600); // check shortly after video detection
+
+    // Improved seek handling
+    video.addEventListener("seeked", () => {
+      console.log("✅ seeked finished");
+      boostBufferAfterSeek(video, true); // true = strong boost for seek
+    });
+
     video.addEventListener("play", () => {
       console.log("▶️ play");
       logBuffer(video, "on play");
@@ -43,10 +74,7 @@
 
     video.addEventListener("pause", () => {
       console.log("⏸ pause");
-    });
-
-    video.addEventListener("seeking", () => {
-      console.log("⏩ seeking");
+      logBuffer(video, "on pause");
     });
 
     video.addEventListener("waiting", () => {
@@ -55,7 +83,6 @@
     });
 
     video.addEventListener("progress", () => {
-      console.log("📥 progress (network)");
       logBuffer(video, "progress");
     });
 
@@ -63,11 +90,43 @@
       logBuffer(video, "timeupdate");
     });
 
-    // 🔥 continuous monitor (like Netflix debug)
+    // Continuous monitoring every second
     setInterval(() => {
       if (video.paused) return;
       logBuffer(video, "interval");
+
+      const ahead = getBufferAhead(video);
+      if (ahead < BUFFER_LOW) {
+        console.warn(`⚠️ LOW BUFFER: ${formatTime(ahead)}`);
+      }
     }, 1000);
+  }
+
+  // Unified buffer booster - now accepts "isSeek" flag
+  function boostBufferAfterSeek(video, isSeek = false) {
+    if (!video) return;
+
+    const rate = isSeek ? SEEK_BOOST_RATE : 1.08;
+    console.log(
+      `🚀 Starting 8-second buffer boost (${rate}x)${isSeek ? " [AFTER SEEK]" : " [PAGE LOAD]"}`,
+    );
+
+    const originalRate = video.playbackRate || 1.0;
+    const targetRate = rate;
+
+    video.playbackRate = targetRate;
+
+    if (video.__boostTimeout) clearTimeout(video.__boostTimeout);
+
+    video.__boostTimeout = setTimeout(() => {
+      if (video.playbackRate === targetRate) {
+        video.playbackRate = originalRate;
+      }
+      console.log(
+        `✅ 8-second buffer boost finished (${rate}x) - back to normal`,
+      );
+      logBuffer(video, "after boost");
+    }, BOOST_DURATION);
   }
 
   function detectVideos() {
@@ -77,16 +136,7 @@
     });
   }
 
-  // 🔥 run immediately
   detectVideos();
-
-  // 🔥 observe DOM changes
-  const observer = new MutationObserver(() => {
-    detectVideos();
-  });
-
-  observer.observe(document, {
-    childList: true,
-    subtree: true,
-  });
+  const observer = new MutationObserver(detectVideos);
+  observer.observe(document, { childList: true, subtree: true });
 })();
