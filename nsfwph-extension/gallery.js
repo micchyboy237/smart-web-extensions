@@ -1,18 +1,13 @@
 // gallery.js
-
-// Reuse the enforceSinglePlayback from content.js (we'll expose it simply)
-let enforceSinglePlayback = null;
-
-// This will be called from content.js after init
-window.setGalleryPlaybackController = function (controller) {
-  enforceSinglePlayback = controller;
-};
-
 const GALLERY_ID = "video-gallery-modal";
 
 function createGalleryModal() {
   let modal = document.getElementById(GALLERY_ID);
-  if (modal) return modal;
+  if (modal) {
+    // Reuse existing modal but make sure grid is cleared
+    modal.querySelector(".gallery-grid").innerHTML = "";
+    return modal;
+  }
 
   modal = document.createElement("div");
   modal.id = GALLERY_ID;
@@ -26,61 +21,109 @@ function createGalleryModal() {
 
   document.body.appendChild(modal);
 
-  // Pause all gallery videos when closing
-  modal.querySelector(".gallery-close").onclick = () => {
-    modal.querySelectorAll("video").forEach((v) => {
-      v.pause();
-      if (enforceSinglePlayback) enforceSinglePlayback(null); // clear global
-    });
-    modal.remove();
-  };
-  modal.querySelector(".gallery-overlay").onclick = () => {
-    modal.querySelectorAll("video").forEach((v) => {
-      v.pause();
-      if (enforceSinglePlayback) enforceSinglePlayback(null); // clear global
-    });
+  const closeBtn = modal.querySelector(".gallery-close");
+  const overlay = modal.querySelector(".gallery-overlay");
+
+  const closeModal = () => {
+    cleanupGallery(modal); // ← Important
     modal.remove();
   };
 
+  closeBtn.onclick = closeModal;
+  overlay.onclick = closeModal;
+
+  // Also support Escape key
+  const escHandler = (e) => {
+    if (e.key === "Escape") closeModal();
+  };
+  document.addEventListener("keydown", escHandler, { once: true });
+
+  // Store handler so we can remove it later if needed
+  modal._escHandler = escHandler;
+
   return modal;
+}
+
+/** Main cleanup function - this is the key part */
+function cleanupGallery(modal) {
+  const grid = modal.querySelector(".gallery-grid");
+  if (!grid) return;
+
+  // Remove all children and revoke any resources
+  Array.from(grid.children).forEach((child) => {
+    if (child instanceof HTMLVideoElement) {
+      child.pause();
+      child.src = ""; // Important: break reference to video data
+      child.load(); // Forces release of decoded frames
+    }
+    if (child instanceof HTMLImageElement && child.src.startsWith("data:")) {
+      child.src = ""; // Free base64 data URL
+    }
+    grid.removeChild(child);
+  });
+
+  grid.innerHTML = "";
+
+  // Optional: remove escape handler
+  if (modal._escHandler) {
+    document.removeEventListener("keydown", modal._escHandler);
+    delete modal._escHandler;
+  }
 }
 
 function extractFrame(videoSrc, time) {
   return new Promise((resolve) => {
     const video = document.createElement("video");
-    video.src = videoSrc;
-    video.muted = true;
-    // video.crossOrigin = "anonymous"; // Removed for fallback logic
-    video.preload = "auto";
-
     const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
+    let resolved = false;
 
-    video.addEventListener("loadedmetadata", () => {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+    video.muted = true;
+    video.preload = "metadata"; // Better than "auto" for thumbnails
+    video.src = videoSrc;
+
+    const cleanupVideo = () => {
+      video.pause();
+      video.src = "";
+      video.load();
+      // Remove all listeners to prevent leaks
+      video.removeEventListener("loadedmetadata", onLoadedMetadata);
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onError);
+    };
+
+    const onLoadedMetadata = () => {
+      canvas.width = video.videoWidth || 320;
+      canvas.height = video.videoHeight || 180;
       video.currentTime = time;
-    });
+    };
 
-    video.addEventListener("seeked", () => {
+    const onSeeked = () => {
+      if (resolved) return;
+      resolved = true;
+
       try {
+        const ctx = canvas.getContext("2d", { alpha: false });
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const data = canvas.toDataURL("image/jpeg");
-        // If CORS blocked, this will fail or return empty
-        if (!data || data.length < 1000) throw new Error("Canvas tainted");
+
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
 
         const img = document.createElement("img");
-        img.src = data;
+        img.src = dataUrl;
         img.className = "gallery-image";
+        img.loading = "lazy";
+
+        cleanupVideo();
         resolve(img);
       } catch (e) {
-        // 🔥 Fallback to video preview
+        // Fallback
+        cleanupVideo();
         const fallback = document.createElement("video");
-        fallback.src =
-          videoSrc + (videoSrc.includes("?") ? "&" : "?") + `t=${time}`;
+        fallback.src = `${videoSrc}${videoSrc.includes("?") ? "&" : "?"}t=${Math.floor(time)}`;
         fallback.muted = true;
-        fallback.preload = "auto";
         fallback.className = "gallery-video";
+        fallback.controls = false;
+        fallback.loop = false;
+        fallback.preload = "metadata";
 
         fallback.addEventListener(
           "loadeddata",
@@ -88,23 +131,35 @@ function extractFrame(videoSrc, time) {
             fallback.currentTime = time;
             fallback
               .play()
-              .then(() => {
-                setTimeout(() => fallback.pause(), 200);
-              })
+              .then(() => setTimeout(() => fallback.pause(), 150))
               .catch(() => {});
           },
           { once: true },
         );
 
-        // For fallback video, also respect single playback
-        if (enforceSinglePlayback) {
-          // Optionally we could add event listeners or call on .play(), depending on desired UX.
-          // For now, left as hook point.
-        }
-
         resolve(fallback);
       }
-    });
+    };
+
+    const onError = () => {
+      if (resolved) return;
+      resolved = true;
+      cleanupVideo();
+      resolve(null);
+    };
+
+    video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
+    video.addEventListener("seeked", onSeeked, { once: true });
+    video.addEventListener("error", onError, { once: true });
+
+    // Safety timeout in case video hangs
+    setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        cleanupVideo();
+        resolve(null);
+      }
+    }, 8000);
   });
 }
 
@@ -117,21 +172,21 @@ function openGallery(entry) {
   if (!src) return;
 
   const duration = entry.element.duration;
-  if (!duration || isNaN(duration)) return;
+  if (!duration || isNaN(duration) || duration < 1) return;
 
   const MAX = 6;
-  const times = [];
+  const times = Array.from(
+    { length: MAX },
+    (_, i) => ((i + 1) / (MAX + 1)) * duration,
+  );
 
-  for (let i = 0; i < MAX; i++) {
-    const t = ((i + 1) / (MAX + 1)) * duration;
-    times.push(t);
-  }
-
-  // Sequential extraction (more stable)
+  // Sequential + cleanup on modal close
   (async () => {
     for (const t of times) {
-      const img = await extractFrame(src, t);
-      if (img) grid.appendChild(img);
+      const media = await extractFrame(src, t);
+      if (media) {
+        grid.appendChild(media);
+      }
     }
   })();
 }
