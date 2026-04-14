@@ -6,10 +6,11 @@
 
   // Buffer thresholds - consistent for page load and seeks
   const BUFFER_LOW = 5;
-  const BOOST_DURATION = 8000; // 8 seconds - same for everything
+  const BOOST_DURATION = 8000; // 8 seconds - for page load
   const INITIAL_BUFFER_TARGET = 12; // for page load
-  const SEEK_BUFFER_TARGET = 8; // lower threshold for seeks (trigger boost easier)
-  const SEEK_BOOST_RATE = 1.2; // stronger boost after seek
+  // const SEEK_BUFFER_TARGET = 8; // no longer needed here
+  const SEEK_BOOST_RATE = 1.5; // stronger nudge after seek (was 1.20)
+  const SEEK_BOOST_DURATION = 10000; // 10 seconds for seeks only
 
   function formatTime(t) {
     return t.toFixed(2) + "s";
@@ -64,7 +65,7 @@
     // Improved seek handling
     video.addEventListener("seeked", () => {
       console.log("✅ seeked finished");
-      boostBufferAfterSeek(video, true); // true = strong boost for seek
+      boostBufferAfterSeek(video, true);
     });
 
     video.addEventListener("play", () => {
@@ -102,17 +103,28 @@
     }, 1000);
   }
 
-  // Unified buffer booster - now accepts "isSeek" flag
+  // Unified buffer booster
   function boostBufferAfterSeek(video, isSeek = false) {
     if (!video) return;
 
     const rate = isSeek ? SEEK_BOOST_RATE : 1.08;
+    const duration = isSeek ? SEEK_BOOST_DURATION : BOOST_DURATION;
+
     console.log(
-      `🚀 Starting 8-second buffer boost (${rate}x)${isSeek ? " [AFTER SEEK]" : " [PAGE LOAD]"}`,
+      `🚀 Starting ${duration / 1000}s buffer boost (${rate}x)${isSeek ? " [AFTER SEEK]" : " [PAGE LOAD]"}`,
     );
 
     const originalRate = video.playbackRate || 1.0;
     const targetRate = rate;
+
+    // Optional extra nudge for seeks: brief pause + play can help trigger prefetch on some sites
+    if (isSeek && !video.paused) {
+      const wasPlaying = true;
+      video.pause();
+      setTimeout(() => {
+        if (wasPlaying) video.play().catch(() => {});
+      }, 50);
+    }
 
     video.playbackRate = targetRate;
 
@@ -123,10 +135,10 @@
         video.playbackRate = originalRate;
       }
       console.log(
-        `✅ 8-second buffer boost finished (${rate}x) - back to normal`,
+        `✅ ${duration / 1000}s buffer boost finished (${rate}x) - back to normal`,
       );
       logBuffer(video, "after boost");
-    }, BOOST_DURATION);
+    }, duration);
   }
 
   function detectVideos() {
