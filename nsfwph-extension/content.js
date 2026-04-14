@@ -187,7 +187,7 @@ function createSinglePreview(originalVideo, entryId) {
   const preview = document.createElement("video");
   preview.src = videoUrl;
   preview.muted = true;
-  preview.preload = "metadata";
+  preview.preload = "auto";
   preview.style.width = "100%";
   preview.style.height = "auto";
   preview.style.maxHeight = "96px";
