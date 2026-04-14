@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "NSFWPH FastStream",
+  "version": "1.0.0",
+  "permissions": ["storage"],
+  "host_permissions": ["*://*.nsfwph.org/*", "*://data.nsfwph.org/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.nsfwph.org/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injector.js", "mp4-player.js", "mp4box.js"],
+      "matches": ["*://*.nsfwph.org/*"]
+    }
+  ]
+}
