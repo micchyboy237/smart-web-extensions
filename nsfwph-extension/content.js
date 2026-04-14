@@ -386,19 +386,53 @@ function trackVideo(video) {
   }
 
   const events = [
+    // Loading / Network
+    "loadstart",
+    "progress",
+    "suspend",
+    "abort",
+    "error",
+    "emptied",
+    "stalled",
+
+    // Metadata / Data readiness
+    "loadedmetadata",
+    "loadeddata",
+    "canplay",
+    "canplaythrough",
+    "durationchange",
+
+    // Playback state
     "play",
     "playing",
     "pause",
     "ended",
+    "waiting",
+
+    // Time / Seeking
     "timeupdate",
-    "loadedmetadata",
+    "seeking",
+    "seeked",
+
+    // Playback rate / volume
+    "ratechange",
+    "volumechange",
+
+    // Misc
+    "resize",
   ];
   events.forEach((ev) => {
     video.addEventListener(
       ev,
       () => {
-        entry.info = getVideoInfo(video);
-        performPanelUpdate();
+        const info = getVideoInfo(video);
+        entry.info = info;
+        log(`Video event: ${ev}`, {
+          id,
+          time: info.currentTime.toFixed(1),
+          paused: info.paused,
+        });
+        // performPanelUpdate();
       },
       { passive: true },
     );
