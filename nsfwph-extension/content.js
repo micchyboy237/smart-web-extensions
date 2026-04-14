@@ -437,6 +437,36 @@ function trackVideo(video) {
       { passive: true },
     );
   });
+
+  // ─────────────────────────────────────────────────────────────
+  // BEAUTIFUL SIZE BOOST FOR THE MAIN VIDEO
+  // When the video plays → add special class (makes it bigger + glow)
+  // When it stops     → remove class (smoothly returns to normal size)
+  // ─────────────────────────────────────────────────────────────
+  video.addEventListener(
+    "play",
+    () => {
+      video.classList.add("video-observer-playing");
+    },
+    { passive: true },
+  );
+
+  video.addEventListener(
+    "pause",
+    () => video.classList.remove("video-observer-playing"),
+    { passive: true },
+  );
+
+  video.addEventListener(
+    "ended",
+    () => video.classList.remove("video-observer-playing"),
+    { passive: true },
+  );
+
+  // If a video was already playing when we first detected it
+  if (!video.paused) {
+    video.classList.add("video-observer-playing");
+  }
 }
 
 function performPanelUpdate() {
