@@ -3,6 +3,40 @@
   window.__FASTSTREAM_MP4__ = true;
   console.log("🔥 [FastStream] injector loaded");
 
+  // 🆕 NEW: Track all active videos and their cleanup handlers
+  const activeVideos = new WeakMap();
+  const videoTimers = new WeakMap();
+
+  // 🆕 NEW: Unified cleanup function for video elements
+  function cleanupVideo(video) {
+    if (!video) return;
+
+    console.log("🧹 Cleaning up video:", video);
+
+    // Clear all timers associated with this video
+    const timers = videoTimers.get(video);
+    if (timers) {
+      if (timers.boostTimeout) clearTimeout(timers.boostTimeout);
+      if (timers.intervalId) clearInterval(timers.intervalId);
+      videoTimers.delete(video);
+    }
+
+    // Clear boost timeout stored directly on video (backward compatibility)
+    if (video.__boostTimeout) {
+      clearTimeout(video.__boostTimeout);
+      delete video.__boostTimeout;
+    }
+
+    // Reset boost state
+    if (video.__boostState) {
+      video.__boostState.active = false;
+    }
+
+    // Remove attachment flag to allow re-attachment if video is reused
+    delete video.__FASTSTREAM_ATTACHED__;
+    delete video.__hasBoostedOnLoad;
+  }
+
   // Buffer thresholds - consistent for page load and seeks
   const BUFFER_LOW = 5;
   const BOOST_DURATION = 8000; // 8 seconds - for page load
@@ -65,15 +99,22 @@
   }
 
   function attachVideoListeners(video) {
-    if (video.__FASTSTREAM_ATTACHED__) return;
+    // 🆕 NEW: Clean up any existing state before attaching
+    if (video.__FASTSTREAM_ATTACHED__) {
+      console.log("⚠️ Video already attached, cleaning up first");
+      cleanupVideo(video);
+    }
+
     video.__FASTSTREAM_ATTACHED__ = true;
     console.log("🎬 [FastStream] Video detected:", video);
 
-    let boostTimeout = null;
+    // 🆕 NEW: Store timer references for cleanup
+    const timers = { boostTimeout: null, intervalId: null };
+    videoTimers.set(video, timers);
 
     video.addEventListener("seeking", () => {
       console.log("⏩ seeking started");
-      if (boostTimeout) clearTimeout(boostTimeout);
+      if (timers.boostTimeout) clearTimeout(timers.boostTimeout);
     });
 
     // Early check for page-load buffering (runs once)
@@ -132,7 +173,7 @@
     });
 
     // 🔧 Fix 4: Suppress Low-Buffer Warnings During Active Boost
-    setInterval(() => {
+    timers.intervalId = setInterval(() => {
       if (video.paused) return;
       logBuffer(video, "interval");
       const ahead = getBufferAhead(video);
@@ -152,6 +193,7 @@
   // 🆕 Updated: Unified buffer booster with duration extension support and robust boost state management
   function boostBufferAfterSeek(video, isSeek = false, options = {}) {
     if (!video) return;
+    const timers = videoTimers.get(video);
     const { extendDuration = false } = options;
 
     // 🔧 Fix 3: Adaptive Boost Rate Based on Network Conditions
@@ -198,6 +240,7 @@
     }
 
     video.playbackRate = targetRate;
+    if (timers?.boostTimeout) clearTimeout(timers.boostTimeout);
     if (video.__boostTimeout) clearTimeout(video.__boostTimeout);
     video.__boostStartTime = Date.now();
     // 🆕 NEW: Robust boost state management object
@@ -247,6 +290,7 @@
             evaluateBoost,
             SEEK_BOOST_EXTENSION,
           );
+          if (timers) timers.boostTimeout = video.__boostTimeout;
           return;
         } else {
           // Can't extend further - set reason
@@ -276,12 +320,14 @@
       if (video.__boostTimeout) {
         clearTimeout(video.__boostTimeout);
         video.__boostTimeout = null;
+        if (timers) timers.boostTimeout = null;
       }
       logBuffer(video, "after boost");
     }
 
     // Start first evaluation after base duration using named function for clarity
     video.__boostTimeout = setTimeout(evaluateBoost, video.__boostBaseDuration);
+    if (timers) timers.boostTimeout = video.__boostTimeout;
 
     // Pause/resume awareness: flag as paused so boost is suspended; do NOT clear timeout
     video.addEventListener(
@@ -308,11 +354,55 @@
   function detectVideos() {
     const videos = document.querySelectorAll("video");
     videos.forEach((video) => {
-      attachVideoListeners(video);
+      // 🆕 NEW: Only attach if video has a source and is likely to be used
+      if (video.src || video.querySelector("source[src]")) {
+        attachVideoListeners(video);
+      }
     });
   }
 
+  // 🆕 NEW: Watch for source changes on existing videos
+  function watchVideoSourceChanges() {
+    const sourceObserver = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (
+          mutation.type === "attributes" &&
+          mutation.attributeName === "src"
+        ) {
+          const video = mutation.target;
+          if (video.tagName === "VIDEO") {
+            console.log("🔄 Video source changed, reinitializing");
+            cleanupVideo(video);
+            attachVideoListeners(video);
+          }
+        }
+      });
+    });
+
+    // Observe existing videos for src changes
+    document.querySelectorAll("video").forEach((video) => {
+      sourceObserver.observe(video, {
+        attributes: true,
+        attributeFilter: ["src"],
+      });
+    });
+
+    return sourceObserver;
+  }
+
   detectVideos();
+  const sourceObserver = watchVideoSourceChanges();
+
   const observer = new MutationObserver(detectVideos);
   observer.observe(document, { childList: true, subtree: true });
+
+  // 🆕 NEW: Global cleanup on page unload
+  window.addEventListener("beforeunload", () => {
+    console.log("🧹 Global cleanup before page unload");
+    document.querySelectorAll("video").forEach((video) => {
+      cleanupVideo(video);
+    });
+    observer.disconnect();
+    sourceObserver.disconnect();
+  });
 })();

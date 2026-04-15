@@ -9,6 +9,8 @@ class FastMP4Player {
     this.fileSize = null;
     this.inflight = new Map();
     this.byteRateEstimate = 500000; // fallback
+    this.isDestroyed = false; // 🆕 NEW: Prevent operations after cleanup
+    this.cleanupCallbacks = []; // 🆕 NEW: Store cleanup functions
 
     // 🎯 Buffer model
     this.BUFFER_TARGET = 35;
@@ -48,6 +50,52 @@ class FastMP4Player {
     this.video.play().catch(() => {});
   }
 
+  // 🆕 NEW: Clean up all resources
+  destroy() {
+    if (this.isDestroyed) return;
+    this.isDestroyed = true;
+
+    this.log("🧹 Destroying FastMP4Player");
+
+    // Clear controller interval
+    if (this.controller) {
+      clearInterval(this.controller);
+      this.controller = null;
+    }
+
+    // Abort any pending fetches
+    this.inflight.clear();
+
+    // Clean up MediaSource
+    if (this.mediaSource && this.mediaSource.readyState === "open") {
+      try {
+        if (this.sourceBuffer && !this.sourceBuffer.updating) {
+          this.sourceBuffer.abort();
+        }
+        this.mediaSource.endOfStream();
+      } catch (e) {
+        this.log("MediaSource cleanup error:", e);
+      }
+    }
+
+    // Revoke object URL
+    if (this.video.src && this.video.src.startsWith("blob:")) {
+      URL.revokeObjectURL(this.video.src);
+    }
+
+    // Clear MP4Box
+    if (this.mp4box) {
+      try {
+        this.mp4box.stop();
+        this.mp4box = null;
+      } catch (e) {
+        this.log("MP4Box cleanup error:", e);
+      }
+    }
+
+    this.log("✅ FastMP4Player destroyed");
+  }
+
   setupMP4Box() {
     this.mp4box.onReady = (info) => {
       this.log("📦 MP4Box READY", info);
@@ -57,6 +105,8 @@ class FastMP4Player {
 
       // 🆕 NEW: Chain evictions safely after sourcebuffer finishes updating
       this.sourceBuffer.addEventListener("updateend", () => {
+        if (this.isDestroyed) return; // 🆕 Guard against operations after destroy
+
         if (this.seekEvictPending) {
           this.log("🔄 Continuing pending seek eviction");
           this.evictBufferBefore(this.video.currentTime);
@@ -68,6 +118,8 @@ class FastMP4Player {
       });
       const initSegs = this.mp4box.initializeSegmentation();
       initSegs.forEach((seg) => {
+        if (this.isDestroyed) return;
+
         this.log("🎬 Init segment appended", seg.buffer.byteLength);
         this.sourceBuffer.appendBuffer(seg.buffer);
       });
@@ -75,6 +127,8 @@ class FastMP4Player {
     };
 
     this.mp4box.onSegment = (id, user, buffer) => {
+      if (this.isDestroyed) return;
+
       this.log("🎞 Segment", {
         track: id,
         size: this.formatMB(buffer.byteLength),
@@ -94,10 +148,14 @@ class FastMP4Player {
   // 🆕 NEW: Listen for video seek events to trigger buffer eviction
   setupVideoSeekListener() {
     this.video.addEventListener("seeking", () => {
+      if (this.isDestroyed) return;
+
       this.log("⏩ Seeking started, preparing to evict old buffer");
     });
 
     this.video.addEventListener("seeked", () => {
+      if (this.isDestroyed) return;
+
       this.log("✅ Seeked finished, evicting buffer before playhead");
       this.evictBufferBefore(this.video.currentTime);
     });
@@ -105,6 +163,7 @@ class FastMP4Player {
 
   // 🆕 NEW: Remove buffered data before the given time to free memory + improve accuracy
   evictBufferBefore(time) {
+    if (this.isDestroyed) return;
     if (
       !this.sourceBuffer ||
       !this.mediaSource ||
@@ -165,6 +224,7 @@ class FastMP4Player {
   }
 
   getBufferAhead() {
+    if (this.isDestroyed) return 0;
     if (!this.video.buffered.length) return 0;
     // 🆕 Sync with injector.js: handle negative values gracefully
     const ahead = this.video.buffered.end(0) - this.video.currentTime;
@@ -185,11 +245,13 @@ class FastMP4Player {
   startController() {
     if (this.controller) return;
     this.controller = setInterval(() => {
+      if (this.isDestroyed) return;
       this.tick();
     }, 300);
   }
 
   tick() {
+    if (this.isDestroyed) return;
     // 🆕 Skip if we're in the middle of eviction to avoid conflicts
     if (this.seekEvictPending) return;
 
@@ -216,6 +278,7 @@ class FastMP4Player {
   }
 
   scheduleWindow(start, end, pressure) {
+    if (this.isDestroyed) return;
     const chunkSize = 1024 * 1024 * (1 + pressure * 2);
     this.log("🧠 SCHEDULER", {
       start: this.formatMB(start),
@@ -231,6 +294,7 @@ class FastMP4Player {
   }
 
   async fetchRange(start, end) {
+    if (this.isDestroyed) return;
     const key = `${start}-${end}`;
     this.inflight.set(key, true);
     this.log("⬇️ FETCH", {
