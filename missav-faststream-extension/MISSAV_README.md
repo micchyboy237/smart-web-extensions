@@ -1,8 +1,52 @@
-# HLS Sample Network Logs
+# HLS Video Streaming
 
-## Playlist (.m3u8)
+## Summary
 
-### Request URL
+The site you're accessing (surrit.com, linked from missav.ws — an adult video platform) deliberately uses **.jpeg** as the file extension for HLS media segments. This is **not** a standard HLS practice and is **not** because the files are actual still JPEG images.
+
+### Why .jpeg Extension Here?
+This is an **intentional anti-piracy / anti-downloading technique** commonly used by certain adult video hosting services. Here's the reasoning behind it:
+
+- **Breaks standard downloaders and tools**: Most HLS downloaders (ffmpeg, yt-dlp, streamlink, N_m3u8DL-RE, IDM, etc.) expect segments to end in `.ts` (MPEG-TS) or `.m4s` (fragmented MP4). When they see `.jpeg`, many tools either:
+  - Skip the segments,
+  - Fail to probe them correctly,
+  - Or treat them as real images and break.
+
+- **Bypasses CDN / hosting restrictions and caching detection**: Cloudflare (which this site uses heavily) and other CDNs sometimes apply stricter rules, bandwidth throttling, or scanning for video traffic. Serving "video" content disguised with a `.jpeg` extension (and `Content-Type: image/jpeg` header) makes it look like ordinary image files. This improves caching (long `max-age=31536000` you saw) and reduces the chance of the CDN flagging or limiting the traffic as video streaming.
+
+- **Obfuscation**: Combined with dynamic URLs, referrer checks, and domain hopping, it makes automated scraping, bulk downloading, or mirroring the videos much harder for bots and pirates.
+
+In reality, these **video0.jpeg**, **video1.jpeg**, etc. files contain **normal encoded video segments** (usually H.264 video + AAC audio in an MPEG-TS container, or sometimes fMP4). The player (browser video element or HLS.js) ignores the file extension and reads the actual container format from the file header. That's why playback works fine in the browser.
+
+You can prove this yourself: download one `video0.jpeg` file and rename it to `video0.ts` — it will play perfectly in VLC or ffplay.
+
+This trick is widely discussed in communities dealing with adult sites and anti-piracy measures. Similar setups rename segments to other misleading extensions for the same reason.
+
+### Duration of Each Fragment
+From the playlist you shared:
+
+- `#EXT-X-TARGETDURATION:4`
+- Every `#EXTINF:4.004000,` (or very close to 4 seconds)
+
+So each segment ("fragment") is **approximately 4 seconds** long.
+
+This matches modern HLS recommendations (Apple suggests around 4–6 seconds for good balance between latency and efficiency). Shorter segments like 4s allow reasonably fast bitrate switching and seeking, while keeping overhead manageable.
+
+### Quick Summary
+- **.jpeg** = deliberate obfuscation / anti-scraping hack, not real JPEG images.
+- Files are standard HLS video segments (just with a misleading name and MIME type).
+- Duration ≈ **4 seconds** per segment.
+- This setup is common on certain adult video platforms to make downloading the full video more difficult without specialized tools that can handle non-standard extensions.
+
+If you want to download the full video anyway, tools like **N_m3u8DL-RE** (with `--allow-encrypted` or custom headers if needed) or recent versions of **ffmpeg** / **yt-dlp** can often handle it by forcing the correct format. You may need to manually edit the playlist or use options to ignore the extension.
+
+Let me know if you need help constructing a download command.
+
+## Sample Network Logs
+
+### Playlist (.m3u8)
+
+#### Request URL
 
 https://surrit.com/3c56d788-1cad-4b8f-ba64-b38e58443ba4/playlist.m3u8
 Request Method
@@ -101,7 +145,7 @@ Response
 #EXT-X-STREAM-INF:BANDWIDTH=1400000,RESOLUTION=842x480
 842x480/video.m3u8
 
-### Request URL
+#### Request URL
 
 https://surrit.com/3c56d788-1cad-4b8f-ba64-b38e58443ba4/842x480/video.m3u8
 Request Method
@@ -234,9 +278,9 @@ video13.jpeg
 video14.jpeg
 #EXTINF:4.004000,
  
-## Video Segments
+### Video Segments
 
-### Request URL
+#### Request URL
 
 https://surrit.com/3c56d788-1cad-4b8f-ba64-b38e58443ba4/842x480/video0.jpeg
 Request Method
@@ -332,7 +376,7 @@ cross-site
 user-agent
 Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 OPR/129.0.0.0
 
-### Request URL
+#### Request URL
 
 https://surrit.com/3c56d788-1cad-4b8f-ba64-b38e58443ba4/842x480/video1.jpeg
 Request Method
