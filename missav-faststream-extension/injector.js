@@ -177,20 +177,6 @@
       hlsInstance.loadSource(masterPlaylistUrl);
       hlsInstance.attachMedia(video);
 
-      hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-        console.log(
-          `[FastStream] 🎬 Manifest loaded with ${hlsInstance.levels.length} quality levels`,
-        );
-        startController(video);
-        // Start playback immediately with aggressive buffering
-        video.play().catch(() => {});
-
-        // Extra initial boost after manifest
-        setTimeout(() => {
-          if (hlsInstance) controlBuffer(getBufferAhead(video));
-        }, 800);
-      });
-
       // 🔁 Enhanced seeking behavior
       addListener(video, "seeking", () => {
         if (!hlsInstance) return;
