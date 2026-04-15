@@ -149,7 +149,7 @@
     }, 1000);
   }
 
-  // 🆕 Updated: Unified buffer booster with duration extension support and hard caps
+  // 🆕 Updated: Unified buffer booster with duration extension support and robust boost state management
   function boostBufferAfterSeek(video, isSeek = false, options = {}) {
     if (!video) return;
     const { extendDuration = false } = options;
@@ -199,49 +199,58 @@
 
     video.playbackRate = targetRate;
     if (video.__boostTimeout) clearTimeout(video.__boostTimeout);
-    // 🆕 NEW: Initialize boost tracking
-    video.__boostStartTime = Date.now(); // Track when boost started
+    video.__boostStartTime = Date.now();
+    // 🆕 NEW: Robust boost state management object
+    video.__boostState = {
+      active: true,
+      extensionCount: 0,
+      paused: false,
+    };
     video.__boostExtensionCount = 0;
-    video.__boostBaseDuration = duration; // Store original duration for calculations
+    video.__boostBaseDuration = duration;
 
-    // 🆕 NEW: Single recursive handler with clear termination logic
-    function checkBoostEnd() {
-      // 🆕 NEW: Only restore rate if buffer is now healthy
+    // 🆕 NEW: Centralized boost evaluation called only by this timer
+    function evaluateBoost() {
+      // Only run if boost is still active and not paused
+      if (!video.__boostState?.active || video.paused) {
+        return;
+      }
+
       const currentAhead = getBufferAhead(video);
       const elapsed = Date.now() - video.__boostStartTime;
 
-      // Determine termination reason for logging
       let endReason = null;
       if (currentAhead >= BUFFER_LOW * 1.5) {
         endReason = "buffer healthy";
-      } else if (video.__boostExtensionCount >= MAX_BOOST_EXTENSIONS) {
+      } else if (video.__boostState.extensionCount >= MAX_BOOST_EXTENSIONS) {
         endReason = `max extensions reached (${MAX_BOOST_EXTENSIONS}/${MAX_BOOST_EXTENSIONS})`;
       } else if (elapsed > MAX_TOTAL_BOOST_MS) {
         endReason = `max total time reached (${MAX_TOTAL_BOOST_MS / 1000}s)`;
       } else if (
         elapsed >
         video.__boostBaseDuration +
-          video.__boostExtensionCount * SEEK_BOOST_EXTENSION
+          video.__boostState.extensionCount * SEEK_BOOST_EXTENSION
       ) {
-        // Time for this "stage" has elapsed
+        // Stage elapsed, consider extension
         if (
-          video.__boostExtensionCount < MAX_BOOST_EXTENSIONS &&
+          video.__boostState.extensionCount < MAX_BOOST_EXTENSIONS &&
           elapsed <= MAX_TOTAL_BOOST_MS
         ) {
-          // Can extend further
-          video.__boostExtensionCount++;
+          // Extend further
+          const newCount = ++video.__boostState.extensionCount;
           console.log(
-            `⏳ Buffer still low (${currentAhead.toFixed(2)}s), extending boost (${video.__boostExtensionCount}/${MAX_BOOST_EXTENSIONS})...`,
+            `⏳ Buffer still low (${currentAhead.toFixed(2)}s), extending boost (${newCount}/${MAX_BOOST_EXTENSIONS})...`,
           );
-          // Schedule next check in SEEK_BOOST_EXTENSION ms
+          // Clear any pending timeout before new one
+          if (video.__boostTimeout) clearTimeout(video.__boostTimeout);
           video.__boostTimeout = setTimeout(
-            checkBoostEnd,
+            evaluateBoost,
             SEEK_BOOST_EXTENSION,
           );
           return;
         } else {
-          // Can't extend further - determine final reason
-          if (video.__boostExtensionCount >= MAX_BOOST_EXTENSIONS) {
+          // Can't extend further - set reason
+          if (video.__boostState.extensionCount >= MAX_BOOST_EXTENSIONS) {
             endReason = `max extensions reached (${MAX_BOOST_EXTENSIONS}/${MAX_BOOST_EXTENSIONS})`;
           } else {
             endReason = `max total time reached (${MAX_TOTAL_BOOST_MS / 1000}s)`;
@@ -250,21 +259,50 @@
       }
 
       // If we reach here, boost is ending
-      if (currentAhead >= BUFFER_LOW * 1.5 || endReason !== null) {
+      const shouldEnd = currentAhead >= BUFFER_LOW * 1.5 || endReason !== null;
+      if (shouldEnd) {
         if (video.playbackRate === targetRate) {
           video.playbackRate = originalRate;
           const reason = endReason ? ` (${endReason})` : " (unknown reason)";
           console.log(
-            `✅ Boost ended: buffer ${currentAhead >= BUFFER_LOW * 1.5 ? "healthy" : "still low"} ` +
-              `(${currentAhead.toFixed(2)}s)${reason}`,
+            `✅ Boost ended: buffer ${currentAhead >= BUFFER_LOW * 1.5 ? "healthy" : "still low"} (${currentAhead.toFixed(2)}s)${reason}`,
           );
         }
+        // Mark boost as complete
+        video.__boostState.active = false;
+      }
+
+      // Always clean up timeout reference
+      if (video.__boostTimeout) {
+        clearTimeout(video.__boostTimeout);
+        video.__boostTimeout = null;
       }
       logBuffer(video, "after boost");
     }
 
-    // Start the first check after base duration
-    video.__boostTimeout = setTimeout(checkBoostEnd, video.__boostBaseDuration);
+    // Start first evaluation after base duration using named function for clarity
+    video.__boostTimeout = setTimeout(evaluateBoost, video.__boostBaseDuration);
+
+    // Pause/resume awareness: flag as paused so boost is suspended; do NOT clear timeout
+    video.addEventListener(
+      "pause",
+      () => {
+        if (video.__boostState?.active) {
+          video.__boostState.paused = true;
+        }
+      },
+      { once: false },
+    );
+
+    video.addEventListener(
+      "play",
+      () => {
+        if (video.__boostState?.active) {
+          video.__boostState.paused = false;
+        }
+      },
+      { once: false },
+    );
   }
 
   function detectVideos() {
