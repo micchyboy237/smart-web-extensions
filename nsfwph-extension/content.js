@@ -5,6 +5,13 @@ let videos = new Map(); // video element → entry
 let videoCards = new Map(); // video element → card DOM element
 let currentlyPlaying = null; // Global: only one video plays at a time
 let videoCounter = 0;
+
+let panel = null;
+let isPanelVisible = true;
+let globalResources = {
+  observers: [],
+  intervals: [],
+};
 const MAX_GALLERY_ITEMS = 6;
 const SELECTOR = ".message-inner video";
 
@@ -29,9 +36,6 @@ function enforceSinglePlayback(videoToPlay) {
   };
   videoToPlay.addEventListener("ended", onEnded, { once: true });
 }
-
-let panel = null;
-let isPanelVisible = true;
 
 function log(message, data = null) {
   const ts = new Date().toLocaleTimeString();
@@ -117,7 +121,7 @@ function setupLightChunkPreview(previewVideo, entryId) {
   // Use ref objects so inner functions can mutate safely
   const chunkTimeoutRef = { current: null };
   const currentChunkIndexRef = { current: 0 };
-  const isStoppedRef = { current: false }; // NEW: prevents recursion after cleanup
+  const isStoppedRef = { current: false }; // Prevents recursion after cleanup
 
   const getChunkStarts = () => {
     const duration = previewVideo.duration || 0;
@@ -136,56 +140,68 @@ function setupLightChunkPreview(previewVideo, entryId) {
     return chunkStarts;
   };
 
-  // NEW: clean stop function (called by cleanup or mouseleave)
-  const stopPreviewLoop = () => {
+  // Clean stop function (called by cleanup or mouseleave)
+  function stopPreviewLoop() {
     isStoppedRef.current = true;
     if (chunkTimeoutRef.current) {
       clearTimeout(chunkTimeoutRef.current);
       chunkTimeoutRef.current = null;
     }
     previewVideo.pause();
-    if (currentlyPlaying === previewVideo) currentlyPlaying = null;
-  };
+    if (
+      typeof currentlyPlaying !== "undefined" &&
+      currentlyPlaying === previewVideo
+    ) {
+      currentlyPlaying = null;
+    }
+  }
 
-  const playPreviewChunk = () => {
+  function playPreviewChunk() {
     if (isStoppedRef.current) return;
     const chunkStarts = getChunkStarts();
     if (!chunkStarts) return;
+
     const startTime = chunkStarts[currentChunkIndexRef.current];
     previewVideo.currentTime = startTime;
+
+    // CRITICAL: Do NOT call enforceSinglePlayback for previews!
+    // Previews should not pause the main video the user clicked.
     previewVideo
       .play()
       .then(() => {
         if (isStoppedRef.current) return;
-        chunkTimeoutRef.current = setTimeout(() => {
+
+        const t = setTimeout(() => {
           previewVideo.pause();
           currentChunkIndexRef.current =
             (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
-          setTimeout(() => playPreviewChunk(), 30);
+          const t2 = setTimeout(() => playPreviewChunk(), 30);
+          chunkTimeoutRef.current = t2;
         }, CHUNK_PLAY_DURATION_MS);
+
+        chunkTimeoutRef.current = t;
       })
       .catch((err) => {
         log(`Chunk preview play failed for ${entryId}`, err.message);
         if (isStoppedRef.current) return;
         currentChunkIndexRef.current =
           (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
-        chunkTimeoutRef.current = setTimeout(() => playPreviewChunk(), 150);
+        const t = setTimeout(() => playPreviewChunk(), 150);
+        chunkTimeoutRef.current = t;
       });
-  };
-
-  const playNextChunk = playPreviewChunk;
+  }
 
   // Only start loop when video can determine duration
-  const tryStartLoop = () => {
+  function tryStartLoop() {
     if (
       previewVideo.duration &&
       !isNaN(previewVideo.duration) &&
       previewVideo.duration > 1
     ) {
       log(`Light chunk preview loop started for ${entryId}`);
-      playNextChunk();
+      playPreviewChunk();
     }
-  };
+  }
 
   if (previewVideo.readyState >= 1) {
     tryStartLoop();
@@ -197,9 +213,13 @@ function setupLightChunkPreview(previewVideo, entryId) {
   }
 
   // Stop chunk loop when mouse leaves (saves RAM + prevents multiple playing)
-  previewVideo.addEventListener("mouseleave", stopPreviewLoop, { once: false });
+  const onMouseLeave = stopPreviewLoop;
+  previewVideo.addEventListener("mouseleave", onMouseLeave);
 
-  return stopPreviewLoop; // NEW: caller can stop the loop later
+  return () => {
+    stopPreviewLoop();
+    previewVideo.removeEventListener("mouseleave", onMouseLeave);
+  };
 }
 
 function createSinglePreview(originalVideo, entryId) {
@@ -421,7 +441,11 @@ function trackVideo(video) {
   if (video.readyState >= 2) {
     startPreview();
   } else {
-    video.addEventListener("loadedmetadata", startPreview, { once: true });
+    const handler = () => startPreview();
+    video.addEventListener("loadedmetadata", handler, { once: true });
+    entry.cleanups.push(() =>
+      video.removeEventListener("loadedmetadata", handler),
+    );
   }
 
   // Helper so we can remove listeners later (fixes reference cycles)
@@ -622,12 +646,16 @@ function init() {
   observeVideos();
 
   let debounceTimer = null;
-  new MutationObserver(() => {
+  const observer = new MutationObserver(() => {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(observeVideos, 600);
-  }).observe(document.body, { childList: true, subtree: true });
+  });
 
-  setInterval(observeVideos, 10000);
+  observer.observe(document.body, { childList: true, subtree: true });
+  globalResources.observers.push(observer);
+
+  const interval = setInterval(observeVideos, 10000);
+  globalResources.intervals.push(interval);
 }
 
 waitForBody(init);
