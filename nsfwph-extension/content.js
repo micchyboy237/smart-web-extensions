@@ -1,4 +1,5 @@
 // content.js - Stable DOM + SINGLE PLAYBACK + LIGHTWEIGHT CHUNK PREVIEWS + RAM optimized
+// MEMORY LEAK FIXED: chunk preview timeouts now stop on cleanup + event listeners are removed
 
 let videos = new Map(); // video element → entry
 let videoCards = new Map(); // video element → card DOM element
@@ -111,11 +112,12 @@ function playPreviewChunk(
     });
 }
 
-// Lightweight automatic chunk preview (looping short clips) - respects single playback
+// Lightweight automatic chunk preview (looping short clips) - NOW STOPPABLE
 function setupLightChunkPreview(previewVideo, entryId) {
-  // Use ref objects so inner functions can mutate safely, to avoid bugs with closures/timeouts
+  // Use ref objects so inner functions can mutate safely
   const chunkTimeoutRef = { current: null };
   const currentChunkIndexRef = { current: 0 };
+  const isStoppedRef = { current: false }; // NEW: prevents recursion after cleanup
 
   const getChunkStarts = () => {
     const duration = previewVideo.duration || 0;
@@ -134,16 +136,44 @@ function setupLightChunkPreview(previewVideo, entryId) {
     return chunkStarts;
   };
 
-  // Use the new playPreviewChunk that does NOT pause the user's main video
-  const playNextChunk = () => {
-    playPreviewChunk(
-      previewVideo,
-      chunkTimeoutRef,
-      currentChunkIndexRef,
-      entryId,
-      getChunkStarts,
-    );
+  // NEW: clean stop function (called by cleanup or mouseleave)
+  const stopPreviewLoop = () => {
+    isStoppedRef.current = true;
+    if (chunkTimeoutRef.current) {
+      clearTimeout(chunkTimeoutRef.current);
+      chunkTimeoutRef.current = null;
+    }
+    previewVideo.pause();
+    if (currentlyPlaying === previewVideo) currentlyPlaying = null;
   };
+
+  const playPreviewChunk = () => {
+    if (isStoppedRef.current) return;
+    const chunkStarts = getChunkStarts();
+    if (!chunkStarts) return;
+    const startTime = chunkStarts[currentChunkIndexRef.current];
+    previewVideo.currentTime = startTime;
+    previewVideo
+      .play()
+      .then(() => {
+        if (isStoppedRef.current) return;
+        chunkTimeoutRef.current = setTimeout(() => {
+          previewVideo.pause();
+          currentChunkIndexRef.current =
+            (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
+          setTimeout(() => playPreviewChunk(), 30);
+        }, CHUNK_PLAY_DURATION_MS);
+      })
+      .catch((err) => {
+        log(`Chunk preview play failed for ${entryId}`, err.message);
+        if (isStoppedRef.current) return;
+        currentChunkIndexRef.current =
+          (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
+        chunkTimeoutRef.current = setTimeout(() => playPreviewChunk(), 150);
+      });
+  };
+
+  const playNextChunk = playPreviewChunk;
 
   // Only start loop when video can determine duration
   const tryStartLoop = () => {
@@ -167,15 +197,9 @@ function setupLightChunkPreview(previewVideo, entryId) {
   }
 
   // Stop chunk loop when mouse leaves (saves RAM + prevents multiple playing)
-  previewVideo.addEventListener(
-    "mouseleave",
-    () => {
-      if (chunkTimeoutRef.current) clearTimeout(chunkTimeoutRef.current);
-      previewVideo.pause();
-      if (currentlyPlaying === previewVideo) currentlyPlaying = null;
-    },
-    { once: false },
-  );
+  previewVideo.addEventListener("mouseleave", stopPreviewLoop, { once: false });
+
+  return stopPreviewLoop; // NEW: caller can stop the loop later
 }
 
 function createSinglePreview(originalVideo, entryId) {
@@ -231,13 +255,13 @@ function createSinglePreview(originalVideo, entryId) {
   );
 
   // Attach lightweight chunk preview (this brings back the moving clips)
-  setupLightChunkPreview(preview, entryId);
+  const stopPreviewLoop = setupLightChunkPreview(preview, entryId);
+  preview.stopPreviewLoop = stopPreviewLoop; // NEW: so cleanup can stop the loop
 
   return preview;
 }
 
 function createVideoCard(entry) {
-  // ... (unchanged - same as your last version) ...
   log(`Creating stable card DOM for ${entry.id}`);
   const card = document.createElement("div");
   card.className = "video-card";
@@ -337,12 +361,25 @@ function cleanupVideoEntry(entry) {
   if (!entry) return;
   log(`Cleaning up video entry for RAM optimization: ${entry.id}`);
 
+  // CRITICAL FIX: stop the recursive chunk preview timeouts FIRST
+  // This breaks the memory leak - no more dangling setTimeout calls
   if (entry.preview) {
+    if (typeof entry.preview.stopPreviewLoop === "function") {
+      entry.preview.stopPreviewLoop();
+      delete entry.preview.stopPreviewLoop;
+    }
+
     entry.preview.pause();
     if (currentlyPlaying === entry.preview) currentlyPlaying = null;
     entry.preview.src = "";
     entry.preview.load();
     entry.preview = null;
+  }
+
+  // NEW: remove all event listeners so nothing keeps old videos in memory
+  if (entry.cleanups && entry.cleanups.length > 0) {
+    entry.cleanups.forEach((cleanupFn) => cleanupFn());
+    entry.cleanups = null;
   }
 
   if (entry.element && entry.element === currentlyPlaying) {
@@ -355,12 +392,14 @@ function trackVideo(video) {
   const id = `video-${++videoCounter}`;
   video.dataset.videoObserverId = id;
 
+  // added cleanups array for proper removal
   const entry = {
     id,
     element: video,
     info: getVideoInfo(video),
     preview: null,
     framesPopulated: false,
+    cleanups: [],
   };
   videos.set(video, entry);
 
@@ -385,8 +424,15 @@ function trackVideo(video) {
     video.addEventListener("loadedmetadata", startPreview, { once: true });
   }
 
+  // Helper so we can remove listeners later (fixes reference cycles)
+  const addTrackedListener = (el, eventName, handlerFn, options = {}) => {
+    el.addEventListener(eventName, handlerFn, options);
+    entry.cleanups.push(() =>
+      el.removeEventListener(eventName, handlerFn, options),
+    );
+  };
+
   const events = [
-    // Loading / Network
     "loadstart",
     "progress",
     "suspend",
@@ -394,74 +440,48 @@ function trackVideo(video) {
     "error",
     "emptied",
     "stalled",
-
-    // Metadata / Data readiness
     "loadedmetadata",
     "loadeddata",
     "canplay",
     "canplaythrough",
     "durationchange",
-
-    // Playback state
     "play",
     "playing",
     "pause",
     "ended",
     "waiting",
-
-    // Time / Seeking
     "timeupdate",
     "seeking",
     "seeked",
-
-    // Playback rate / volume
     "ratechange",
     "volumechange",
-
-    // Misc
     "resize",
   ];
+
   events.forEach((ev) => {
-    video.addEventListener(
-      ev,
-      () => {
-        const info = getVideoInfo(video);
-        entry.info = info;
-        log(`Video event: ${ev}`, {
-          id,
-          time: info.currentTime.toFixed(1),
-          paused: info.paused,
-        });
-        // performPanelUpdate();
-      },
-      { passive: true },
-    );
+    const handler = () => {
+      const info = getVideoInfo(video);
+      entry.info = info;
+      log(`Video event: ${ev}`, {
+        id,
+        time: info.currentTime.toFixed(1),
+        paused: info.paused,
+      });
+      // performPanelUpdate();
+    };
+    addTrackedListener(video, ev, handler, { passive: true });
   });
 
   // ─────────────────────────────────────────────────────────────
   // BEAUTIFUL SIZE BOOST FOR THE MAIN VIDEO
-  // When the video plays → add special class (makes it bigger + glow)
-  // When it stops     → remove class (smoothly returns to normal size)
   // ─────────────────────────────────────────────────────────────
-  video.addEventListener(
-    "play",
-    () => {
-      video.classList.add("video-observer-playing");
-    },
-    { passive: true },
-  );
+  const addPlayingClass = () => video.classList.add("video-observer-playing");
+  const removePlayingClass = () =>
+    video.classList.remove("video-observer-playing");
 
-  video.addEventListener(
-    "pause",
-    () => video.classList.remove("video-observer-playing"),
-    { passive: true },
-  );
-
-  video.addEventListener(
-    "ended",
-    () => video.classList.remove("video-observer-playing"),
-    { passive: true },
-  );
+  addTrackedListener(video, "play", addPlayingClass, { passive: true });
+  addTrackedListener(video, "pause", removePlayingClass, { passive: true });
+  addTrackedListener(video, "ended", removePlayingClass, { passive: true });
 
   // If a video was already playing when we first detected it
   if (!video.paused) {
