@@ -15,7 +15,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["hls.js", "hls.worker.js", "injector.js"],
+      "resources": ["hls.mjs", "hls.worker.js", "injector.js"],
       "matches": ["*://*.missav.ws/*", "*://*.surrit.com/*"]
     }
   ]
