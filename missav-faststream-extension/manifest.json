@@ -29,5 +29,8 @@
       "resources": ["hls.mjs", "hls.worker.js", "injector.js"],
       "matches": ["*://*.missav.ws/*", "*://*.surrit.com/*"]
     }
-  ]
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
 }
