@@ -34,22 +34,22 @@ function extractJavInfo(url, text) {
   // Pattern: word characters (letters, maybe numbers) followed by hyphen and digits
   // Handles prefixes with multiple letters: mxgs, nsps, bnsps, etc.
   const videoIdPattern = /\b([a-z]{2,})-(\d+)\b/i;
-  
+
   // Try to extract from URL first (most reliable)
   let match = url.match(videoIdPattern);
-  
+
   // If URL doesn't match, try the text (fallback)
   if (!match && text) {
     match = text.match(videoIdPattern);
   }
-  
+
   if (match) {
     const videoId = match[0].toLowerCase();
     const code = match[1].toLowerCase();
     const episode = match[2];
     return { videoId, code, episode };
   }
-  
+
   // No match found
   return { videoId: null, code: null, episode: null };
 }
@@ -150,13 +150,45 @@ function onDataChange(newData) {
   // console.table(newData);
   console.log(newData);
 
-  // Persist to IndexedDB with deterministic ID based on URL
-  newData.forEach((item) => {
-    const itemWithId = {
-      ...item,
-      id: generateIdFromUrl(item.url), // ← this makes it unique & stable
-    };
-  });
+  // Emit data to page context (panel.js)
+  try {
+    window.dispatchEvent(
+      new CustomEvent("MISSAV_DATA_UPDATE", {
+        detail: newData,
+      }),
+    );
+  } catch (err) {
+    console.error("[Search] Failed to dispatch data event:", err);
+  }
+}
+
+// ====================== PANEL INJECTION ======================
+function injectPanel() {
+  if (document.getElementById("missav-faststream-panel")) return;
+
+  function doInject() {
+    try {
+      if (document.getElementById("missav-faststream-panel")) return;
+
+      const script = document.createElement("script");
+      script.src = chrome.runtime.getURL("panel.js");
+      script.onload = () => {
+        console.log("[Search] Panel script injected");
+        script.remove();
+      };
+
+      (document.head || document.documentElement).appendChild(script);
+    } catch (err) {
+      console.error("[Search] Failed to inject panel:", err);
+    }
+  }
+
+  // Ensure DOM is ready
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", doInject);
+  } else {
+    doInject();
+  }
 }
 
 // ====================== OBSERVER ======================
@@ -182,10 +214,15 @@ function startObserving() {
 // ====================== STORAGE ======================
 async function init() {
   startObserving();
+  // Store data globally for panel access
+  window.__MISSAV_DATA__ = currentData;
+  // Inject the floating panel
+  injectPanel();
 }
 
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.config) {
+    window.__MISSAV_DATA__ = currentData;
     startObserving();
   }
 });
@@ -194,6 +231,7 @@ chrome.storage.onChanged.addListener((changes) => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getData") {
     sendResponse({ data: currentData });
+    window.__MISSAV_DATA__ = currentData;
     return true;
   }
 });
