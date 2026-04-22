@@ -1,0 +1,59 @@
+/* ====================== CLUSTER VIEW ====================== */
+
+#missav-faststream-panel .action-btn.cluster-btn.active {
+  background: #534ab7;
+  border-color: #7f77dd;
+}
+#missav-faststream-panel .action-btn.cluster-btn.active:hover {
+  background: #7f77dd;
+}
+
+#missav-faststream-panel .cluster-section {
+  margin-bottom: 8px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #0f3460;
+}
+#missav-faststream-panel .cluster-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #16213e;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+#missav-faststream-panel .cluster-header:hover {
+  background: #1a1a5e;
+}
+#missav-faststream-panel .cluster-label {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: #afa9ec;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+#missav-faststream-panel .cluster-badge {
+  background: #0f3460;
+  color: #aaa;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  min-width: 24px;
+  text-align: center;
+}
+#missav-faststream-panel .cluster-chevron {
+  font-size: 10px;
+  color: #666;
+  width: 12px;
+  text-align: center;
+}
+#missav-faststream-panel .cluster-body {
+  padding: 8px;
+  background: #1a1a2e;
+}
+#missav-faststream-panel .cluster-body .result-card:last-child {
+  margin-bottom: 0;
+}

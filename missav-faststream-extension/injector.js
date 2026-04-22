@@ -187,7 +187,7 @@
         // Force prefetch from new seek position
         hlsInstance.startLoad(video.currentTime);
         console.log(
-          "[FastStream] 🔄 Seeking → aggressive buffer refill triggered",
+          "[MISSAV INJECTOR] 🔄 Seeking → aggressive buffer refill triggered",
         );
       });
 
@@ -205,7 +205,7 @@
           const bufferAhead = getBufferAhead(video);
           controlBuffer(bufferAhead);
           console.log(
-            `[FastStream] ▶️ Playing resumed - buffer: ${bufferAhead.toFixed(1)}s`,
+            `[MISSAV INJECTOR] ▶️ Playing resumed - buffer: ${bufferAhead.toFixed(1)}s`,
           );
         }
       });
@@ -236,7 +236,7 @@
             lastJpegUrl = url;
             lastJpegTime = now;
 
-            console.log("[FastStream] 📸 JPEG fragment detected →", url);
+            console.log("[MISSAV INJECTOR] 📸 JPEG fragment detected →", url);
 
             // 🆕 Activate temporary pressure boost
             jpegBoostUntil = now + JPEG_BOOST_DURATION;
@@ -269,7 +269,10 @@
           lastJpegUrl = url;
           lastJpegTime = now;
 
-          console.log("[FastStream] 📸 JPEG fragment detected (perf) →", url);
+          console.log(
+            "[MISSAV INJECTOR] 📸 JPEG fragment detected (perf) →",
+            url,
+          );
 
           jpegBoostUntil = now + JPEG_BOOST_DURATION;
         }
@@ -280,9 +283,9 @@
         buffered: true,
       });
 
-      console.log("[FastStream] 👁️ PerformanceObserver active");
+      console.log("[MISSAV INJECTOR] 👁️ PerformanceObserver active");
     } catch (e) {
-      console.warn("[FastStream] PerformanceObserver failed:", e);
+      console.warn("[MISSAV INJECTOR] PerformanceObserver failed:", e);
     }
   }
 

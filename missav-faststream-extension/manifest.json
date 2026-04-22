@@ -7,9 +7,9 @@
   "host_permissions": ["*://*.missav.ws/*", "*://*.surrit.com/*"],
   "content_scripts": [
     {
-      "matches": ["*://*.missav.ws/*"],
-      "css": ["panel.css"],
-      "js": ["search.js"],
+      "matches": ["*://*.missav.ws/search*", "*://*.missav.ws/*/search*"],
+      "js": ["search.js", "panel.js", "cluster.js"],
+      "css": ["panel.css", "cluster.css"],
       "run_at": "document_start",
       "all_frames": true
     },
@@ -20,14 +20,13 @@
         "*://*.missav.ws/*/search*"
       ],
       "js": ["content.js"],
-      "css": ["panel.css"],
       "run_at": "document_start",
       "all_frames": true
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["hls.mjs", "hls.worker.js", "injector.js", "panel.js"],
+      "resources": ["hls.mjs", "hls.worker.js", "injector.js"],
       "matches": ["*://*.missav.ws/*", "*://*.surrit.com/*"]
     }
   ]

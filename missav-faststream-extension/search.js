@@ -146,9 +146,12 @@ function dataEquals(a, b) {
 }
 
 function onDataChange(newData) {
-  console.log("🔄 Data CHANGED →", newData.length, "items");
+  console.log("[MISSAV SEARCH] 🔄 Data CHANGED →", newData.length, "items");
   // console.table(newData);
   console.log(newData);
+
+  // Keep the global in sync so panel.js watchDataChanges() and togglePanel() see fresh data.
+  window.__MISSAV_DATA__ = newData;
 
   // Emit data to page context (panel.js)
   try {
@@ -158,7 +161,7 @@ function onDataChange(newData) {
       }),
     );
   } catch (err) {
-    console.error("[Search] Failed to dispatch data event:", err);
+    console.error("[MISSAV SEARCH] Failed to dispatch data event:", err);
   }
 }
 
@@ -170,16 +173,43 @@ function injectPanel() {
     try {
       if (document.getElementById("missav-faststream-panel")) return;
 
+      // Resolve ALL extension resource URLs here in the content-script world,
+      // because chrome.runtime is NOT available in the injected page-context scripts.
+      // We stash them on window so panel.js can read them without calling chrome.runtime.
+      window.__MISSAV_EXT_URLS__ = {
+        panel: chrome.runtime.getURL("panel.js"),
+        clusterJs: chrome.runtime.getURL("cluster.js"),
+        clusterCss: chrome.runtime.getURL("cluster.css"),
+      };
+      if (window.__MISSAV_EXT_URLS__.panel) {
+        console.log(
+          "[MISSAV SEARCH] panel.js URL resolved:",
+          window.__MISSAV_EXT_URLS__.panel,
+        );
+      }
+      if (window.__MISSAV_EXT_URLS__.clusterJs) {
+        console.log(
+          "[MISSAV SEARCH] cluster.js URL resolved:",
+          window.__MISSAV_EXT_URLS__.clusterJs,
+        );
+      }
+      if (window.__MISSAV_EXT_URLS__.clusterCss) {
+        console.log(
+          "[MISSAV SEARCH] cluster.css URL resolved:",
+          window.__MISSAV_EXT_URLS__.clusterCss,
+        );
+      }
+
       const script = document.createElement("script");
-      script.src = chrome.runtime.getURL("panel.js");
+      script.src = window.__MISSAV_EXT_URLS__.panel;
       script.onload = () => {
-        console.log("[Search] Panel script injected");
+        console.log("[MISSAV SEARCH] Panel script injected");
         script.remove();
       };
 
       (document.head || document.documentElement).appendChild(script);
     } catch (err) {
-      console.error("[Search] Failed to inject panel:", err);
+      console.error("[MISSAV SEARCH] Failed to inject panel:", err);
     }
   }
 
@@ -220,21 +250,21 @@ async function init() {
   injectPanel();
 }
 
-chrome.storage.onChanged.addListener((changes) => {
-  if (changes.config) {
-    window.__MISSAV_DATA__ = currentData;
-    startObserving();
-  }
-});
+// chrome.storage.onChanged.addListener((changes) => {
+//   if (changes.config) {
+//     window.__MISSAV_DATA__ = currentData;
+//     startObserving();
+//   }
+// });
 
-// ====================== POPUP COMMUNICATION ======================
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "getData") {
-    sendResponse({ data: currentData });
-    window.__MISSAV_DATA__ = currentData;
-    return true;
-  }
-});
+// // ====================== POPUP COMMUNICATION ======================
+// chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+//   if (request.action === "getData") {
+//     sendResponse({ data: currentData });
+//     window.__MISSAV_DATA__ = currentData;
+//     return true;
+//   }
+// });
 
 // Start
 init();

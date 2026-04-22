@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const LOG_PREFIX = "[PANEL]";
+  const LOG_PREFIX = "[MISSAV PANEL]";
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -40,6 +40,16 @@
     }
 
     try {
+      // Read the pre-resolved URL that search.js (content-script world) stashed for us.
+      // panel.js runs in PAGE context where chrome.runtime does not exist.
+      const clusterCss = (window.__MISSAV_EXT_URLS__ || {}).clusterCss;
+      if (clusterCss) {
+        const clusterLink = document.createElement("link");
+        clusterLink.rel = "stylesheet";
+        clusterLink.href = clusterCss;
+        (document.head || document.documentElement).appendChild(clusterLink);
+      }
+
       // Create toggle button
       toggleBtn = document.createElement("button");
       toggleBtn.id = "missav-faststream-toggle";
@@ -69,6 +79,7 @@
             <div class="action-bar">
               <button class="action-btn" id="clear-filters-btn">🗑️ Clear</button>
               <button class="action-btn randomize" id="randomize-btn">🎲 Randomize</button>
+              <button class="action-btn cluster-btn" id="cluster-btn">🗂️ Clusters</button>
             </div>
           </div>
           <div class="results-count" id="results-count">0 results</div>
@@ -161,6 +172,20 @@
       document.getElementById("randomize-btn").addEventListener("click", () => {
         log("Randomize button clicked.");
         randomizeResults();
+      });
+
+      // Cluster mode toggle — panel owns the button event,
+      // cluster.js owns what gets rendered.
+      document.getElementById("cluster-btn").addEventListener("click", () => {
+        if (!window.__toggleClusterMode) {
+          logErr("Cluster module not ready yet.");
+          return;
+        }
+        const isCluster = window.__toggleClusterMode();
+        const btn = document.getElementById("cluster-btn");
+        btn.classList.toggle("active", isCluster);
+        btn.textContent = isCluster ? "📋 List" : "🗂️ Clusters";
+        log("Cluster mode toggled:", isCluster);
       });
     } catch (err) {
       logErr("Error in bindEvents:", err);
@@ -302,6 +327,12 @@
           "resultsCount:",
           !!resultsCount,
         );
+        return;
+      }
+
+      // If cluster module is active, hand off rendering to it
+      if (window.__isClusterMode && window.__isClusterMode()) {
+        window.__renderClusters && window.__renderClusters();
         return;
       }
 
@@ -540,6 +571,42 @@
       }
       log("Initializing MissAV FastStream panel ...");
       createPanel();
+      // Read the pre-resolved URL stashed by search.js in content-script world.
+      const clusterJs = (window.__MISSAV_EXT_URLS__ || {}).clusterJs;
+      // Inject cluster.js after the panel DOM exists so it can
+      // find its elements immediately on load.
+      if (clusterJs) {
+        log("initCluster:", typeof initCluster);
+        log("window.__initCluster:", typeof window.__initCluster);
+        log("window.__toggleClusterMode:", typeof window.__toggleClusterMode);
+      } else {
+        logErr(
+          "clusterJs is missing — cluster button will not work. " +
+            "Check that search.js bridgeScript ran correctly.",
+        );
+      }
+
+      if (typeof window.__initCluster === "function") {
+        // Pass live references so cluster.js always sees current data
+        const currentDataRef = {
+          get value() {
+            return currentData;
+          },
+        };
+
+        window.__initCluster({
+          resultsList,
+          resultsCount,
+          currentDataRef,
+          filtersRef: filters,
+          createCardHTML,
+          attachCardEvents,
+          renderList: renderResults,
+        });
+
+        log("Cluster initialized successfully.");
+      }
+
       watchDataChanges();
     } catch (err) {
       logErr("Error in init:", err);

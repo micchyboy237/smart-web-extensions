@@ -1,9 +1,9 @@
-// content.js - MissAV FastStream Extension (main-world injection fix)
+// content.js
 (() => {
   const isTopFrame = window === window.top;
 
   console.log(
-    `✅ [MissAV FastStream] 📍 Content script started in ${isTopFrame ? "TOP FRAME" : "IFRAME"}`,
+    `✅ [MISSAV CONTENT] 📍 Content script started in ${isTopFrame ? "TOP FRAME" : "IFRAME"}`,
   );
 
   // 1. Inject the real main-world detector
@@ -14,7 +14,7 @@
     script.src = chrome.runtime.getURL("injector.js");
     script.onload = () => {
       console.log(
-        "✅ [MissAV FastStream] 📥 Main-world injector script successfully injected",
+        "✅ [MISSAV CONTENT] 📥 Main-world injector script successfully injected",
       );
 
       // Send worker URL immediately (only content script can call chrome.runtime.getURL)
@@ -26,7 +26,7 @@
         "*",
       );
       console.log(
-        "✅ [MissAV FastStream] 📤 Sent worker URL config to main world",
+        "✅ [MISSAV CONTENT] 📤 Sent worker URL config to main world",
       );
     };
     (document.head || document.documentElement).appendChild(script);
@@ -39,13 +39,13 @@
         const { url, isMasterPlaylist } = event.data;
 
         console.log(
-          `✅ [MissAV FastStream] 📨 Received HLS detection from main world: ${isMasterPlaylist ? "MASTER" : "MEDIA"} →`,
+          `✅ [MISSAV CONTENT] 📨 Received HLS detection from main world: ${isMasterPlaylist ? "MASTER" : "MEDIA"} →`,
           url,
         );
 
         if (isMasterPlaylist) {
           console.log(
-            "🔄 [MissAV FastStream] 📤 Sending START_PLAYER command to main world",
+            "🔄 [MISSAV CONTENT] 📤 Sending START_PLAYER command to main world",
           );
           window.postMessage(
             {
@@ -63,7 +63,7 @@
     injectMainWorldDetector();
     listenForDetection();
     console.log(
-      "🚀 [MissAV FastStream] ✅ Extension initialized — main-world detection + player ready",
+      "🚀 [MISSAV CONTENT] ✅ Extension initialized — main-world detection + player ready",
     );
   }
 
