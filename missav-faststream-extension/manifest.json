@@ -7,7 +7,14 @@
   "host_permissions": ["*://*.missav.ws/*", "*://*.surrit.com/*"],
   "content_scripts": [
     {
+      "matches": ["*://*.missav.ws/search*", "*://*.missav.ws/*/search*"],
+      "js": ["search.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
       "matches": ["*://*.missav.ws/*", "*://*.surrit.com/*"],
+      "exclude_matches": ["*://*.missav.ws/search*", "*://*.missav.ws/*/search*"],
       "js": ["content.js"],
       "run_at": "document_start",
       "all_frames": true
