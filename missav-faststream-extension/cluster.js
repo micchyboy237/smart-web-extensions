@@ -90,23 +90,28 @@
         log("Filter out on text:", item);
         return false;
       }
+      // New filter logic: includeCodes/excludeCodes
       if (
-        f.videoId &&
-        !(item.videoId || "").toLowerCase().includes(f.videoId)
+        f.includeCodes &&
+        Array.isArray(f.includeCodes) &&
+        f.includeCodes.length > 0
       ) {
-        log("Filter out on videoId:", item);
-        return false;
-      }
-      if (f.code && !(item.code || "").toLowerCase().includes(f.code)) {
-        log("Filter out on code:", item);
-        return false;
+        const c = (item.code || "").toLowerCase();
+        if (!f.includeCodes.includes(c)) {
+          log("Filter out on includeCodes:", item);
+          return false;
+        }
       }
       if (
-        f.episode &&
-        !(item.episode || "").toLowerCase().includes(f.episode)
+        f.excludeCodes &&
+        Array.isArray(f.excludeCodes) &&
+        f.excludeCodes.length > 0
       ) {
-        log("Filter out on episode:", item);
-        return false;
+        const c = (item.code || "").toLowerCase();
+        if (f.excludeCodes.includes(c)) {
+          log("Filter out on excludeCodes:", item);
+          return false;
+        }
       }
       return true;
     });
