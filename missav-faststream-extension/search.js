@@ -147,7 +147,8 @@ function dataEquals(a, b) {
 
 function onDataChange(newData) {
   console.log("🔄 Data CHANGED →", newData.length, "items");
-  console.table(newData);
+  // console.table(newData);
+  console.log(newData);
 
   // Persist to IndexedDB with deterministic ID based on URL
   newData.forEach((item) => {
