@@ -20,7 +20,9 @@
 
   // ====================== STATE ======================
   let clusterMode = false;
-  const collapsedClusters = new Set();
+  // We track which clusters the user has explicitly OPENED.
+  // Everything else is collapsed by default.
+  const expandedClusters = new Set();
 
   // Injected by panel.js at init time
   let _resultsList = null;
@@ -61,12 +63,12 @@
       });
     }
 
-    // Stage 3: sort clusters — alphabetical, "unknown" last
+    // Stage 3: sort clusters — most items first, "unknown" last
     const sortedMap = new Map(
-      [...map.entries()].sort(([a], [b]) => {
+      [...map.entries()].sort(([a, buckA], [b, buckB]) => {
         if (a === "unknown") return 1;
         if (b === "unknown") return -1;
-        return a.localeCompare(b);
+        return buckB.length - buckA.length;
       }),
     );
     log("buildClusterMap: complete - clusters:", [...sortedMap.keys()]);
@@ -141,7 +143,8 @@
 
       let html = "";
       for (const [code, items] of clusterMap) {
-        const isCollapsed = collapsedClusters.has(code);
+        // Collapsed unless the user has explicitly expanded it
+        const isCollapsed = !expandedClusters.has(code);
         const label =
           code === "unknown" ? "Unknown / No code" : code.toUpperCase();
         log(
@@ -198,12 +201,12 @@
       }
       const code = header.dataset.code;
       log("bindClusterToggle: toggling cluster", code);
-      if (collapsedClusters.has(code)) {
-        collapsedClusters.delete(code);
-        log("Cluster expanded:", code);
-      } else {
-        collapsedClusters.add(code);
+      if (expandedClusters.has(code)) {
+        expandedClusters.delete(code);
         log("Cluster collapsed:", code);
+      } else {
+        expandedClusters.add(code);
+        log("Cluster expanded:", code);
       }
       renderClusters();
     });

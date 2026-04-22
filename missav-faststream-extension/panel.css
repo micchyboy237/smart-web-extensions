@@ -137,11 +137,11 @@
 
 #missav-faststream-panel .result-card {
   display: flex;
-  gap: 12px;
-  padding: 10px;
+  gap: 8px;
+  padding: 5px 8px;
   background: #16213e;
   border-radius: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   cursor: pointer;
   transition:
     transform 0.1s,
@@ -156,8 +156,8 @@
 
 #missav-faststream-panel .result-card .thumbnail-container {
   position: relative;
-  width: 100px;
-  height: 140px;
+  width: 54px;
+  height: 76px;
   flex-shrink: 0;
   border-radius: 6px;
   overflow: hidden;
@@ -190,9 +190,9 @@
 }
 
 #missav-faststream-panel .result-card .card-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -200,9 +200,9 @@
 }
 
 #missav-faststream-panel .result-card .card-meta {
-  font-size: 11px;
+  font-size: 10px;
   color: #aaa;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
 }
 
 #missav-faststream-panel .result-card .card-meta strong {
