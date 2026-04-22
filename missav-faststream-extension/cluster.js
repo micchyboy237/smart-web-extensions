@@ -83,6 +83,7 @@
       "filters:",
       _filtersRef,
     );
+    log(items);
     const f = _filtersRef;
     const filtered = items.filter((item) => {
       if (f.text && !(item.text || "").toLowerCase().includes(f.text)) {
@@ -155,6 +156,7 @@
           "- isCollapsed:",
           isCollapsed,
         );
+        log(items);
 
         html += `
             <div class="cluster-section">

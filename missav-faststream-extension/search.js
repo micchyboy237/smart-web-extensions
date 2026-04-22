@@ -148,7 +148,7 @@ function dataEquals(a, b) {
 function onDataChange(newData) {
   console.log("[MISSAV SEARCH] 🔄 Data CHANGED →", newData.length, "items");
   // console.table(newData);
-  console.log(newData);
+  console.log("[MISSAV SEARCH]", newData);
 
   // Keep the global in sync so panel.js watchDataChanges() and togglePanel() see fresh data.
   window.__MISSAV_DATA__ = newData;
