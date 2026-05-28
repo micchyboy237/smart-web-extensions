@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "NSFWPH FastStream",
+  "name": "nsfwPH FastStream",
   "version": "1.0.0",
   "permissions": ["storage"],
   "host_permissions": ["*://*.nsfwph.org/*", "*://data.nsfwph.org/*"],
