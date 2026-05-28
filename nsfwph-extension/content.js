@@ -53,6 +53,8 @@ const boostTimers = new WeakMap();
 // 🆕 Separate tracker for preview boost timers
 const previewBoostTimers = new WeakMap();
 
+let chatRoot = null;
+
 /**
  * Calculate how many seconds of buffered data exist ahead of current playhead.
  * Returns 0 if playhead is beyond buffer (e.g., after seeking).
@@ -1185,18 +1187,22 @@ function onTabHidden() {
   }
 }
 
+// ═══════════════════════════════════════════════════
+// Uses module-level chatRoot
+// ═══════════════════════════════════════════════════
 function onTabVisible() {
   tabIsVisible = true;
   log("Tab visible — resuming everything");
   restartAllPreviewLoops();
   restartAllBoosts();
-  restartAllPreviewBoosts(); // 🆕 NEW
+  restartAllPreviewBoosts();
   if (pollingInterval === null) {
     if (pollingInterval !== null) clearInterval(pollingInterval);
     pollingInterval = setInterval(observeVideos, 30000);
     globalResources.intervals.push(pollingInterval);
   }
   if (domObserver) {
+    // 🔧 FIX: chatRoot is now module-level, accessible here
     domObserver.observe(chatRoot || document.body, {
       childList: true,
       subtree: true,
@@ -1227,6 +1233,9 @@ function cleanupGlobalResources() {
   }
 }
 
+// ═══════════════════════════════════════════════════
+// Assigns to module-level chatRoot
+// ═══════════════════════════════════════════════════
 function init() {
   if (window.__VIDEO_OBSERVER_INITIALIZED__) return;
   window.__VIDEO_OBSERVER_INITIALIZED__ = true;
@@ -1251,9 +1260,8 @@ function init() {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(observeVideos, 600);
   });
-  const chatRoot = document.querySelector(
-    ".messages-content, #messages, main, body",
-  );
+  // 🔧 FIX: Assign to module-level variable so onTabVisible can use it
+  chatRoot = document.querySelector(".messages-content, #messages, main, body");
   domObserver.observe(chatRoot || document.body, {
     childList: true,
     subtree: true,
