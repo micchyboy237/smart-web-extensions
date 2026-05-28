@@ -1,5 +1,5 @@
 // content.js - Stable DOM + SINGLE PLAYBACK + LIGHTWEIGHT CHUNK PREVIEWS + RAM optimized
-// + SMART BUFFER BOOST (ported from nsfwph-fastream-extension)
+// + SMART BUFFER BOOST for main videos AND previews (ported from nsfwph-fastream-extension)
 // BACKGROUND TAB FIX: chunk previews, interval, and MutationObserver all pause when tab is hidden
 
 let videos = new Map(); // video element → entry
@@ -26,22 +26,32 @@ const CHUNK_PLAY_DURATION_MS = 400; // 0.4s per chunk → ~2s full cycle
 
 // ═══════════════════════════════════════════════════════════════
 // BUFFER BOOST ENGINE (ported from nsfwph-fastream-extension)
+// Now supports both main videos AND preview videos
 // ═══════════════════════════════════════════════════════════════
 const BOOST_CONFIG = {
-  BUFFER_LOW: 5, // seconds - threshold to trigger boost
-  BOOST_DURATION: 8000, // ms - default boost period for page loads
-  INITIAL_BUFFER_TARGET: 12, // seconds - target after page load
-  SEEK_BOOST_RATE: 1.5, // playback rate multiplier after seek
-  SEEK_BOOST_DURATION: 10000, // ms - max boost duration after seek
-  SEEK_MIN_EFFECTIVE_RATIO: 0.6, // require ≥60% buffer ahead after seek
-  SEEK_BOOST_EXTENSION: 5000, // ms - extend boost if ratio is low
-  MAX_BOOST_EXTENSIONS: 3, // max times boost can be extended
-  MAX_TOTAL_BOOST_MS: 30000, // ms - absolute max boost duration
-  BOOST_RATE_NORMAL: 1.08, // gentle boost for page loads
+  // Main video settings
+  BUFFER_LOW: 5,
+  BOOST_DURATION: 8000,
+  INITIAL_BUFFER_TARGET: 12,
+  SEEK_BOOST_RATE: 1.5,
+  SEEK_BOOST_DURATION: 10000,
+  SEEK_MIN_EFFECTIVE_RATIO: 0.6,
+  SEEK_BOOST_EXTENSION: 5000,
+  MAX_BOOST_EXTENSIONS: 3,
+  MAX_TOTAL_BOOST_MS: 30000,
+  BOOST_RATE_NORMAL: 1.08,
+
+  // 🆕 Preview video settings (much gentler, short-lived)
+  PREVIEW_BOOST_RATE: 1.08, // Gentle - barely noticeable on muted previews
+  PREVIEW_BOOST_DURATION: 4000, // 4 seconds max
+  PREVIEW_BUFFER_TARGET: 3, // Only need 3s buffer for chunk previews
+  PREVIEW_CHECK_INTERVAL: 500, // Check every 500ms (less aggressive)
 };
 
 // Store boost-related timers per video for cleanup
 const boostTimers = new WeakMap();
+// 🆕 Separate tracker for preview boost timers
+const previewBoostTimers = new WeakMap();
 
 /**
  * Calculate how many seconds of buffered data exist ahead of current playhead.
@@ -56,7 +66,6 @@ function getBufferAhead(video) {
 
 /**
  * Calculate what percentage of total buffered time is ahead of playhead.
- * Used to detect "dead" buffer retained after seeking.
  */
 function getEffectiveBufferRatio(video) {
   if (!video.buffered || !video.buffered.length) return 0;
@@ -69,8 +78,7 @@ function getEffectiveBufferRatio(video) {
 }
 
 /**
- * Clean up all boost-related timers and state for a video.
- * Called when video is removed, tab hidden, or boost completes.
+ * Clean up boost timers for main videos.
  */
 function cleanupBoost(video) {
   if (!video) return;
@@ -80,17 +88,14 @@ function cleanupBoost(video) {
     if (timers.monitorInterval) clearInterval(timers.monitorInterval);
     boostTimers.delete(video);
   }
-  // Also clear any timeout stored directly on the element (backward compat)
   if (video.__boostTimeout) {
     clearTimeout(video.__boostTimeout);
     delete video.__boostTimeout;
   }
-  // Reset boost state
   if (video.__boostState) {
     video.__boostState.active = false;
     video.__boostState.paused = true;
   }
-  // Restore original playback rate if it was modified
   if (
     video.__originalPlaybackRate &&
     video.playbackRate === video.__boostTargetRate
@@ -106,32 +111,120 @@ function cleanupBoost(video) {
 }
 
 /**
- * Core buffer boost function. Temporarily increases playback rate
- * to build buffer faster, then restores normal speed.
+ * 🆕 Clean up preview boost timers specifically.
+ * This is separate from main video boost cleanup because previews
+ * have different state and lifecycle (tied to hover, not playback).
+ */
+function cleanupPreviewBoost(previewVideo) {
+  if (!previewVideo) return;
+  const timers = previewBoostTimers.get(previewVideo);
+  if (timers) {
+    if (timers.checkInterval) clearInterval(timers.checkInterval);
+    if (timers.endTimeout) clearTimeout(timers.endTimeout);
+    previewBoostTimers.delete(previewVideo);
+  }
+  // Restore original rate if boost was active
+  if (
+    previewVideo.__previewOriginalRate &&
+    previewVideo.playbackRate === BOOST_CONFIG.PREVIEW_BOOST_RATE
+  ) {
+    previewVideo.playbackRate = previewVideo.__previewOriginalRate;
+  }
+  delete previewVideo.__previewOriginalRate;
+  delete previewVideo.__previewBoostActive;
+  delete previewVideo.__previewBoostStartTime;
+}
+
+/**
+ * 🆕 Gentle buffer boost for preview videos.
  *
- * @param {HTMLVideoElement} video - The video to boost
- * @param {boolean} isSeek - Whether this boost follows a seek event
- * @param {Object} options - { extendDuration: boolean }
+ * SAFETY: Always pauses video first to avoid conflicts with
+ * other play() calls (initial frame, chunk loop).
+ *
+ * @param {HTMLVideoElement} previewVideo - The preview video element
+ * @returns {Function} Cleanup function to stop boost
+ */
+function boostPreviewBuffer(previewVideo) {
+  if (!previewVideo || !tabIsVisible) return () => {};
+  if (previewVideo.__previewBoostActive) return () => {}; // Already boosting
+
+  // 🔧 FIX: Pause first to avoid fighting with other play() calls
+  // The boost only affects download speed via playbackRate, not actual playback
+  if (!previewVideo.paused) {
+    previewVideo.pause();
+  }
+
+  // Store original playback rate
+  if (!previewVideo.__previewOriginalRate) {
+    previewVideo.__previewOriginalRate = previewVideo.playbackRate || 1.0;
+  }
+
+  // Only boost if buffer is actually low
+  const initialAhead = getBufferAhead(previewVideo);
+  if (initialAhead >= BOOST_CONFIG.PREVIEW_BUFFER_TARGET) {
+    return () => {}; // Already enough buffer
+  }
+
+  // Mark as active and apply gentle boost
+  previewVideo.__previewBoostActive = true;
+  previewVideo.__previewBoostStartTime = Date.now();
+  previewVideo.playbackRate = BOOST_CONFIG.PREVIEW_BOOST_RATE;
+
+  // Create timer storage
+  const timers = {
+    checkInterval: null,
+    endTimeout: null,
+  };
+  previewBoostTimers.set(previewVideo, timers);
+
+  // Periodically check if buffer is sufficient
+  timers.checkInterval = setInterval(() => {
+    // Stop if tab hidden, video paused, or destroyed
+    if (!tabIsVisible || !previewVideo.__previewBoostActive) {
+      cleanupPreviewBoost(previewVideo);
+      return;
+    }
+
+    const ahead = getBufferAhead(previewVideo);
+    const elapsed = Date.now() - (previewVideo.__previewBoostStartTime || 0);
+
+    // End boost if buffer is healthy or max duration reached
+    if (
+      ahead >= BOOST_CONFIG.PREVIEW_BUFFER_TARGET ||
+      elapsed >= BOOST_CONFIG.PREVIEW_BOOST_DURATION
+    ) {
+      cleanupPreviewBoost(previewVideo);
+    }
+  }, BOOST_CONFIG.PREVIEW_CHECK_INTERVAL);
+
+  // Hard stop after max duration (safety net)
+  timers.endTimeout = setTimeout(() => {
+    cleanupPreviewBoost(previewVideo);
+  }, BOOST_CONFIG.PREVIEW_BOOST_DURATION + 200);
+
+  // Return cleanup function
+  return () => cleanupPreviewBoost(previewVideo);
+}
+
+/**
+ * Core buffer boost function for main videos.
  */
 function boostBufferAfterSeek(video, isSeek = false, options = {}) {
-  if (!video || !tabIsVisible) return; // Don't boost when tab hidden
+  if (!video || !tabIsVisible) return;
 
   const { extendDuration = false } = options;
   let timers = boostTimers.get(video);
 
-  // Create timer storage if not exists
   if (!timers) {
     timers = { boostTimeout: null, monitorInterval: null };
     boostTimers.set(video, timers);
   }
 
-  // Adaptive boost rate based on network conditions
   let rate = isSeek
     ? BOOST_CONFIG.SEEK_BOOST_RATE
     : BOOST_CONFIG.BOOST_RATE_NORMAL;
   if (isSeek) {
     const initialAhead = getBufferAhead(video);
-    // If buffer was very low after seek, use gentler boost to avoid overwhelming server
     if (initialAhead < 2) {
       rate = Math.min(rate, 1.25);
     }
@@ -141,7 +234,6 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
     ? BOOST_CONFIG.SEEK_BOOST_DURATION
     : BOOST_CONFIG.BOOST_DURATION;
 
-  // Extend duration if post-seek buffer is mostly behind playhead
   if (extendDuration && isSeek) {
     duration = Math.min(
       duration + BOOST_CONFIG.SEEK_BOOST_EXTENSION,
@@ -149,18 +241,14 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
     );
   }
 
-  // Store original rate so we can restore it
   if (!video.__originalPlaybackRate) {
     video.__originalPlaybackRate = video.playbackRate || 1.0;
   }
 
   const targetRate = rate;
   video.__boostTargetRate = targetRate;
-
-  // Apply the boost
   video.playbackRate = targetRate;
 
-  // Initialize boost state
   video.__boostStartTime = Date.now();
   video.__boostExtensionCount = 0;
   video.__boostBaseDuration = duration;
@@ -170,18 +258,11 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
     paused: video.paused,
   };
 
-  /**
-   * Centralized boost evaluation - checks if buffer is healthy enough to end boost,
-   * or extends boost if buffer is still low (within configured limits).
-   */
   function evaluateBoost() {
-    // Guard: stop if boost is no longer active, tab hidden, or video paused
-    if (!video.__boostState?.active || !tabIsVisible) {
-      return;
-    }
+    if (!video.__boostState?.active || !tabIsVisible) return;
     if (video.paused) {
       video.__boostState.paused = true;
-      return; // Don't evaluate while paused; will resume on play
+      return;
     }
 
     video.__boostState.paused = false;
@@ -189,7 +270,6 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
     const elapsed = Date.now() - video.__boostStartTime;
     let endReason = null;
 
-    // Determine if boost should end
     if (currentAhead >= BOOST_CONFIG.BUFFER_LOW * 1.5) {
       endReason = "buffer healthy";
     } else if (
@@ -203,12 +283,10 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
       video.__boostBaseDuration +
         video.__boostState.extensionCount * BOOST_CONFIG.SEEK_BOOST_EXTENSION
     ) {
-      // Base duration elapsed - consider extension
       if (
         video.__boostState.extensionCount < BOOST_CONFIG.MAX_BOOST_EXTENSIONS &&
         elapsed <= BOOST_CONFIG.MAX_TOTAL_BOOST_MS
       ) {
-        // Extend further
         video.__boostState.extensionCount++;
         if (video.__boostTimeout) clearTimeout(video.__boostTimeout);
         video.__boostTimeout = setTimeout(
@@ -222,7 +300,6 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
       }
     }
 
-    // End boost if we have a reason
     if (endReason) {
       if (video.playbackRate === targetRate) {
         video.playbackRate = video.__originalPlaybackRate || 1.0;
@@ -230,7 +307,6 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
       video.__boostState.active = false;
     }
 
-    // Clean up timeout reference
     if (video.__boostTimeout) {
       clearTimeout(video.__boostTimeout);
       video.__boostTimeout = null;
@@ -238,25 +314,20 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
     }
   }
 
-  // Clear any existing boost timeout
   if (timers.boostTimeout) clearTimeout(timers.boostTimeout);
   if (video.__boostTimeout) clearTimeout(video.__boostTimeout);
 
-  // Schedule first evaluation
   video.__boostTimeout = setTimeout(evaluateBoost, duration);
   timers.boostTimeout = video.__boostTimeout;
 }
 
 /**
- * Attach buffer boost listeners to a video element.
- * Sets up event handlers for seeking and initial buffering.
- * Returns a cleanup function.
+ * Attach buffer boost listeners to a main video element.
  */
 function attachBoostToVideo(video) {
   if (!video || video.dataset.boostAttached === "true") return () => {};
   video.dataset.boostAttached = "true";
 
-  // Early check for page-load buffering (runs once per video)
   const initialCheck = setTimeout(() => {
     if (!tabIsVisible) return;
     const ahead = getBufferAhead(video);
@@ -269,7 +340,6 @@ function attachBoostToVideo(video) {
     }
   }, 600);
 
-  // Seek handler: boost after user seeks to new position
   const onSeeked = () => {
     if (!tabIsVisible) return;
     const ratio = getEffectiveBufferRatio(video);
@@ -277,17 +347,13 @@ function attachBoostToVideo(video) {
     boostBufferAfterSeek(video, true, { extendDuration: needsExtension });
   };
 
-  // Play handler: resume boost if it was paused
   const onPlay = () => {
     if (!tabIsVisible) return;
     if (video.__boostState?.active && video.__boostState.paused) {
       video.__boostState.paused = false;
-      // Re-trigger evaluation
       const timers = boostTimers.get(video);
       if (timers?.boostTimeout) {
         clearTimeout(timers.boostTimeout);
-        // Use the evaluateBoost logic by calling boost again with existing state
-        // Simple approach: just restart with remaining time
         const remaining = Math.max(
           1000,
           (video.__boostBaseDuration || BOOST_CONFIG.BOOST_DURATION) -
@@ -311,7 +377,6 @@ function attachBoostToVideo(video) {
     }
   };
 
-  // Pause handler: mark boost as paused
   const onPause = () => {
     if (video.__boostState?.active) {
       video.__boostState.paused = true;
@@ -322,7 +387,6 @@ function attachBoostToVideo(video) {
   video.addEventListener("play", onPlay);
   video.addEventListener("pause", onPause);
 
-  // Return cleanup function
   return () => {
     clearTimeout(initialCheck);
     video.removeEventListener("seeked", onSeeked);
@@ -346,7 +410,6 @@ function enforceSinglePlayback(videoToPlay) {
     );
   }
   currentlyPlaying = videoToPlay;
-  // Auto-pause when this video ends
   const onEnded = () => {
     if (currentlyPlaying === videoToPlay) currentlyPlaying = null;
   };
@@ -427,13 +490,18 @@ function playPreviewChunk(
     });
 }
 
-// Lightweight automatic chunk preview (looping short clips) - NOW STOPPABLE
+// Lightweight automatic chunk preview (looping short clips)
 function setupLightChunkPreview(previewVideo, entryId) {
   if (previewVideo.dataset.previewLoopRunning === "true") return () => {};
   previewVideo.dataset.previewLoopRunning = "true";
   const chunkTimeoutRef = { current: null };
   const currentChunkIndexRef = { current: 0 };
   const isStoppedRef = { current: false };
+
+  // 🔧 FIX: Removed preview boost from here — it's now handled by
+  // createSinglePreview's phased init BEFORE chunk loop starts.
+  // This prevents the play()/pause() race condition.
+
   const getChunkStarts = () => {
     const duration = previewVideo.duration || 0;
     if (!duration || isNaN(duration) || duration < 1) return null;
@@ -450,6 +518,7 @@ function setupLightChunkPreview(previewVideo, entryId) {
     }
     return chunkStarts;
   };
+
   function stopPreviewLoop() {
     isStoppedRef.current = true;
     if (chunkTimeoutRef.current) {
@@ -464,34 +533,50 @@ function setupLightChunkPreview(previewVideo, entryId) {
       currentlyPlaying = null;
     }
   }
+
   function playPreviewChunkLocal() {
     if (isStoppedRef.current) return;
     const chunkStarts = getChunkStarts();
     if (!chunkStarts) return;
     const startTime = chunkStarts[currentChunkIndexRef.current];
+
+    // 🔧 FIX: Pause before seeking to avoid interrupted play() errors
+    if (!previewVideo.paused) {
+      previewVideo.pause();
+    }
+
     previewVideo.currentTime = startTime;
-    previewVideo
-      .play()
-      .then(() => {
-        if (isStoppedRef.current) return;
-        const t = setTimeout(() => {
-          previewVideo.pause();
+
+    // Small delay to let seek settle before playing
+    setTimeout(() => {
+      if (isStoppedRef.current) return;
+      previewVideo
+        .play()
+        .then(() => {
+          if (isStoppedRef.current) return;
+          const t = setTimeout(() => {
+            previewVideo.pause();
+            currentChunkIndexRef.current =
+              (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
+            const t2 = setTimeout(() => playPreviewChunkLocal(), 30);
+            chunkTimeoutRef.current = t2;
+          }, CHUNK_PLAY_DURATION_MS);
+          chunkTimeoutRef.current = t;
+        })
+        .catch((err) => {
+          // 🔧 FIX: Only log if not a normal interruption (stopped or tab hidden)
+          if (!isStoppedRef.current && tabIsVisible) {
+            log(`Chunk preview play failed for ${entryId}`, err.message);
+          }
+          if (isStoppedRef.current) return;
           currentChunkIndexRef.current =
             (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
-          const t2 = setTimeout(() => playPreviewChunkLocal(), 30);
-          chunkTimeoutRef.current = t2;
-        }, CHUNK_PLAY_DURATION_MS);
-        chunkTimeoutRef.current = t;
-      })
-      .catch((err) => {
-        log(`Chunk preview play failed for ${entryId}`, err.message);
-        if (isStoppedRef.current) return;
-        currentChunkIndexRef.current =
-          (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
-        const t = setTimeout(() => playPreviewChunkLocal(), 150);
-        chunkTimeoutRef.current = t;
-      });
+          const t = setTimeout(() => playPreviewChunkLocal(), 150);
+          chunkTimeoutRef.current = t;
+        });
+    }, 50);
   }
+
   function tryStartLoop() {
     if (
       previewVideo.duration &&
@@ -502,16 +587,19 @@ function setupLightChunkPreview(previewVideo, entryId) {
       playPreviewChunkLocal();
     }
   }
+
+  // 🔧 FIX: Only start if we have enough data.
+  // The caller (createSinglePreview) already handled metadata waiting.
   if (previewVideo.readyState >= 1) {
     tryStartLoop();
   } else {
-    previewVideo.addEventListener("loadedmetadata", tryStartLoop, {
-      once: true,
-    });
+    // Fallback: wait for canplay (shouldn't normally reach here)
     previewVideo.addEventListener("canplay", tryStartLoop, { once: true });
   }
+
   const onMouseLeave = stopPreviewLoop;
   previewVideo.addEventListener("mouseleave", onMouseLeave);
+
   return () => {
     stopPreviewLoop();
     delete previewVideo.dataset.previewLoopRunning;
@@ -536,39 +624,149 @@ function createSinglePreview(originalVideo, entryId) {
   preview.style.borderRadius = "4px";
   preview.style.background = "#1a1a2e";
   preview.style.display = "block";
-  let frameShown = false;
-  const tryShowFrame = () => {
-    if (frameShown) return;
-    frameShown = true;
+
+  // Track state to prevent overlapping operations
+  let initialBoostCleanup = null;
+  let frameDisplayDone = false;
+  let chunkLoopStarted = false;
+  // Promise that resolves when frame display phase is complete
+  let frameDisplayResolve = null;
+  const frameDisplayPromise = new Promise((resolve) => {
+    frameDisplayResolve = resolve;
+  });
+
+  /**
+   * Sequential phase manager using Promise chaining.
+   * Phase 1: Boost → Phase 2: Show Frame → Phase 3: Chunk Loop
+   * Each phase completes fully before the next begins.
+   */
+  function startPhasedInit() {
+    // Phase 1: Apply boost immediately
+    if (tabIsVisible) {
+      initialBoostCleanup = boostPreviewBuffer(preview);
+    }
+
+    // Phase 2: Show initial frame — wait for it to fully complete
+    showInitialFrame();
+
+    // Phase 3: Start chunk loop ONLY after frame is done
+    frameDisplayPromise.then(() => {
+      startChunkLoop();
+    });
+  }
+
+  function showInitialFrame() {
+    // Ensure video is paused before seeking
+    if (!preview.paused) {
+      preview.pause();
+    }
+
     preview.currentTime = 0.8;
-    preview
-      .play()
-      .then(() => {
-        setTimeout(() => preview.pause(), 280);
-        log(`Initial preview frame shown for ${entryId}`);
-      })
-      .catch((err) => {
-        log(`Initial frame play failed for ${entryId}`, err.message);
-        preview.currentTime = 1.5;
-      });
+
+    // Wait for seek to complete, then play
+    const onSeeked = () => {
+      preview.removeEventListener("seeked", onSeeked);
+
+      preview
+        .play()
+        .then(() => {
+          // Display frame for 280ms, then resolve
+          setTimeout(() => {
+            preview.pause();
+
+            // Clean up initial boost
+            if (initialBoostCleanup) {
+              initialBoostCleanup();
+              initialBoostCleanup = null;
+            }
+
+            log(`Initial preview frame shown for ${entryId}`);
+
+            // 🔑 Signal that frame display is complete
+            frameDisplayDone = true;
+            if (frameDisplayResolve) {
+              frameDisplayResolve();
+              frameDisplayResolve = null;
+            }
+          }, 280);
+        })
+        .catch((err) => {
+          log(`Initial frame play failed for ${entryId}`, err.message);
+
+          // Clean up boost even on failure
+          if (initialBoostCleanup) {
+            initialBoostCleanup();
+            initialBoostCleanup = null;
+          }
+
+          // 🔑 Still signal completion so chunk loop can proceed
+          frameDisplayDone = true;
+          if (frameDisplayResolve) {
+            frameDisplayResolve();
+            frameDisplayResolve = null;
+          }
+        });
+    };
+
+    // Wait for seek to settle before playing
+    preview.addEventListener("seeked", onSeeked, { once: true });
+
+    // Safety timeout: if seeked never fires, force completion after 3s
+    setTimeout(() => {
+      if (!frameDisplayDone && frameDisplayResolve) {
+        log(`Frame display timeout for ${entryId}, forcing completion`);
+        frameDisplayDone = true;
+        frameDisplayResolve();
+        frameDisplayResolve = null;
+      }
+    }, 3000);
+  }
+
+  function startChunkLoop() {
+    if (chunkLoopStarted) return;
+    chunkLoopStarted = true;
+
+    // Ensure any lingering boost is cleaned up
+    if (initialBoostCleanup) {
+      initialBoostCleanup();
+      initialBoostCleanup = null;
+    }
+
+    // 🔑 Pause and wait a tick before starting chunk loop
+    // This ensures no lingering play() operations are in flight
+    if (!preview.paused) {
+      preview.pause();
+    }
+
+    setTimeout(() => {
+      const stopPreviewLoop = setupLightChunkPreview(preview, entryId);
+      preview.stopPreviewLoop = stopPreviewLoop;
+    }, 100); // Small buffer to ensure pause() settled
+  }
+
+  // Single trigger: loadedmetadata
+  if (preview.readyState >= 1) {
+    startPhasedInit();
+  } else {
+    preview.addEventListener("loadedmetadata", startPhasedInit, { once: true });
+
+    // Safety timeout
+    setTimeout(() => {
+      if (!chunkLoopStarted && !frameDisplayDone) {
+        log(`Metadata timeout for ${entryId}, forcing init`);
+        startPhasedInit();
+      }
+    }, 3000);
+  }
+
+  // Store cleanup reference
+  preview._initialBoostCleanup = () => {
+    if (initialBoostCleanup) {
+      initialBoostCleanup();
+      initialBoostCleanup = null;
+    }
   };
-  preview.addEventListener(
-    "loadeddata",
-    () => {
-      log(`loadeddata fired for preview ${entryId}`);
-      tryShowFrame();
-    },
-    { once: true },
-  );
-  preview.addEventListener(
-    "loadedmetadata",
-    () => {
-      log(`loadedmetadata for preview ${entryId}`);
-    },
-    { once: true },
-  );
-  const stopPreviewLoop = setupLightChunkPreview(preview, entryId);
-  preview.stopPreviewLoop = stopPreviewLoop;
+
   return preview;
 }
 
@@ -661,13 +859,21 @@ function cleanupVideoEntry(entry) {
   if (!entry) return;
   log(`Cleaning up video entry for RAM optimization: ${entry.id}`);
 
-  // Clean up boost engine
+  // Clean up boost engine (main video)
   if (entry.boostCleanup) {
     entry.boostCleanup();
     entry.boostCleanup = null;
   }
 
   if (entry.preview) {
+    // 🆕 NEW: Clean up preview initial boost
+    if (typeof entry.preview._initialBoostCleanup === "function") {
+      entry.preview._initialBoostCleanup();
+      delete entry.preview._initialBoostCleanup;
+    }
+    // Clean up preview boost (via previewBoostTimers)
+    cleanupPreviewBoost(entry.preview);
+
     if (typeof entry.preview.stopPreviewLoop === "function") {
       entry.preview.stopPreviewLoop();
       delete entry.preview.stopPreviewLoop;
@@ -700,7 +906,7 @@ function trackVideo(video) {
     preview: null,
     framesPopulated: false,
     cleanups: [],
-    boostCleanup: null, // NEW: store boost cleanup function
+    boostCleanup: null,
   };
   videos.set(video, entry);
   if (!video.dataset.volumeSet) {
@@ -712,7 +918,7 @@ function trackVideo(video) {
     srcShort: (video.currentSrc || "").substring(0, 80) + "...",
   });
 
-  // Attach buffer boost to this video
+  // Attach buffer boost to main video
   entry.boostCleanup = attachBoostToVideo(video);
 
   const startPreview = () => {
@@ -889,8 +1095,7 @@ function createFloatingPanel() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// PAGE VISIBILITY: pause everything when tab is hidden,
-// resume when it comes back. This is the main RAM/CPU fix.
+// PAGE VISIBILITY: pause everything when tab is hidden
 // ═══════════════════════════════════════════════════════════════
 function stopAllPreviewLoops() {
   for (const entry of videos.values()) {
@@ -909,23 +1114,18 @@ function restartAllPreviewLoops() {
   }
 }
 
-/**
- * Pause all boost engines when tab is hidden (RAM optimization).
- * Each boost is cleaned up and will be re-attached on tab visible.
- */
 function stopAllBoosts() {
   for (const entry of videos.values()) {
     if (entry.boostCleanup) {
-      // Don't fully clean up - just clean the boost state so timers stop
-      // The boostCleanup function reference is kept for re-attachment
       cleanupBoost(entry.element);
+    }
+    // 🆕 NEW: Also clean up preview boosts
+    if (entry.preview) {
+      cleanupPreviewBoost(entry.preview);
     }
   }
 }
 
-/**
- * Re-attach boost to all active videos when tab becomes visible.
- */
 function restartAllBoosts() {
   for (const entry of videos.values()) {
     if (entry.element && !entry.element.dataset.boostAttached) {
@@ -934,11 +1134,44 @@ function restartAllBoosts() {
   }
 }
 
+/**
+ * 🆕 NEW: Pause all preview-specific boosts when tab is hidden.
+ * Separate from main video boosts because previews have different cleanup needs.
+ */
+function stopAllPreviewBoosts() {
+  for (const entry of videos.values()) {
+    if (entry.preview) {
+      // Clean up the initial boost if still active
+      if (typeof entry.preview._initialBoostCleanup === "function") {
+        entry.preview._initialBoostCleanup();
+      }
+      // Clean up any ongoing preview boost
+      cleanupPreviewBoost(entry.preview);
+    }
+  }
+}
+
+/**
+ * 🆕 NEW: Re-apply preview boosts when tab becomes visible.
+ * Only boosts previews that are currently visible in the panel.
+ */
+function restartAllPreviewBoosts() {
+  for (const entry of videos.values()) {
+    if (entry.preview && tabIsVisible) {
+      // Re-apply gentle boost to pre-warm the buffer
+      const cleanupFn = boostPreviewBuffer(entry.preview);
+      // Update the stored cleanup reference
+      entry.preview._initialBoostCleanup = cleanupFn;
+    }
+  }
+}
+
 function onTabHidden() {
   tabIsVisible = false;
   log("Tab hidden — pausing everything");
   stopAllPreviewLoops();
-  stopAllBoosts(); // NEW: pause boost timers
+  stopAllBoosts();
+  stopAllPreviewBoosts(); // 🆕 NEW
   if (currentlyPlaying) {
     currentlyPlaying.pause();
     currentlyPlaying = null;
@@ -956,7 +1189,8 @@ function onTabVisible() {
   tabIsVisible = true;
   log("Tab visible — resuming everything");
   restartAllPreviewLoops();
-  restartAllBoosts(); // NEW: re-attach boost engines
+  restartAllBoosts();
+  restartAllPreviewBoosts(); // 🆕 NEW
   if (pollingInterval === null) {
     if (pollingInterval !== null) clearInterval(pollingInterval);
     pollingInterval = setInterval(observeVideos, 30000);
@@ -978,11 +1212,17 @@ function cleanupGlobalResources() {
   globalResources.intervals.forEach((i) => clearInterval(i));
   globalResources.observers = [];
   globalResources.intervals = [];
-  // NEW: Clean up all boost engines
   for (const entry of videos.values()) {
     if (entry.boostCleanup) {
       entry.boostCleanup();
       entry.boostCleanup = null;
+    }
+    // 🆕 NEW: Clean up preview boosts globally
+    if (entry.preview) {
+      if (typeof entry.preview._initialBoostCleanup === "function") {
+        entry.preview._initialBoostCleanup();
+      }
+      cleanupPreviewBoost(entry.preview);
     }
   }
 }
@@ -992,7 +1232,7 @@ function init() {
   window.__VIDEO_OBSERVER_INITIALIZED__ = true;
   cleanupGlobalResources();
   log(
-    "Video Observer initialized – SINGLE PLAYBACK + LIGHTWEIGHT CHUNK PREVIEWS + BUFFER BOOST + BACKGROUND PAUSE",
+    "Video Observer initialized – SINGLE PLAYBACK + CHUNK PREVIEWS + MAIN & PREVIEW BOOST + BACKGROUND PAUSE",
   );
   createFloatingPanel();
   log("Floating panel created.");
