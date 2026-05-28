@@ -493,16 +493,14 @@ function playPreviewChunk(
 }
 
 // Lightweight automatic chunk preview (looping short clips)
+// Waits for mouseenter before playing
 function setupLightChunkPreview(previewVideo, entryId) {
   if (previewVideo.dataset.previewLoopRunning === "true") return () => {};
   previewVideo.dataset.previewLoopRunning = "true";
   const chunkTimeoutRef = { current: null };
   const currentChunkIndexRef = { current: 0 };
   const isStoppedRef = { current: false };
-
-  // 🔧 FIX: Removed preview boost from here — it's now handled by
-  // createSinglePreview's phased init BEFORE chunk loop starts.
-  // This prevents the play()/pause() race condition.
+  let loopStarted = false; // 🔧 NEW: Track if loop has ever started
 
   const getChunkStarts = () => {
     const duration = previewVideo.duration || 0;
@@ -537,19 +535,23 @@ function setupLightChunkPreview(previewVideo, entryId) {
   }
 
   function playPreviewChunkLocal() {
+    // 🔧 Guard: Stop if mouse left or tab hidden
     if (isStoppedRef.current) return;
+    if (!tabIsVisible) {
+      stopPreviewLoop();
+      return;
+    }
+
     const chunkStarts = getChunkStarts();
     if (!chunkStarts) return;
     const startTime = chunkStarts[currentChunkIndexRef.current];
 
-    // 🔧 FIX: Pause before seeking to avoid interrupted play() errors
     if (!previewVideo.paused) {
       previewVideo.pause();
     }
 
     previewVideo.currentTime = startTime;
 
-    // Small delay to let seek settle before playing
     setTimeout(() => {
       if (isStoppedRef.current) return;
       previewVideo
@@ -557,6 +559,7 @@ function setupLightChunkPreview(previewVideo, entryId) {
         .then(() => {
           if (isStoppedRef.current) return;
           const t = setTimeout(() => {
+            if (isStoppedRef.current) return;
             previewVideo.pause();
             currentChunkIndexRef.current =
               (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
@@ -566,7 +569,6 @@ function setupLightChunkPreview(previewVideo, entryId) {
           chunkTimeoutRef.current = t;
         })
         .catch((err) => {
-          // 🔧 FIX: Only log if not a normal interruption (stopped or tab hidden)
           if (!isStoppedRef.current && tabIsVisible) {
             log(`Chunk preview play failed for ${entryId}`, err.message);
           }
@@ -579,33 +581,65 @@ function setupLightChunkPreview(previewVideo, entryId) {
     }, 50);
   }
 
-  function tryStartLoop() {
+  // 🔧 NEW: Start chunk loop — only called on mouseenter
+  function startPreviewLoop() {
+    if (loopStarted) return; // Already running
+    if (isStoppedRef.current) return; // Was stopped (mouse left)
+
+    loopStarted = true;
+
     if (
       previewVideo.duration &&
       !isNaN(previewVideo.duration) &&
       previewVideo.duration > 1
     ) {
-      log(`Light chunk preview loop started for ${entryId}`);
       playPreviewChunkLocal();
+    } else {
+      // Wait for metadata if not ready yet
+      const onReady = () => {
+        if (isStoppedRef.current) return;
+        playPreviewChunkLocal();
+      };
+      previewVideo.addEventListener("canplay", onReady, { once: true });
     }
   }
 
-  // 🔧 FIX: Only start if we have enough data.
-  // The caller (createSinglePreview) already handled metadata waiting.
-  if (previewVideo.readyState >= 1) {
-    tryStartLoop();
-  } else {
-    // Fallback: wait for canplay (shouldn't normally reach here)
-    previewVideo.addEventListener("canplay", tryStartLoop, { once: true });
-  }
+  // 🔧 NEW: Mouse enters → start playing
+  const onMouseEnter = () => {
+    if (!tabIsVisible) return;
+    isStoppedRef.current = false; // Reset stop flag
+    startPreviewLoop();
+  };
 
-  const onMouseLeave = stopPreviewLoop;
+  // 🔧 Mouse leaves → stop playing, reset for next hover
+  const onMouseLeave = () => {
+    stopPreviewLoop();
+    loopStarted = false; // Allow restart on next hover
+  };
+
+  // 🔧 Attach hover listeners
+  previewVideo.addEventListener("mouseenter", onMouseEnter);
   previewVideo.addEventListener("mouseleave", onMouseLeave);
 
+  // 🔧 NEW: Also listen on the parent card for hover
+  // (The preview video is small, user might hover the card area)
+  const card = previewVideo.closest(".video-card");
+  if (card) {
+    card.addEventListener("mouseenter", onMouseEnter);
+    card.addEventListener("mouseleave", onMouseLeave);
+  }
+
+  // Return cleanup function
   return () => {
     stopPreviewLoop();
+    loopStarted = false;
     delete previewVideo.dataset.previewLoopRunning;
+    previewVideo.removeEventListener("mouseenter", onMouseEnter);
     previewVideo.removeEventListener("mouseleave", onMouseLeave);
+    if (card) {
+      card.removeEventListener("mouseenter", onMouseEnter);
+      card.removeEventListener("mouseleave", onMouseLeave);
+    }
   };
 }
 
@@ -1110,6 +1144,8 @@ function stopAllPreviewLoops() {
 function restartAllPreviewLoops() {
   for (const entry of videos.values()) {
     if (entry.preview) {
+      // 🔧 FIX: Re-attach hover listeners but DON'T auto-start
+      // The user must hover to trigger playback
       const stopFn = setupLightChunkPreview(entry.preview, entry.id);
       entry.preview.stopPreviewLoop = stopFn;
     }
@@ -1160,9 +1196,8 @@ function stopAllPreviewBoosts() {
 function restartAllPreviewBoosts() {
   for (const entry of videos.values()) {
     if (entry.preview && tabIsVisible) {
-      // Re-apply gentle boost to pre-warm the buffer
+      // Pre-warm buffer so hover playback is instant
       const cleanupFn = boostPreviewBuffer(entry.preview);
-      // Update the stored cleanup reference
       entry.preview._initialBoostCleanup = cleanupFn;
     }
   }
