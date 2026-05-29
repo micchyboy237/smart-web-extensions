@@ -489,26 +489,24 @@ const ChunkCache = {
 // RAM MANAGEMENT CONFIGURATION
 // ═══════════════════════════════════════════════════════════════
 const RAM_CONFIG = {
-  // Maximum number of previews that can be actively buffered at once
-  MAX_ACTIVE_PREVIEWS: 3,
+  // 🔧 FIX: Allow more previews to stay buffered since each is small
+  MAX_ACTIVE_PREVIEWS: 8, // Was 3 - too aggressive
 
-  // Buffer strategies
   BUFFER_STRATEGY: {
-    NONE: "none", // Don't buffer at all (off-screen, tab hidden)
-    METADATA: "metadata", // Only load metadata (minimal RAM)
-    INITIAL: "initial", // Buffer first 2 seconds (viewport visible)
-    ACTIVE: "active", // Buffer multiple chunks (user is hovering)
+    NONE: "none",
+    METADATA: "metadata",
+    INITIAL: "initial",
+    ACTIVE: "active",
   },
 
-  // Buffer targets per strategy (in seconds of video)
   BUFFER_TARGETS: {
     metadata: 0,
     initial: 2,
     active: 5,
   },
 
-  // Maximum total video buffer RAM in bytes (approximate)
-  MAX_TOTAL_BUFFER_RAM: 10 * 1024 * 1024, // 10MB
+  // 🔧 FIX: More realistic RAM estimate for 8 previews
+  MAX_TOTAL_BUFFER_RAM: 20 * 1024 * 1024, // 20MB (was 10MB)
 };
 
 /**
@@ -629,6 +627,7 @@ const BufferManager = {
 
   /**
    * Initial buffer - buffer first 2 seconds for visible previews.
+   * 🔧 FIX: Handle play/pause conflicts gracefully.
    */
   async initialBuffer(previewVideo, info) {
     if (!tabIsVisible) return;
@@ -644,31 +643,81 @@ const BufferManager = {
 
     // Wait for metadata
     if (previewVideo.readyState < 1) {
-      await new Promise((resolve) => {
-        previewVideo.addEventListener("loadedmetadata", resolve, {
-          once: true,
+      try {
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            previewVideo.removeEventListener("loadedmetadata", onMeta);
+            reject(new Error("Metadata timeout"));
+          }, 3000);
+
+          const onMeta = () => {
+            clearTimeout(timeout);
+            resolve();
+          };
+          previewVideo.addEventListener("loadedmetadata", onMeta, {
+            once: true,
+          });
         });
-      });
+      } catch (err) {
+        console.warn(
+          `[BufferMgr] Metadata wait failed for ${info.entryId}:`,
+          err.message,
+        );
+        return;
+      }
+    }
+
+    // Don't buffer if video is too short
+    if (previewVideo.duration < 1) {
+      console.log(
+        `[BufferMgr] Video too short for ${info.entryId}, skipping buffer`,
+      );
+      return;
+    }
+
+    // 🔧 FIX: Check if something else is controlling playback
+    if (previewVideo.dataset.chunkLoopActive === "true") {
+      console.log(
+        `[BufferMgr] Chunk loop active for ${info.entryId}, skipping initial buffer`,
+      );
+      return;
     }
 
     // Seek to start to trigger buffering of the beginning
     previewVideo.currentTime = 0;
 
-    // Brief play to start buffering, then pause
+    // 🔧 FIX: Use a flag to prevent conflicts
+    previewVideo.dataset.bufferManagerBuffering = "true";
+
     try {
+      // Brief play to start buffering
       await previewVideo.play();
-      // Wait for ~2 seconds of buffer or 500ms max
-      await this.waitForBuffer(previewVideo, 2, 500);
-      previewVideo.pause();
+
+      // Wait for ~2 seconds of buffer or 800ms max (reduced from 500ms to allow more time)
+      await this.waitForBuffer(previewVideo, 2, 800);
+
+      // Only pause if we're still the ones controlling playback
+      if (previewVideo.dataset.bufferManagerBuffering === "true") {
+        previewVideo.pause();
+      }
 
       this.activeBufferCount++;
-      this.totalEstimatedRAM += 500000; // ~500KB
+      this.totalEstimatedRAM += 500000;
       console.log(`[BufferMgr] Initial buffer complete for ${info.entryId}`);
     } catch (err) {
-      console.warn(
-        `[BufferMgr] Initial buffer failed for ${info.entryId}:`,
-        err.message,
-      );
+      // 🔧 FIX: Don't log as error if it's just an interruption
+      if (err.name === "AbortError") {
+        console.log(
+          `[BufferMgr] Initial buffer interrupted for ${info.entryId} (chunk loop took over)`,
+        );
+      } else {
+        console.warn(
+          `[BufferMgr] Initial buffer failed for ${info.entryId}:`,
+          err.message,
+        );
+      }
+    } finally {
+      delete previewVideo.dataset.bufferManagerBuffering;
     }
   },
 
@@ -715,10 +764,12 @@ const BufferManager = {
   },
 
   /**
-   * Enforce global RAM limits by releasing buffers from least-recently-used previews.
+   * Enforce global RAM limits with smarter eviction.
+   * 🔧 FIX: Don't evict previews that were buffered in the last 2 seconds.
    */
   enforceLimits() {
-    // Count active buffers
+    const COOLDOWN_MS = 2000; // Don't evict previews buffered within last 2 seconds
+
     let activeVideos = [];
     for (const [video, info] of this.managedVideos) {
       if (
@@ -737,21 +788,37 @@ const BufferManager = {
       return;
     }
 
-    // Sort by last access (oldest first)
-    activeVideos.sort((a, b) => a.info.lastAccess - b.info.lastAccess);
+    // 🔧 FIX: Filter out recently buffered previews
+    const now = Date.now();
+    const eligibleForEviction = activeVideos.filter(
+      (v) => now - v.info.lastAccess > COOLDOWN_MS,
+    );
 
-    // Release oldest until we're under limits
+    // If nothing eligible, relax the limit temporarily
+    if (eligibleForEviction.length === 0) {
+      console.log(
+        `[BufferMgr] All buffers within cooldown, relaxing limit temporarily`,
+      );
+      return;
+    }
+
+    // Sort by last access (oldest first)
+    eligibleForEviction.sort((a, b) => a.info.lastAccess - b.info.lastAccess);
+
+    // Evict oldest eligible until we're under limits
+    let evicted = 0;
     while (
-      activeVideos.length > RAM_CONFIG.MAX_ACTIVE_PREVIEWS ||
+      activeVideos.length - evicted > RAM_CONFIG.MAX_ACTIVE_PREVIEWS ||
       this.totalEstimatedRAM > RAM_CONFIG.MAX_TOTAL_BUFFER_RAM
     ) {
-      const oldest = activeVideos.shift();
+      const oldest = eligibleForEviction.shift();
       if (!oldest) break;
 
       console.log(
-        `[BufferMgr] Evicting buffer for ${oldest.info.entryId} (RAM pressure)`,
+        `[BufferMgr] Evicting buffer for ${oldest.info.entryId} (RAM pressure, last access ${now - oldest.info.lastAccess}ms ago)`,
       );
       this.setStrategy(oldest.video, RAM_CONFIG.BUFFER_STRATEGY.METADATA);
+      evicted++;
     }
   },
 
@@ -1407,12 +1474,15 @@ function setupLightChunkPreview(previewVideo, entryId, cacheKeySrc) {
 
   async function startLoop() {
     if (state.isRunning) {
-      console.log(`[Preview:D] Loop already running for ${entryId}`);
       return;
     }
     console.log(`[Preview] Starting chunk loop for ${entryId}`);
     state.isRunning = true;
     state.playbackStarted = false;
+
+    // 🔧 NEW: Mark that chunk loop is active (prevents BufferManager conflicts)
+    previewVideo.dataset.chunkLoopActive = "true";
+
     await loadChunkPositions();
     if (previewVideo.readyState >= 1 && previewVideo.duration > 0) {
       console.log(
@@ -1444,18 +1514,24 @@ function setupLightChunkPreview(previewVideo, entryId, cacheKeySrc) {
   function stopLoop() {
     state.isRunning = false;
     state.isHovering = false;
+
+    // 🔧 NEW: Clear chunk loop active flag
+    delete previewVideo.dataset.chunkLoopActive;
+
     stopPlayback();
   }
 
   function onMouseEnter() {
     if (!tabIsVisible) {
-      console.log(`[Preview:D] Tab hidden, ignoring mouseenter for ${entryId}`);
       return;
     }
+
+    // 🔧 FIX: Cancel any pending buffer downgrade
+    clearTimeout(previewVideo._downgradeTimeout);
+
     console.log(`[Preview] Mouse entered ${entryId}`);
     state.isHovering = true;
 
-    // 🔧 NEW: Upgrade to active buffer strategy
     BufferManager.setStrategy(previewVideo, RAM_CONFIG.BUFFER_STRATEGY.ACTIVE);
 
     if (!state.isRunning) {
@@ -1467,8 +1543,18 @@ function setupLightChunkPreview(previewVideo, entryId, cacheKeySrc) {
     console.log(`[Preview] Mouse left ${entryId}`);
     state.isHovering = false;
 
-    // 🔧 NEW: Downgrade to initial buffer (keep some data, but release excess)
-    BufferManager.setStrategy(previewVideo, RAM_CONFIG.BUFFER_STRATEGY.INITIAL);
+    // 🔧 FIX: Add a small delay before downgrading buffer
+    // This prevents rapid strategy changes during quick hover/unhover
+    clearTimeout(previewVideo._downgradeTimeout);
+    previewVideo._downgradeTimeout = setTimeout(() => {
+      if (!state.isHovering) {
+        // Double-check still not hovering
+        BufferManager.setStrategy(
+          previewVideo,
+          RAM_CONFIG.BUFFER_STRATEGY.METADATA,
+        );
+      }
+    }, 2000); // Wait 2 seconds before releasing buffer
 
     stopLoop();
   }
