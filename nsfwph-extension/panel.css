@@ -277,15 +277,15 @@
 /* Size mode variants */
 #vo-player[data-size="s"] {
   width: min(900px, 97vw);
-  max-height: 85vh;
+  max-height: 90vh;
 }
 #vo-player[data-size="m"] {
   width: min(1280px, 99vw);
-  max-height: 90vh;
+  max-height: 95vh;
 }
 #vo-player[data-size="l"] {
   width: min(1680px, 100vw);
-  max-height: 95vh;
+  max-height: 100vh;
 }
 
 /* Video wrap */
