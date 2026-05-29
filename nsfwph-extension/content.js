@@ -21,7 +21,7 @@ const MAX_GALLERY_ITEMS = 6;
 const SELECTOR = ".message-inner video";
 // Settings for lightweight chunk preview (2-3 second moving clips that loop)
 const NUM_PREVIEW_CHUNKS = 5;
-const CHUNK_PLAY_DURATION_MS = 400; // 0.4s per chunk → ~2s full cycle
+const CHUNK_PLAY_DURATION_MS = 4000; // 4s per chunk → ~20s full cycle
 
 // ═══════════════════════════════════════════════════════════════
 // BUFFER BOOST ENGINE (ported from nsfwph-fastream-extension)
@@ -1187,10 +1187,17 @@ function enforceSinglePlayback(videoToPlay) {
       `Paused previous video to enforce single playback`,
       currentlyPlaying ? currentlyPlaying.dataset.videoObserverId : "",
     );
+    // Close overlay if it's showing the video being displaced
+    if (isOverlayShowingVideo(currentlyPlaying)) {
+      closeVideoOverlay();
+    }
   }
   currentlyPlaying = videoToPlay;
   const onEnded = () => {
-    if (currentlyPlaying === videoToPlay) currentlyPlaying = null;
+    if (currentlyPlaying === videoToPlay) {
+      currentlyPlaying = null;
+      closeVideoOverlay();
+    }
   };
   videoToPlay.addEventListener("ended", onEnded, { once: true });
 }
@@ -1645,33 +1652,27 @@ function createSinglePreview(originalVideo, entryId) {
   preview.muted = true;
   preview.loop = false;
   preview.playsInline = true;
-  // 🔧 FIX: Start with minimal preload - BufferManager will upgrade as needed
   preview.preload = "metadata";
   preview.style.width = "100%";
-  preview.style.height = "auto";
-  preview.style.maxHeight = "96px";
+  preview.style.height = "100%";
   preview.style.objectFit = "cover";
   preview.style.borderRadius = "4px";
   preview.style.background = "#1a1a2e";
   preview.style.display = "block";
   preview.style.cursor = "pointer";
 
-  // 🔧 NEW: Register with BufferManager
   BufferManager.register(preview, entryId);
 
   let isInitialized = false;
 
   function initializePreview() {
-    if (isInitialized) {
-      return;
-    }
+    if (isInitialized) return;
     console.log(`[Preview] Initializing preview for ${entryId}`);
     isInitialized = true;
 
     const stopLoop = setupLightChunkPreview(preview, entryId, cleanSrc);
     preview._stopPreviewLoop = stopLoop;
 
-    // 🔧 NEW: Smart buffer strategy based on visibility
     scheduleSmartBuffering(preview, entryId);
 
     console.log(
@@ -1727,25 +1728,15 @@ function createVideoCard(entry) {
   card.className = "video-card";
   card.dataset.videoId = entry.id;
   card.innerHTML = `
-    <div class="video-row">
-      <div class="preview-container">
-        <div class="thumb-placeholder"></div>
-      </div>
-      <div class="video-info">
-        <div class="video-header">
-          <strong>${entry.id}</strong>
-          <div class="video-actions">
-            <span class="video-status ${entry.info.paused ? "paused" : "playing"}">${entry.info.paused ? "⏸" : "▶"}</span>
-            <button class="gallery-btn" title="Open preview gallery">📷</button>
-          </div>
-        </div>
-        <div class="video-src" title="${entry.info.src}">${entry.info.src}</div>
-        <div class="video-meta">${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s</div>
-      </div>
+    <div class="preview-container">
+      <div class="thumb-placeholder"></div>
     </div>
-    <div class="time-selections">
-      <small>Time selections</small>
-      <div class="time-strip"></div>
+    <div class="video-info-row">
+      <div class="video-id-meta">
+        <span class="video-id">${entry.id}</span>
+        <span class="video-meta">${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s</span>
+      </div>
+      <span class="video-status ${entry.info.paused ? "paused" : "playing"}">${entry.info.paused ? "⏸ Paused" : "▶ Playing"}</span>
     </div>
   `;
 
@@ -1758,15 +1749,21 @@ function createVideoCard(entry) {
     setTimeout(() => {
       delete videoEl.dataset.clickInProgress;
     }, 300);
+
     if (videoEl.paused) {
       enforceSinglePlayback(videoEl);
+      showVideoOverlay(videoEl, entry);
       videoEl.play().catch((err) => {
-        console.warn("Play failed on card click", err);
+        console.warn("[Overlay] Play failed on card click:", err);
       });
     } else {
-      videoEl.pause();
-      if (currentlyPlaying === videoEl) currentlyPlaying = null;
+      if (isOverlayShowingVideo(videoEl)) {
+        closeVideoOverlay();
+      } else {
+        showVideoOverlay(videoEl, entry);
+      }
     }
+
     videoEl.scrollIntoView({ behavior: "smooth", block: "center" });
   });
 
@@ -1779,10 +1776,13 @@ function updateExistingCard(card, entry) {
     statusEl.className = `video-status ${entry.info.paused ? "paused" : "playing"}`;
     statusEl.textContent = entry.info.paused ? "⏸ Paused" : "▶ Playing";
   }
+
   const timeEl = card.querySelector(".video-meta");
   if (timeEl) {
     timeEl.textContent = `${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s`;
   }
+
+  // Replace placeholder with real preview when it arrives
   const placeholder = card.querySelector(".thumb-placeholder");
   if (placeholder && entry.preview) {
     log(`Replacing placeholder with real preview for ${entry.id}`);
@@ -1982,6 +1982,293 @@ function createFloatingPanel() {
     }
   });
   performPanelUpdate();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// VIDEO OVERLAY CONTROLLER
+// ═══════════════════════════════════════════════════════════════
+
+function createVideoOverlay() {
+  if (document.getElementById("vo-overlay")) return;
+
+  const overlay = document.createElement("div");
+  overlay.id = "vo-overlay";
+  overlay.innerHTML = `
+    <div id="vo-player" data-size="m">
+      <div id="vo-video-wrap">
+        <button id="vo-close" title="Close (Esc)">✕</button>
+      </div>
+      <div id="vo-controls">
+        <div id="vo-top-row">
+          <div id="vo-title">—</div>
+          <div id="vo-size-btns">
+            <button class="vo-size-btn" data-size="s">S</button>
+            <button class="vo-size-btn active" data-size="m">M</button>
+            <button class="vo-size-btn" data-size="l">L</button>
+          </div>
+        </div>
+        <div id="vo-scrubber-wrap">
+          <div id="vo-scrubber-track">
+            <div id="vo-scrubber-fill"></div>
+            <div id="vo-scrubber-thumb"></div>
+          </div>
+        </div>
+        <div id="vo-bottom-row">
+          <span id="vo-time">0:00 / 0:00</span>
+          <div id="vo-btn-row">
+            <button class="vo-btn" id="vo-playpause">⏸ Pause</button>
+            <button class="vo-btn" id="vo-mute">🔊 Mute</button>
+            <button class="vo-btn" id="vo-pip">⛶ PiP</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Close on scrim click
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeVideoOverlay();
+  });
+
+  document
+    .getElementById("vo-close")
+    .addEventListener("click", closeVideoOverlay);
+
+  // ESC key
+  const onKeyDown = (e) => {
+    if (e.key === "Escape") closeVideoOverlay();
+  };
+  document.addEventListener("keydown", onKeyDown);
+  overlay._keydownCleanup = () =>
+    document.removeEventListener("keydown", onKeyDown);
+
+  // Size mode buttons
+  document.getElementById("vo-size-btns").addEventListener("click", (e) => {
+    const btn = e.target.closest(".vo-size-btn");
+    if (!btn) return;
+    const size = btn.dataset.size;
+    const player = document.getElementById("vo-player");
+    player.dataset.size = size;
+    // Update active state
+    document.querySelectorAll(".vo-size-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.size === size);
+    });
+    console.log(`[Overlay] Size mode → ${size}`);
+  });
+
+  // Scrubber seek
+  const scrubberWrap = document.getElementById("vo-scrubber-wrap");
+  scrubberWrap.addEventListener("click", (e) => {
+    const video = overlay._currentVideo;
+    if (!video || !video.duration) return;
+    const rect = scrubberWrap.getBoundingClientRect();
+    const ratio = Math.max(
+      0,
+      Math.min(1, (e.clientX - rect.left) / rect.width),
+    );
+    video.currentTime = ratio * video.duration;
+  });
+
+  // Play/pause toggle
+  document.getElementById("vo-playpause").addEventListener("click", () => {
+    const video = overlay._currentVideo;
+    if (!video) return;
+    if (video.paused) {
+      enforceSinglePlayback(video);
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
+  });
+
+  // Mute toggle
+  document.getElementById("vo-mute").addEventListener("click", () => {
+    const video = overlay._currentVideo;
+    if (!video) return;
+    video.muted = !video.muted;
+    document.getElementById("vo-mute").textContent = video.muted
+      ? "🔇 Unmute"
+      : "🔊 Mute";
+  });
+
+  // PiP
+  document.getElementById("vo-pip").addEventListener("click", async () => {
+    const video = overlay._currentVideo;
+    if (!video) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (video.requestPictureInPicture) {
+        await video.requestPictureInPicture();
+      }
+    } catch (err) {
+      console.warn("[Overlay] PiP failed:", err);
+    }
+  });
+
+  console.log("[Overlay] Overlay DOM created");
+}
+
+function showVideoOverlay(videoEl, entry) {
+  createVideoOverlay(); // no-op if already exists
+
+  const overlay = document.getElementById("vo-overlay");
+  const videoWrap = document.getElementById("vo-video-wrap");
+  const title = document.getElementById("vo-title");
+
+  // Detach any previous video from overlay first
+  const existing = videoWrap.querySelector("video");
+  if (existing && existing !== videoEl) {
+    // Return it to its original spot (we stored the original parent)
+    _returnVideoToOriginalParent(existing);
+  }
+
+  // Store original parent so we can return the video element later
+  if (!videoEl._overlayOriginalParent) {
+    videoEl._overlayOriginalParent = videoEl.parentElement;
+    videoEl._overlayOriginalNextSibling = videoEl.nextSibling;
+  }
+
+  // Move the actual video element into the overlay
+  videoWrap.insertBefore(videoEl, document.getElementById("vo-close"));
+
+  // Set title
+  const src = videoEl.currentSrc || videoEl.src || "";
+  const filename = src.split("/").pop().split("?")[0] || entry.id;
+  title.textContent = `${entry.id} — ${filename}`;
+
+  // Attach progress updater
+  _attachOverlayVideoListeners(videoEl, overlay);
+
+  // Mark which video is in the overlay
+  overlay._currentVideo = videoEl;
+  overlay._currentEntry = entry;
+
+  // Show with transition
+  requestAnimationFrame(() => {
+    overlay.classList.add("visible");
+  });
+
+  console.log(`[Overlay] Opened for ${entry.id}`);
+}
+
+function closeVideoOverlay() {
+  const overlay = document.getElementById("vo-overlay");
+  if (!overlay) return;
+
+  const video = overlay._currentVideo;
+  overlay.classList.remove("visible");
+
+  // Wait for transition to finish before moving the video back
+  const onTransitionEnd = () => {
+    overlay.removeEventListener("transitionend", onTransitionEnd);
+
+    if (video) {
+      _detachOverlayVideoListeners(video, overlay);
+      _returnVideoToOriginalParent(video);
+      overlay._currentVideo = null;
+      overlay._currentEntry = null;
+    }
+  };
+
+  overlay.addEventListener("transitionend", onTransitionEnd, { once: true });
+
+  // Fallback in case transition doesn't fire (e.g. overlay hidden)
+  setTimeout(() => {
+    if (overlay._currentVideo === video) {
+      onTransitionEnd();
+    }
+  }, 400);
+
+  console.log("[Overlay] Closed");
+}
+
+function isOverlayShowingVideo(videoEl) {
+  const overlay = document.getElementById("vo-overlay");
+  return (
+    overlay &&
+    overlay._currentVideo === videoEl &&
+    overlay.classList.contains("visible")
+  );
+}
+
+function _returnVideoToOriginalParent(videoEl) {
+  if (!videoEl._overlayOriginalParent) return;
+  const parent = videoEl._overlayOriginalParent;
+  const nextSib = videoEl._overlayOriginalNextSibling;
+  try {
+    if (nextSib && nextSib.parentElement === parent) {
+      parent.insertBefore(videoEl, nextSib);
+    } else {
+      parent.appendChild(videoEl);
+    }
+  } catch (err) {
+    console.warn("[Overlay] Could not return video to original parent:", err);
+  }
+  delete videoEl._overlayOriginalParent;
+  delete videoEl._overlayOriginalNextSibling;
+  console.log(
+    `[Overlay] Returned ${videoEl.dataset.videoObserverId} to original DOM`,
+  );
+}
+
+function _attachOverlayVideoListeners(videoEl, overlay) {
+  // Clean up any existing listeners first
+  _detachOverlayVideoListeners(videoEl, overlay);
+
+  const fill = document.getElementById("vo-scrubber-fill");
+  const thumb = document.getElementById("vo-scrubber-thumb");
+  const timeEl = document.getElementById("vo-time");
+  const playPauseBtn = document.getElementById("vo-playpause");
+
+  function fmtTime(s) {
+    if (!isFinite(s)) return "0:00";
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  }
+
+  const onTimeUpdate = () => {
+    const pct = videoEl.duration
+      ? (videoEl.currentTime / videoEl.duration) * 100
+      : 0;
+    fill.style.width = `${pct}%`;
+    thumb.style.left = `${pct}%`;
+    timeEl.textContent = `${fmtTime(videoEl.currentTime)} / ${fmtTime(videoEl.duration)}`;
+  };
+
+  const onPlayPause = () => {
+    playPauseBtn.textContent = videoEl.paused ? "▶ Play" : "⏸ Pause";
+    playPauseBtn.classList.toggle("active", !videoEl.paused);
+  };
+
+  videoEl.addEventListener("timeupdate", onTimeUpdate);
+  videoEl.addEventListener("play", onPlayPause);
+  videoEl.addEventListener("pause", onPlayPause);
+
+  // Store refs for cleanup
+  overlay._listenerRefs = { onTimeUpdate, onPlayPause, videoEl };
+
+  // Fire once to set initial state
+  onTimeUpdate();
+  onPlayPause();
+}
+
+function _detachOverlayVideoListeners(videoEl, overlay) {
+  if (!overlay._listenerRefs) return;
+  const {
+    onTimeUpdate,
+    onPlayPause,
+    videoEl: boundVid,
+  } = overlay._listenerRefs;
+  if (boundVid) {
+    boundVid.removeEventListener("timeupdate", onTimeUpdate);
+    boundVid.removeEventListener("play", onPlayPause);
+    boundVid.removeEventListener("pause", onPlayPause);
+  }
+  delete overlay._listenerRefs;
 }
 
 // ═══════════════════════════════════════════════════════════════
