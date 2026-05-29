@@ -326,17 +326,39 @@ export const FloatingPanel = {
   },
 
   /**
-   * Smart preview management - load previews for visible/nearby cards,
-   * unload for cards far out of view
+   * Smart preview management with scope-aware cancellation
+   * - Playing video: preview always loaded
+   * - Nearby videos: preview loaded, buffer kept
+   * - Visible background: preview loaded if visible in panel
+   * - Out of scope: preview unloaded to free memory
    */
   _managePreviewVisibility(list) {
     const listRect = list.getBoundingClientRect();
     const entries = AppState.getPlayerEntries();
+    const currentlyPlaying = AppState.getCurrentlyPlaying();
+
     let loadedCount = 0;
     let unloadedCount = 0;
+    let keptCount = 0;
 
-    // ✅ Prioritize: playing > nearby > visible background > others
-    for (const [player, entry] of entries) {
+    // ✅ Find playing video's player for scope calculation
+    let playingIndex = -1;
+    if (currentlyPlaying) {
+      for (let i = 0; i < entries.length; i++) {
+        const [player, entry] = entries[i];
+        const video = getVideoFromPlayer(player);
+        if (video === currentlyPlaying) {
+          playingIndex = i;
+          break;
+        }
+      }
+    }
+
+    // Calculate scope window for chunk previews (wider than boost window)
+    const PREVIEW_RADIUS = 3; // Keep previews for 3 videos above/below playing
+
+    for (let i = 0; i < entries.length; i++) {
+      const [player, entry] = entries[i];
       const card = AppState.getCard(player);
       if (!card) continue;
 
@@ -346,23 +368,39 @@ export const FloatingPanel = {
         cardRect.bottom > listRect.top - UNLOAD_MARGIN;
 
       const priority = card.dataset.priority || "background";
+      const inPreviewScope =
+        playingIndex >= 0 && Math.abs(i - playingIndex) <= PREVIEW_RADIUS;
 
-      if (isVisibleInPanel && priority === "playing") {
-        // Always load the playing video's preview first
+      if (priority === "playing") {
+        // ✅ Always keep playing video's preview loaded
         loadCardPreview(card);
         loadedCount++;
-      } else if (isVisibleInPanel && priority === "nearby") {
-        // Load nearby visible cards
+      } else if (
+        priority === "nearby" ||
+        (inPreviewScope && isVisibleInPanel)
+      ) {
+        // ✅ Nearby or in scope + visible: keep loaded
         loadCardPreview(card);
-        loadedCount++;
-      } else if (isVisibleInPanel && priority === "background") {
-        // Visible background cards: load if we have capacity (lazy)
-        // Don't force-unload; let hover trigger them
-      } else if (!isVisibleInPanel && priority === "background") {
-        // Unload previews for cards far out of view
+        keptCount++;
+      } else if (
+        !isVisibleInPanel &&
+        !inPreviewScope &&
+        priority === "background"
+      ) {
+        // ✅ Out of scope and not visible: UNLOAD to free memory
         unloadCardPreview(card);
         unloadedCount++;
       }
+      // Else: keep current state (don't force load or unload)
+    }
+
+    // ✅ Log periodically
+    if ((loadedCount > 0 || unloadedCount > 0) && Math.random() < 0.2) {
+      const stats = ChunkPreviewEngine.getStats();
+      debug.log(
+        "PANEL",
+        `Preview scope: ${loadedCount} loaded, ${keptCount} kept, ${unloadedCount} unloaded | Active chunks: ${stats.activeLoops}`,
+      );
     }
   },
 

@@ -1,12 +1,12 @@
 /**
  * Buffer Boost Engine - manages playback rate acceleration
- * for faster video buffering with intelligent prioritization.
+ * with SMART SCOPE-AWARE cancellation
  *
- * Strategy:
- * - Always prioritize currently playing video
- * - Boost N surrounding videos (configurable window)
- * - Stop boosts when video leaves the window
- * - Recalculate on play, scroll, or tab visibility change
+ * Priority Tiers:
+ * - PLAYING: The currently active video (highest boost)
+ * - NEARBY: Videos within BOOST_WINDOW.RADIUS of playing video
+ * - BACKGROUND: Visible videos outside window
+ * - IDLE: Everything else (boost stopped, resources minimal)
  */
 import { BOOST_CONFIG } from "../core/config.js";
 import { getBufferAhead, getEffectiveBufferRatio } from "./video-utils.js";
@@ -15,9 +15,12 @@ import { DebugLogger as debug } from "../core/debug.js";
 
 // Configuration for boost window
 const BOOST_WINDOW = {
-  RADIUS: 2, // Boost 2 videos above and below the playing video
-  MAX_BACKGROUND: 3, // Max background videos to boost when nothing is playing
-  RECALCULATE_DELAY: 300, // Debounce recalculations
+  RADIUS: 2,
+  MAX_BACKGROUND: 3,
+  RECALCULATE_DELAY: 300,
+  // ✅ NEW: Scope thresholds
+  NEARBY_RADIUS_EXTRA: 1, // Extra radius considered "nearby" before full stop
+  GRACEFUL_STOP_DELAY: 1000, // 1s grace period before stopping background boosts
 };
 
 // Store boost state separately so it survives video element replacement
@@ -25,9 +28,8 @@ const boostStates = new WeakMap();
 // Track all active boost managers
 const activeManagers = new Map(); // video -> BoostManager
 let recalculateTimer = null;
-
-const pendingBoosts = new Map(); // video -> { priority, scheduled }
-let boostScheduler = null;
+// ✅ NEW: Track videos pending graceful stop
+const pendingStops = new Map(); // video -> { timer, reason }
 
 function getState(video) {
   if (!boostStates.has(video)) {
@@ -41,7 +43,7 @@ function getState(video) {
       paused: false,
       hasBoostedOnLoad: false,
       timer: null,
-      priority: "background", // 'playing' | 'nearby' | 'background'
+      priority: "background",
     });
   }
   return boostStates.get(video);
@@ -58,23 +60,20 @@ function clearState(video) {
 
 /**
  * Determine which videos should be in the boost window
- * Returns array of [player, entry] pairs that should be boosted
+ * ✅ UPDATED: Returns detailed scope info for smart cancellation
  */
 function calculateBoostWindow() {
   const entries = AppState.getPlayerEntries();
   if (entries.length === 0)
-    return { priority: null, nearby: [], background: [] };
+    return { priority: null, nearby: [], background: [], allScoped: new Set() };
 
   const currentlyPlaying = AppState.getCurrentlyPlaying();
-
-  // Find the playing video's player
   let playingPlayer = null;
   let playingIndex = -1;
 
   if (currentlyPlaying) {
     for (let i = 0; i < entries.length; i++) {
       const [player, entry] = entries[i];
-      // Find video inside this player
       const video =
         player.shadowRoot?.querySelector("video") ||
         player.querySelector("video");
@@ -90,10 +89,11 @@ function calculateBoostWindow() {
     priority: playingPlayer ? entries[playingIndex] : null,
     nearby: [],
     background: [],
+    allScoped: new Set(), // ✅ Track all videos that should have boosts
   };
 
   if (playingPlayer) {
-    // Calculate nearby videos (BOOST_WINDOW.RADIUS above and below)
+    // Calculate nearby videos
     const start = Math.max(0, playingIndex - BOOST_WINDOW.RADIUS);
     const end = Math.min(
       entries.length,
@@ -101,22 +101,19 @@ function calculateBoostWindow() {
     );
 
     for (let i = start; i < end; i++) {
-      if (i === playingIndex) continue; // Skip the playing one (it's priority)
+      if (i === playingIndex) continue;
       result.nearby.push(entries[i]);
     }
 
-    // Fill remaining background slots if window is small
+    // Fill remaining background slots
     const remainingSlots = Math.max(
       0,
       BOOST_WINDOW.MAX_BACKGROUND - result.nearby.length,
     );
     if (remainingSlots > 0) {
-      // Get visible but out-of-window videos (prefer those in viewport)
       const outOfWindow = entries.filter(([player], index) => {
         return index < start || index >= end;
       });
-
-      // Sort by viewport proximity
       outOfWindow.sort((a, b) => {
         const aVisible = isElementInViewport(a[0]);
         const bVisible = isElementInViewport(b[0]);
@@ -124,29 +121,29 @@ function calculateBoostWindow() {
         if (!aVisible && bVisible) return 1;
         return 0;
       });
-
       result.background = outOfWindow.slice(0, remainingSlots);
     }
+
+    // ✅ Mark all scoped videos
+    if (result.priority) result.allScoped.add(result.priority[0]);
+    result.nearby.forEach(([p]) => result.allScoped.add(p));
+    result.background.forEach(([p]) => result.allScoped.add(p));
   } else {
-    // Nothing playing - boost first few visible videos
     const visibleEntries = entries.filter(([player]) =>
       isElementInViewport(player),
     );
     result.background = visibleEntries.slice(0, BOOST_WINDOW.MAX_BACKGROUND);
+    result.background.forEach(([p]) => result.allScoped.add(p));
   }
 
   return result;
 }
 
-/**
- * Check if element is within the viewport
- */
 function isElementInViewport(el) {
   const rect = el.getBoundingClientRect();
   const windowHeight =
     window.innerHeight || document.documentElement.clientHeight;
   const windowWidth = window.innerWidth || document.documentElement.clientWidth;
-
   return (
     rect.top >= -rect.height &&
     rect.left >= -rect.width &&
@@ -156,24 +153,30 @@ function isElementInViewport(el) {
 }
 
 /**
- * Manages boost state for a single video element
+ * BoostManager with smart priority handling
  */
 class BoostManager {
   constructor(video) {
     this.video = video;
     this.state = getState(video);
-    this._id = BoostManager._nextId++; // ✅ Unique ID for staggering
+    this._id = BoostManager._nextId++;
   }
 
   start({ rate, duration, isSeek = false, priority = "background" } = {}) {
     const video = this.video;
     if (!video || !AppState.isTabVisible()) return;
 
-    if (
-      this.state.active &&
-      this._priorityValue(this.state.priority) >= this._priorityValue(priority)
-    ) {
-      return;
+    // ✅ Don't downgrade priority
+    const currentPriorityValue = this._priorityValue(this.state.priority);
+    const newPriorityValue = this._priorityValue(priority);
+
+    if (this.state.active && currentPriorityValue >= newPriorityValue) {
+      return; // Already boosting at equal or higher priority
+    }
+
+    // ✅ If upgrading priority, restart with new params
+    if (this.state.active && currentPriorityValue < newPriorityValue) {
+      this.stop("upgrading priority", { silent: true });
     }
 
     const effectiveRate =
@@ -195,17 +198,18 @@ class BoostManager {
     this.state.paused = video.paused;
     this.state.priority = priority;
 
-    // ✅ Batch with other DOM writes using requestAnimationFrame
+    // ✅ Batch DOM writes
     if (BoostManager._pendingWrites.size === 0) {
       requestAnimationFrame(() => {
         for (const [vid, rate] of BoostManager._pendingWrites) {
-          vid.playbackRate = rate;
+          if (vid && vid.playbackRate !== undefined) {
+            vid.playbackRate = rate;
+          }
         }
         BoostManager._pendingWrites.clear();
       });
     }
     BoostManager._pendingWrites.set(video, effectiveRate);
-
     activeManagers.set(video, this);
 
     debug.log(
@@ -222,11 +226,8 @@ class BoostManager {
 
   _scheduleEvaluation() {
     this.clearTimer();
-
-    // ✅ Stagger timer based on video ID to prevent evaluation spikes
-    const stagger = (this._id * 137) % 500; // Spread evaluations over 500ms
+    const stagger = (this._id * 137) % 500;
     const delay = this.state.baseDuration + stagger;
-
     this.state.timer = setTimeout(() => this._evaluate(), delay);
   }
 
@@ -238,7 +239,6 @@ class BoostManager {
     }
 
     if (video.paused && this.state.priority !== "playing") {
-      // Non-playing videos: stop if paused
       this.stop("paused");
       return;
     }
@@ -277,25 +277,67 @@ class BoostManager {
     }
   }
 
-  stop(reason = "manual") {
+  /**
+   * Stop boost with optional graceful degradation
+   * @param {string} reason - Why we're stopping
+   * @param {object} options - { silent: true } to suppress logs
+   */
+  stop(reason = "manual", options = {}) {
     const video = this.video;
+    const wasActive = this.state.active;
+
     if (
       video &&
       this.state.targetRate &&
       video.playbackRate === this.state.targetRate
     ) {
-      video.playbackRate = this.state.originalRate || 1.0;
+      // ✅ Smooth transition back to normal rate
+      const originalRate = this.state.originalRate || 1.0;
+      video.playbackRate = originalRate;
     }
+
     this.state.active = false;
     this.clearTimer();
     activeManagers.delete(video);
 
-    if (video && reason !== "deprioritized") {
+    if (video && !options.silent && reason !== "deprioritized") {
       const currentAhead = getBufferAhead(video);
       debug.log(
         "BOOST",
-        `Boost end: ${reason} | Buffer: ${currentAhead.toFixed(1)}s`,
+        `Boost end: ${reason} | Buffer: ${currentAhead.toFixed(1)}s | Was: ${this.state.priority.toUpperCase()}`,
       );
+    }
+  }
+
+  /**
+   * ✅ NEW: Graceful stop - downgrade priority before full stop
+   */
+  gracefulStop(reason, finalCallback) {
+    const currentPriority = this.state.priority;
+
+    if (currentPriority === "playing" || currentPriority === "nearby") {
+      // High priority: keep boost but downgrade to background
+      debug.log(
+        "BOOST",
+        `Graceful downgrade: ${currentPriority} → background (${reason})`,
+      );
+      this.start({
+        rate: BOOST_CONFIG.BOOST_RATE_NORMAL,
+        duration: Math.min(BOOST_CONFIG.BOOST_DURATION / 2, 4000),
+        priority: "background",
+      });
+
+      // Schedule final stop after grace period
+      setTimeout(() => {
+        if (this.state.priority === "background") {
+          this.stop(reason);
+          if (finalCallback) finalCallback();
+        }
+      }, BOOST_WINDOW.GRACEFUL_STOP_DELAY);
+    } else {
+      // Already low priority, just stop
+      this.stop(reason);
+      if (finalCallback) finalCallback();
     }
   }
 
@@ -307,25 +349,27 @@ class BoostManager {
   }
 
   dispose() {
+    // Cancel any pending graceful stop
+    const pending = pendingStops.get(this.video);
+    if (pending) {
+      clearTimeout(pending.timer);
+      pendingStops.delete(this.video);
+    }
+
     this.stop("dispose");
     clearState(this.video);
   }
 }
 
-// ✅ Static properties for batching and ID generation
+// Static properties
 BoostManager._nextId = 0;
 BoostManager._pendingWrites = new Map();
 
-// Global boost manager registry
 const managers = new WeakMap();
 
 export const BoostEngine = {
   _lastWindowKey: null,
 
-  /**
-   * Attach boost capabilities to a video element
-   * Returns cleanup function
-   */
   attach(video) {
     if (!video || video.dataset.boostAttached === "true") return () => {};
     video.dataset.boostAttached = "true";
@@ -333,33 +377,22 @@ export const BoostEngine = {
     const manager = new BoostManager(video);
     managers.set(video, manager);
 
-    debug.log(
-      "BOOST",
-      `Attached to ${video.dataset.videoObserverId || "unknown"}`,
-    );
-
-    // Initial buffer check after load - deferred to recalculate
     const initialCheck = setTimeout(() => {
       if (!AppState.isTabVisible()) return;
-
       const state = getState(video);
       const ahead = getBufferAhead(video);
       if (
         ahead < BOOST_CONFIG.INITIAL_BUFFER_TARGET &&
         !state.hasBoostedOnLoad
       ) {
-        // Don't start here - let recalculateWindow decide
         state.hasBoostedOnLoad = true;
         BoostEngine.recalculateWindow();
       }
     }, 600);
 
-    // Event handlers
     const onSeeked = () => {
       if (!AppState.isTabVisible()) return;
-      // Only boost-seek if this is the currently playing video
       if (AppState.getCurrentlyPlaying() !== video) return;
-
       const ratio = getEffectiveBufferRatio(video);
       manager.start({
         rate: BOOST_CONFIG.SEEK_BOOST_RATE,
@@ -374,13 +407,11 @@ export const BoostEngine = {
     };
 
     const onPlay = () => {
-      // When this video starts playing, recalculate the boost window
       AppState.setCurrentlyPlaying(video);
       BoostEngine.recalculateWindow();
     };
 
     const onPause = () => {
-      // Recalculate when paused (might deprioritize)
       BoostEngine.recalculateWindow();
     };
 
@@ -388,7 +419,6 @@ export const BoostEngine = {
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
 
-    // Return cleanup function
     return () => {
       clearTimeout(initialCheck);
       video.removeEventListener("seeked", onSeeked);
@@ -400,12 +430,7 @@ export const BoostEngine = {
     };
   },
 
-  /**
-   * Recalculate which videos should be boosted
-   * Call this when: video plays, video pauses, user scrolls, tab becomes visible
-   */
   recalculateWindow() {
-    // Debounce to avoid rapid recalculations
     clearTimeout(recalculateTimer);
     recalculateTimer = setTimeout(() => {
       this._performRecalculation();
@@ -413,16 +438,14 @@ export const BoostEngine = {
   },
 
   /**
-   * Optimized boost recalculation with:
-   * - Priority-based scheduling
-   * - requestIdleCallback for low-priority
-   * - Staggered timers to prevent spikes
-   * - Batch DOM writes
+   * ✅ UPDATED: Smart cancellation with scope awareness
    */
   _performRecalculation() {
     if (!AppState.isTabVisible()) return;
 
     const newWindow = calculateBoostWindow();
+
+    // Build a key for comparison
     const newKey = JSON.stringify({
       playing: newWindow.priority?.[1]?.id || "none",
       nearby: newWindow.nearby
@@ -445,9 +468,8 @@ export const BoostEngine = {
       `Window recalc: playing=${newWindow.priority ? "yes" : "no"}, nearby=${newWindow.nearby.length}, background=${newWindow.background.length}`,
     );
 
-    // Collect target videos with priorities
-    const newWindowVideos = new Map(); // video -> priority
-
+    // ✅ Collect target videos with priorities
+    const newWindowVideos = new Map();
     if (newWindow.priority) {
       const [player] = newWindow.priority;
       const video =
@@ -455,14 +477,12 @@ export const BoostEngine = {
         player.querySelector("video");
       if (video) newWindowVideos.set(video, "playing");
     }
-
     for (const [player] of newWindow.nearby) {
       const video =
         player.shadowRoot?.querySelector("video") ||
         player.querySelector("video");
       if (video) newWindowVideos.set(video, "nearby");
     }
-
     for (const [player] of newWindow.background) {
       const video =
         player.shadowRoot?.querySelector("video") ||
@@ -470,7 +490,7 @@ export const BoostEngine = {
       if (video) newWindowVideos.set(video, "background");
     }
 
-    // ✅ Mark entries with boost priority for panel
+    // ✅ Update boost priority on entries
     for (const [, entry] of AppState.getPlayerEntries()) {
       entry.boostPriority = "background";
     }
@@ -485,56 +505,107 @@ export const BoostEngine = {
     }
     AppState.notifyPlayersChanged();
 
-    // Cancel pending boosts that are no longer needed
-    for (const [video, scheduled] of pendingBoosts) {
-      if (!newWindowVideos.has(video)) {
-        clearTimeout(scheduled.timeout);
-        pendingBoosts.delete(video);
-      }
-    }
+    // ✅ SMART CANCELLATION: Handle videos moving OUT of scope
+    const allActiveVideos = new Set(activeManagers.keys());
 
-    // Stop active boosts not in window
-    const toStop = [];
-    for (const [video, manager] of activeManagers) {
-      if (!newWindowVideos.has(video)) {
-        toStop.push(video);
-      }
-    }
+    for (const video of allActiveVideos) {
+      const manager = managers.get(video);
+      if (!manager || !manager.state.active) continue;
 
-    // ✅ Batch stop: collect first, then execute
-    if (toStop.length > 0) {
-      // Use requestAnimationFrame for smooth visual transition
-      requestAnimationFrame(() => {
-        for (const video of toStop) {
-          const manager = managers.get(video);
-          if (manager) manager.stop("outside window");
+      const newPriority = newWindowVideos.get(video);
+      const currentPriority = manager.state.priority;
+
+      if (!newPriority) {
+        // ✅ Video is now OUT OF SCOPE entirely
+        const currentPriorityValue = manager._priorityValue(currentPriority);
+
+        if (currentPriorityValue >= 2) {
+          // Was playing or nearby: graceful degradation
+          debug.log(
+            "BOOST",
+            `Out of scope: ${currentPriority.toUpperCase()} → graceful stop`,
+          );
+          manager.gracefulStop("out of scope", () => {
+            // After grace period, check if still out of scope
+            if (!newWindowVideos.has(video)) {
+              manager.stop("confirmed out of scope");
+            }
+          });
+        } else {
+          // Was background: immediate stop
+          manager.stop("out of scope");
         }
-      });
+      } else if (newPriority !== currentPriority) {
+        // ✅ Priority changed: update boost
+        const newValue = manager._priorityValue(newPriority);
+        const currentValue = manager._priorityValue(currentPriority);
+
+        if (newValue > currentValue) {
+          // Upgraded priority
+          manager.start({
+            rate: BOOST_CONFIG.BOOST_RATE_NORMAL,
+            duration: BOOST_CONFIG.BOOST_DURATION,
+            priority: newPriority,
+          });
+        } else if (newValue < currentValue) {
+          // ✅ Downgraded priority: graceful transition
+          debug.log(
+            "BOOST",
+            `Downgrade: ${currentPriority.toUpperCase()} → ${newPriority.toUpperCase()}`,
+          );
+          manager.gracefulStop("downgraded");
+          // Schedule new boost at lower priority
+          setTimeout(() => {
+            if (newWindowVideos.has(video)) {
+              manager.start({
+                rate: BOOST_CONFIG.BOOST_RATE_NORMAL,
+                duration: BOOST_CONFIG.BOOST_DURATION,
+                priority: newPriority,
+              });
+            }
+          }, BOOST_WINDOW.GRACEFUL_STOP_DELAY + 100);
+        }
+      }
     }
 
-    // ✅ Schedule starts with priority ordering
+    // ✅ Schedule new boosts for videos entering scope
     this._scheduleBoosts(newWindowVideos);
   },
 
-  /** Get manager for a video */
   getManager(video) {
     return managers.get(video);
   },
 
-  /** Stop all boosts (for tab hide) */
+  /**
+   * Stop all boosts with smart ordering
+   */
   stopAll() {
     debug.log("BOOST", `Stopping all boosts (${activeManagers.size} active)`);
-    for (const [video, manager] of activeManagers) {
+
+    // ✅ Stop in priority order: background first, playing last
+    const priorityOrder = { background: 0, nearby: 1, playing: 2 };
+    const sorted = [...activeManagers.entries()]
+      .sort(
+        ([, a], [, b]) =>
+          priorityOrder[a.state.priority] - priorityOrder[b.state.priority],
+      )
+      .reverse(); // Highest priority last
+
+    sorted.forEach(([video, manager]) => {
       manager.stop("tab hidden");
+    });
+
+    // Clear pending graceful stops
+    for (const [video, pending] of pendingStops) {
+      clearTimeout(pending.timer);
     }
+    pendingStops.clear();
   },
 
-  /** Get active boost count */
   getActiveCount() {
     return activeManagers.size;
   },
 
-  /** Get boost stats for debugging */
   getStats() {
     const stats = {
       total: activeManagers.size,
@@ -546,21 +617,29 @@ export const BoostEngine = {
     return stats;
   },
 
-  /**
-   * Schedule boosts with intelligent prioritization
-   */
   _scheduleBoosts(newWindowVideos) {
-    // Cancel existing scheduler
     if (boostScheduler) {
       clearTimeout(boostScheduler);
       boostScheduler = null;
     }
 
-    // Sort by priority: playing > nearby > background
     const priorityOrder = { playing: 0, nearby: 1, background: 2 };
-    const sorted = [...newWindowVideos.entries()].sort(
-      ([, a], [, b]) => priorityOrder[a] - priorityOrder[b],
-    );
+    const sorted = [...newWindowVideos.entries()]
+      .filter(([video]) => {
+        // ✅ Skip if already boosting at equal or higher priority
+        const manager = managers.get(video);
+        if (!manager) return true;
+        if (!manager.state.active) return true;
+        const currentVal = manager._priorityValue(manager.state.priority);
+        const newVal = manager._priorityValue(newWindowVideos.get(video));
+        return newVal > currentVal;
+      })
+      .sort(([, a], [, b]) => priorityOrder[a] - priorityOrder[b]);
+
+    if (sorted.length === 0) {
+      this._logStats();
+      return;
+    }
 
     let index = 0;
     const total = sorted.length;
@@ -573,7 +652,6 @@ export const BoostEngine = {
 
       const [video, priority] = sorted[index];
       const manager = managers.get(video);
-
       if (!manager) {
         index++;
         scheduleNext();
@@ -582,7 +660,7 @@ export const BoostEngine = {
 
       const currentBuffer = getBufferAhead(video);
 
-      // ✅ Skip conditions (unchanged)
+      // ✅ Skip if buffer is already sufficient
       if (priority !== "playing" && currentBuffer >= BOOST_CONFIG.BUFFER_LOW) {
         index++;
         scheduleNext();
@@ -596,39 +674,22 @@ export const BoostEngine = {
         scheduleNext();
         return;
       }
-      if (manager.state.active) {
-        const currentPriority = manager._priorityValue(manager.state.priority);
-        const newPriority = manager._priorityValue(priority);
-        if (currentPriority >= newPriority) {
-          index++;
-          scheduleNext();
-          return;
-        }
-      }
 
-      // ✅ Execute boost based on priority
       const executeBoost = () => {
         manager.start({
           rate: BOOST_CONFIG.BOOST_RATE_NORMAL,
           duration: BOOST_CONFIG.BOOST_DURATION,
           priority,
         });
-
         index++;
 
-        // ✅ Use requestIdleCallback for background,
-        // setTimeout(0) for nearby, immediate for playing
         if (index < total) {
           const nextPriority = sorted[index][1];
-
           if (nextPriority === "playing") {
-            // Playing: schedule immediately in next microtask
             Promise.resolve().then(scheduleNext);
           } else if (nextPriority === "nearby") {
-            // Nearby: short delay to avoid jank
-            setTimeout(scheduleNext, 16); // ~1 frame
+            setTimeout(scheduleNext, 16);
           } else {
-            // Background: use idle time
             if (window.requestIdleCallback) {
               requestIdleCallback(() => scheduleNext(), { timeout: 100 });
             } else {
@@ -640,24 +701,19 @@ export const BoostEngine = {
         }
       };
 
-      // Execute current boost
       if (priority === "playing") {
-        // Playing: immediate, synchronous (user is waiting)
         executeBoost();
       } else if (priority === "nearby") {
-        // Nearby: next frame
         requestAnimationFrame(executeBoost);
       } else {
-        // Background: idle time
         if (window.requestIdleCallback) {
           requestIdleCallback(executeBoost, { timeout: 50 });
         } else {
-          setTimeout(executeBoost, 32); // ~2 frames
+          setTimeout(executeBoost, 32);
         }
       }
     };
 
-    // Start the chain
     scheduleNext();
   },
 
