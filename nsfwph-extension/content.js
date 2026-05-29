@@ -55,6 +55,620 @@ const previewBoostTimers = new WeakMap();
 
 let chatRoot = null;
 
+// ═══════════════════════════════════════════════════════════════
+// CHUNK CACHE SYSTEM
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * IndexedDB-based cache for chunk preview data.
+ * Survives page reloads and browser restarts.
+ * Uses IndexedDB which is available in content scripts without permissions.
+ */
+const ChunkCacheDB = {
+  DB_NAME: "NsfwphPreviewCache",
+  DB_VERSION: 1,
+  STORE_NAME: "chunkCache",
+  MAX_ENTRIES: 50, // Maximum number of cached videos
+  MAX_AGE_MS: 24 * 60 * 60 * 1000, // 24 hours cache lifetime
+  db: null,
+  initPromise: null,
+
+  /**
+   * Initialize the IndexedDB database
+   */
+  async init() {
+    if (this.db) return this.db;
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = new Promise((resolve, reject) => {
+      console.log("[ChunkCacheDB] Initializing IndexedDB...");
+      const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+
+      request.onerror = (event) => {
+        console.error(
+          "[ChunkCacheDB] Failed to open database:",
+          event.target.error,
+        );
+        this.initPromise = null;
+        reject(event.target.error);
+      };
+
+      request.onsuccess = (event) => {
+        this.db = event.target.result;
+
+        // Handle database close events (e.g., private browsing exit)
+        this.db.onclose = () => {
+          console.warn(
+            "[ChunkCacheDB] Database connection closed unexpectedly",
+          );
+          this.db = null;
+          this.initPromise = null;
+        };
+
+        console.log("[ChunkCacheDB] Database opened successfully");
+        // Clean up old entries on initialization
+        this.cleanupOldEntries().then(() => {
+          resolve(this.db);
+        });
+      };
+
+      request.onupgradeneeded = (event) => {
+        console.log("[ChunkCacheDB] Creating/upgrading database...");
+        const db = event.target.result;
+
+        // 🔧 FIX: Use db.objectStoreNames instead of db.objectStores
+        // db.objectStoreNames is a DOMStringList with a .contains() method
+        if (!db.objectStoreNames.contains(this.STORE_NAME)) {
+          const store = db.createObjectStore(this.STORE_NAME, {
+            keyPath: "videoSrc", // Use video source URL as key
+          });
+          // Create indexes for efficient querying
+          store.createIndex("timestamp", "timestamp", { unique: false });
+          store.createIndex("accessCount", "accessCount", { unique: false });
+          console.log("[ChunkCacheDB] Object store created with indexes");
+        }
+      };
+    });
+
+    return this.initPromise;
+  },
+
+  /**
+   * Get cached chunk data for a video source
+   */
+  async get(videoSrc) {
+    try {
+      await this.init();
+
+      // 🔧 FIX: Validate db is still open
+      if (!this.db) {
+        console.warn("[ChunkCacheDB] Database not available, skipping read");
+        return null;
+      }
+
+      return new Promise((resolve, reject) => {
+        let transaction;
+        try {
+          transaction = this.db.transaction([this.STORE_NAME], "readwrite");
+        } catch (err) {
+          // Handle cases where transaction creation fails
+          console.error("[ChunkCacheDB] Failed to create transaction:", err);
+          resolve(null);
+          return;
+        }
+
+        const store = transaction.objectStore(this.STORE_NAME);
+        const request = store.get(videoSrc);
+
+        request.onsuccess = () => {
+          const entry = request.result;
+          if (!entry) {
+            console.log(
+              `[ChunkCacheDB] Cache miss for ${videoSrc.substring(0, 60)}...`,
+            );
+            resolve(null);
+            return;
+          }
+
+          // Check if cache is expired
+          if (Date.now() - entry.timestamp > this.MAX_AGE_MS) {
+            console.log(
+              `[ChunkCacheDB] Cache expired for ${videoSrc.substring(0, 60)}...`,
+            );
+            try {
+              store.delete(videoSrc); // Remove expired entry
+            } catch (err) {
+              // Silent fail - expiration cleanup is non-critical
+            }
+            resolve(null);
+            return;
+          }
+
+          // Update access count and timestamp
+          entry.accessCount = (entry.accessCount || 0) + 1;
+          entry.lastAccessed = Date.now();
+
+          try {
+            store.put(entry);
+          } catch (err) {
+            // Non-critical - proceed with the data anyway
+            console.warn(
+              "[ChunkCacheDB] Could not update access metadata:",
+              err,
+            );
+          }
+
+          console.log(
+            `[ChunkCacheDB] Cache hit for ${videoSrc.substring(0, 60)}... (accessed ${entry.accessCount} times)`,
+          );
+          resolve({
+            chunks: entry.chunks,
+            duration: entry.duration,
+          });
+        };
+
+        request.onerror = (event) => {
+          console.error(
+            "[ChunkCacheDB] Error reading from cache:",
+            event.target.error,
+          );
+          // Don't reject - treat as cache miss for robustness
+          resolve(null);
+        };
+
+        // Handle transaction abort
+        transaction.onabort = () => {
+          console.warn("[ChunkCacheDB] Transaction aborted on get()");
+          resolve(null);
+        };
+      });
+    } catch (error) {
+      console.error("[ChunkCacheDB] Error in get():", error);
+      return null; // Graceful fallback
+    }
+  },
+
+  /**
+   * Store chunk data in cache
+   */
+  async set(videoSrc, chunks, duration) {
+    try {
+      await this.init();
+
+      // 🔧 FIX: Validate db is still open
+      if (!this.db) {
+        console.warn("[ChunkCacheDB] Database not available, skipping write");
+        return;
+      }
+
+      // Check current cache size and evict if needed
+      this.getCacheSize().then((size) => {
+        if (size >= this.MAX_ENTRIES) {
+          console.log(
+            `[ChunkCacheDB] Cache full (${size}/${this.MAX_ENTRIES}), evicting oldest entries...`,
+          );
+          this.evictOldest(5); // Evict 5 oldest entries
+        }
+      });
+
+      return new Promise((resolve, reject) => {
+        let transaction;
+        try {
+          transaction = this.db.transaction([this.STORE_NAME], "readwrite");
+        } catch (err) {
+          console.error("[ChunkCacheDB] Failed to create transaction:", err);
+          resolve();
+          return;
+        }
+
+        const store = transaction.objectStore(this.STORE_NAME);
+        const entry = {
+          videoSrc,
+          chunks,
+          duration,
+          timestamp: Date.now(),
+          lastAccessed: Date.now(),
+          accessCount: 1,
+        };
+
+        const request = store.put(entry);
+
+        request.onsuccess = () => {
+          console.log(
+            `[ChunkCacheDB] Cached ${chunks.length} chunks for ${videoSrc.substring(0, 60)}...`,
+          );
+          resolve();
+        };
+
+        request.onerror = (event) => {
+          console.error(
+            "[ChunkCacheDB] Error writing to cache:",
+            event.target.error,
+          );
+          // Don't reject - caching failures shouldn't break the app
+          resolve();
+        };
+
+        transaction.onabort = () => {
+          console.warn("[ChunkCacheDB] Transaction aborted on set()");
+          resolve();
+        };
+      });
+    } catch (error) {
+      console.error("[ChunkCacheDB] Error in set():", error);
+      // Silent fail - caching is optional
+    }
+  },
+
+  /**
+   * Get current number of cached entries
+   */
+  async getCacheSize() {
+    try {
+      await this.init();
+
+      if (!this.db) return 0;
+
+      return new Promise((resolve) => {
+        let transaction;
+        try {
+          transaction = this.db.transaction([this.STORE_NAME], "readonly");
+        } catch (err) {
+          resolve(0);
+          return;
+        }
+
+        const store = transaction.objectStore(this.STORE_NAME);
+        const request = store.count();
+
+        request.onsuccess = () => {
+          resolve(request.result);
+        };
+
+        request.onerror = () => {
+          resolve(0);
+        };
+
+        transaction.onabort = () => {
+          resolve(0);
+        };
+      });
+    } catch (error) {
+      return 0;
+    }
+  },
+
+  /**
+   * Evict oldest entries from cache
+   */
+  async evictOldest(count) {
+    try {
+      await this.init();
+
+      if (!this.db) return;
+
+      return new Promise((resolve) => {
+        let transaction;
+        try {
+          transaction = this.db.transaction([this.STORE_NAME], "readwrite");
+        } catch (err) {
+          resolve();
+          return;
+        }
+
+        const store = transaction.objectStore(this.STORE_NAME);
+        const index = store.index("timestamp");
+        let evicted = 0;
+
+        index.openCursor().onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (cursor && evicted < count) {
+            console.log(
+              `[ChunkCacheDB] Evicting cached entry for ${cursor.value.videoSrc.substring(0, 60)}...`,
+            );
+            cursor.delete();
+            evicted++;
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+
+        index.openCursor().onerror = () => {
+          resolve();
+        };
+
+        transaction.onabort = () => {
+          console.warn("[ChunkCacheDB] Transaction aborted on evictOldest()");
+          resolve();
+        };
+      });
+    } catch (error) {
+      console.error("[ChunkCacheDB] Error evicting entries:", error);
+    }
+  },
+
+  /**
+   * Clean up old entries (called on initialization)
+   */
+  async cleanupOldEntries() {
+    try {
+      await this.init();
+
+      if (!this.db) return;
+
+      return new Promise((resolve) => {
+        let transaction;
+        try {
+          transaction = this.db.transaction([this.STORE_NAME], "readwrite");
+        } catch (err) {
+          resolve();
+          return;
+        }
+
+        const store = transaction.objectStore(this.STORE_NAME);
+        const index = store.index("timestamp");
+        const now = Date.now();
+        let cleaned = 0;
+
+        index.openCursor().onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            if (now - cursor.value.timestamp > this.MAX_AGE_MS) {
+              console.log(
+                `[ChunkCacheDB] Removing expired cache for ${cursor.value.videoSrc.substring(0, 60)}...`,
+              );
+              cursor.delete();
+              cleaned++;
+            }
+            cursor.continue();
+          } else {
+            if (cleaned > 0) {
+              console.log(
+                `[ChunkCacheDB] Cleaned up ${cleaned} expired entries`,
+              );
+            }
+            resolve();
+          }
+        };
+
+        index.openCursor().onerror = () => {
+          resolve(); // Resolve even on error
+        };
+
+        transaction.onabort = () => {
+          console.warn(
+            "[ChunkCacheDB] Transaction aborted on cleanupOldEntries()",
+          );
+          resolve();
+        };
+      });
+    } catch (error) {
+      console.error("[ChunkCacheDB] Error cleaning up:", error);
+    }
+  },
+
+  /**
+   * Clear all cached data
+   */
+  async clear() {
+    try {
+      await this.init();
+
+      if (!this.db) return;
+
+      return new Promise((resolve) => {
+        let transaction;
+        try {
+          transaction = this.db.transaction([this.STORE_NAME], "readwrite");
+        } catch (err) {
+          console.warn(
+            "[ChunkCacheDB] Could not create transaction for clear():",
+            err,
+          );
+          resolve();
+          return;
+        }
+
+        const store = transaction.objectStore(this.STORE_NAME);
+        const request = store.clear();
+
+        request.onsuccess = () => {
+          console.log("[ChunkCacheDB] Cache cleared");
+          resolve();
+        };
+
+        request.onerror = () => {
+          resolve();
+        };
+
+        transaction.onabort = () => {
+          console.warn("[ChunkCacheDB] Transaction aborted on clear()");
+          resolve();
+        };
+      });
+    } catch (error) {
+      console.error("[ChunkCacheDB] Error clearing cache:", error);
+    }
+  },
+
+  /**
+   * Get cache statistics
+   */
+  async getStats() {
+    try {
+      await this.init();
+
+      if (!this.db) return { totalEntries: 0, totalChunks: 0 };
+
+      return new Promise((resolve) => {
+        let transaction;
+        try {
+          transaction = this.db.transaction([this.STORE_NAME], "readonly");
+        } catch (err) {
+          resolve({ totalEntries: 0, totalChunks: 0 });
+          return;
+        }
+
+        const store = transaction.objectStore(this.STORE_NAME);
+        let totalEntries = 0;
+        let totalChunks = 0;
+
+        store.openCursor().onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            totalEntries++;
+            totalChunks += cursor.value.chunks?.length || 0;
+            cursor.continue();
+          } else {
+            resolve({
+              totalEntries,
+              totalChunks,
+              maxEntries: this.MAX_ENTRIES,
+              maxAge: this.MAX_AGE_MS / (60 * 60 * 1000) + " hours",
+            });
+          }
+        };
+
+        store.openCursor().onerror = () => {
+          resolve({ totalEntries: 0, totalChunks: 0 });
+        };
+
+        transaction.onabort = () => {
+          resolve({ totalEntries: 0, totalChunks: 0 });
+        };
+      });
+    } catch (error) {
+      return { totalEntries: 0, totalChunks: 0 };
+    }
+  },
+};
+
+/**
+ * Two-level cache system for chunk previews:
+ * - L1: In-memory cache (fast, cleared on reload)
+ * - L2: IndexedDB cache (persistent, survives reloads)
+ *
+ * On first access, data is loaded from IndexedDB into memory.
+ * Subsequent accesses use the fast in-memory cache.
+ */
+const ChunkCache = {
+  // L1: In-memory cache
+  memoryCache: new Map(),
+  MAX_MEMORY_ENTRIES: 10,
+
+  /**
+   * Get cached chunk data (checks memory first, then IndexedDB)
+   */
+  async get(videoSrc) {
+    // 🔧 FIX: Validate input
+    if (!videoSrc || typeof videoSrc !== "string") {
+      console.error(
+        "[ChunkCache] Invalid videoSrc for cache lookup:",
+        videoSrc,
+      );
+      return null;
+    }
+
+    // Check L1 cache (memory) first
+    if (this.memoryCache.has(videoSrc)) {
+      const entry = this.memoryCache.get(videoSrc);
+      console.log(
+        `[ChunkCache] L1 memory cache hit for ${videoSrc.substring(0, 60)}...`,
+      );
+      return entry;
+    }
+
+    // Check L2 cache (IndexedDB)
+    console.log(
+      `[ChunkCache] L1 miss, checking L2 IndexedDB for ${videoSrc.substring(0, 60)}...`,
+    );
+    const dbEntry = await ChunkCacheDB.get(videoSrc);
+    if (dbEntry) {
+      this.promoteToMemory(videoSrc, dbEntry);
+      console.log(`[ChunkCache] Promoted to L1 cache from IndexedDB`);
+      return dbEntry;
+    }
+
+    console.log(
+      `[ChunkCache] Cache miss (both L1 and L2) for ${videoSrc.substring(0, 60)}...`,
+    );
+    return null;
+  },
+
+  /**
+   * Store chunk data in both L1 and L2 caches
+   */
+  async set(videoSrc, chunks, duration) {
+    // 🔧 FIX: Validate input
+    if (!videoSrc || typeof videoSrc !== "string") {
+      console.error("[ChunkCache] Invalid videoSrc for cache store:", videoSrc);
+      return;
+    }
+    if (!chunks || !Array.isArray(chunks)) {
+      console.error("[ChunkCache] Invalid chunks for cache store:", chunks);
+      return;
+    }
+
+    const entry = { chunks, duration };
+    this.promoteToMemory(videoSrc, entry);
+    ChunkCacheDB.set(videoSrc, chunks, duration).catch((err) => {
+      console.warn("[ChunkCache] Failed to store in IndexedDB:", err);
+    });
+    console.log(
+      `[ChunkCache] Cached ${chunks.length} chunks in both L1 and L2`,
+    );
+  },
+
+  /**
+   * Promote entry to memory cache, evicting oldest if needed
+   */
+  promoteToMemory(videoSrc, entry) {
+    // Evict oldest if memory cache is full
+    if (this.memoryCache.size >= this.MAX_MEMORY_ENTRIES) {
+      const oldestKey = this.memoryCache.keys().next().value;
+      this.memoryCache.delete(oldestKey);
+      console.log(`[ChunkCache] Evicted oldest L1 entry`);
+    }
+
+    this.memoryCache.set(videoSrc, entry);
+  },
+
+  /**
+   * Clear both caches
+   */
+  async clear() {
+    this.memoryCache.clear();
+    await ChunkCacheDB.clear();
+    console.log("[ChunkCache] Both L1 and L2 caches cleared");
+  },
+
+  /**
+   * Get cache statistics
+   */
+  async getStats() {
+    const dbStats = await ChunkCacheDB.getStats();
+    return {
+      memoryEntries: this.memoryCache.size,
+      maxMemoryEntries: this.MAX_MEMORY_ENTRIES,
+      dbEntries: dbStats.totalEntries,
+      maxDbEntries: dbStats.maxEntries,
+      dbChunks: dbStats.totalChunks,
+      cacheAge: dbStats.maxAge,
+    };
+  },
+};
+
+// Log cache stats on initialization
+(async () => {
+  try {
+    const stats = await ChunkCache.getStats();
+    console.log("[ChunkCache] Cache stats:", stats);
+  } catch (error) {
+    console.warn("[ChunkCache] Could not get cache stats:", error);
+  }
+})();
+
 /**
  * Calculate how many seconds of buffered data exist ahead of current playhead.
  * Returns 0 if playhead is beyond buffer (e.g., after seeking).
@@ -492,148 +1106,506 @@ function playPreviewChunk(
     });
 }
 
-// Lightweight automatic chunk preview (looping short clips)
-// Waits for mouseenter before playing
-function setupLightChunkPreview(previewVideo, entryId) {
-  if (previewVideo.dataset.previewLoopRunning === "true") return () => {};
-  previewVideo.dataset.previewLoopRunning = "true";
-  const chunkTimeoutRef = { current: null };
-  const currentChunkIndexRef = { current: 0 };
-  const isStoppedRef = { current: false };
-  let loopStarted = false; // 🔧 NEW: Track if loop has ever started
+/**
+ * Sets up a smooth, continuous chunk preview loop with caching.
+ * Uses continuous playback with position monitoring - no seeks between chunks.
+ *
+ * @param {HTMLVideoElement} previewVideo - The preview video element
+ * @param {string} entryId - Video entry ID for logging
+ * @param {string} cacheKeySrc - Original video URL (without ?preview=1) for cache key
+ * @returns {Function} Cleanup function to stop the loop
+ */
+function setupLightChunkPreview(previewVideo, entryId, cacheKeySrc) {
+  // 🔧 FIX: Validate cacheKeySrc early with detailed debug logging
+  if (!cacheKeySrc || typeof cacheKeySrc !== "string") {
+    console.error(`[Preview] ❌ Invalid cacheKeySrc for ${entryId}:`, {
+      value: cacheKeySrc,
+      type: typeof cacheKeySrc,
+      previewSrc: previewVideo?.currentSrc || previewVideo?.src,
+    });
 
-  const getChunkStarts = () => {
-    const duration = previewVideo.duration || 0;
-    if (!duration || isNaN(duration) || duration < 1) return null;
-    const chunkDurationSec = CHUNK_PLAY_DURATION_MS / 1000;
-    const chunkStarts = [];
-    const spacing =
-      (duration - chunkDurationSec) /
-      (NUM_PREVIEW_CHUNKS > 1 ? NUM_PREVIEW_CHUNKS - 1 : 1);
-    for (let i = 0; i < NUM_PREVIEW_CHUNKS; i++) {
-      let start = i * spacing;
-      if (start + chunkDurationSec > duration)
-        start = duration - chunkDurationSec;
-      chunkStarts.push(Math.max(0, start));
-    }
-    return chunkStarts;
-  };
+    // Fallback: try to get URL from the preview video itself
+    const rawSrc = previewVideo.currentSrc || previewVideo.src || "";
+    cacheKeySrc = rawSrc
+      .replace(/([?&])preview=1(&|$)/, "$1") // Remove preview=1 param
+      .replace(/[?&]$/, ""); // Clean trailing ? or &
 
-  function stopPreviewLoop() {
-    isStoppedRef.current = true;
-    if (chunkTimeoutRef.current) {
-      clearTimeout(chunkTimeoutRef.current);
-      chunkTimeoutRef.current = null;
-    }
-    previewVideo.pause();
-    if (
-      typeof currentlyPlaying !== "undefined" &&
-      currentlyPlaying === previewVideo
-    ) {
-      currentlyPlaying = null;
+    console.log("[Preview:D] Fallback cacheKeySrc calculated:", {
+      cacheKeySrc,
+    });
+
+    if (!cacheKeySrc) {
+      console.error(
+        `[Preview] ❌ Could not determine cacheKeySrc for ${entryId}, using timestamp fallback`,
+      );
+      cacheKeySrc = `fallback-${entryId}-${Date.now()}`;
     }
   }
 
-  function playPreviewChunkLocal() {
-    // 🔧 Guard: Stop if mouse left or tab hidden
-    if (isStoppedRef.current) return;
-    if (!tabIsVisible) {
-      stopPreviewLoop();
+  // 🔧 FIX: Store validated cacheKeySrc in a local const to prevent closure issues
+  const validatedCacheKey = cacheKeySrc;
+
+  if (previewVideo.dataset.previewLoopReady === "true") {
+    console.log(`[Preview:D] Loop already set up for ${entryId}, skipping`);
+    return () => {};
+  }
+
+  previewVideo.dataset.previewLoopReady = "true";
+  console.log(`[Preview] Setting up chunk loop for ${entryId}`);
+  console.log("[Preview:D] Cache key:", { validatedCacheKey });
+
+  // State management
+  const state = {
+    isRunning: false,
+    isHovering: false,
+    currentChunk: 0,
+    monitorInterval: null,
+    chunkStarts: null,
+    chunkDuration: CHUNK_PLAY_DURATION_MS / 1000, // 0.4 seconds
+    cacheLoaded: false,
+    playbackStarted: false,
+    totalChunks: 0,
+    debugFrameCount: 0,
+  };
+
+  /**
+   * Load chunk positions from cache or calculate them
+   */
+  async function loadChunkPositions() {
+    if (state.chunkStarts && state.chunkStarts.length > 0) {
+      console.log(`[Preview:D] Chunk positions already loaded for ${entryId}`);
       return;
     }
 
-    const chunkStarts = getChunkStarts();
-    if (!chunkStarts) return;
-    const startTime = chunkStarts[currentChunkIndexRef.current];
+    console.log(`[Preview] Loading chunk positions for ${entryId}...`);
+    console.log("[Preview:D] Looking up cache key:", { validatedCacheKey });
 
-    if (!previewVideo.paused) {
-      previewVideo.pause();
+    // Try to load from cache first
+    try {
+      const cached = await ChunkCache.get(validatedCacheKey);
+      if (cached && cached.chunks && cached.chunks.length > 0) {
+        console.log(
+          `[Preview] ✅ CACHE HIT for ${entryId} (${cached.chunks.length} chunks, duration: ${cached.duration?.toFixed(1)}s)`,
+        );
+        console.log(
+          `[Preview:D] Chunk positions from cache: [${cached.chunks.map((s) => s.toFixed(2)).join(", ")}]`,
+        );
+        state.chunkStarts = cached.chunks;
+        state.totalChunks = cached.chunks.length;
+        state.cacheLoaded = true;
+        return;
+      } else {
+        console.log(
+          `[Preview] ❌ CACHE MISS for ${entryId} - will calculate chunks`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[Preview] Cache read failed for ${entryId}:`, err.message);
+      console.warn(`[Preview:D] Cache error details:`, err);
     }
 
-    previewVideo.currentTime = startTime;
+    // Calculate chunk positions
+    console.log(`[Preview] Calculating chunks for ${entryId}...`);
+    calculateChunks();
+  }
 
-    setTimeout(() => {
-      if (isStoppedRef.current) return;
+  /**
+   * Calculate chunk positions and cache them
+   * 🔧 FIX: Now uses validatedCacheKey from closure (guaranteed to be a string)
+   */
+  function calculateChunks() {
+    const duration = previewVideo.duration || 0;
+    console.log(
+      `[Preview:D] Video duration: ${duration.toFixed(2)}s, chunk duration: ${state.chunkDuration}s`,
+    );
+
+    if (!duration || isNaN(duration) || duration < 1) {
+      console.warn(`[Preview] Invalid duration for ${entryId}: ${duration}`);
+      return;
+    }
+
+    const chunkDurationSec = state.chunkDuration;
+    const usableDuration = duration - chunkDurationSec;
+    console.log(
+      `[Preview:D] Usable duration (minus chunk): ${usableDuration.toFixed(2)}s`,
+    );
+
+    if (usableDuration <= 0) {
+      console.warn(`[Preview] Video too short for chunks: ${duration}s`);
+      state.chunkStarts = [0];
+      state.totalChunks = 1;
+      return;
+    }
+
+    const chunkStarts = [];
+    for (let i = 0; i < NUM_PREVIEW_CHUNKS; i++) {
+      const start = (i / (NUM_PREVIEW_CHUNKS - 1)) * usableDuration;
+      chunkStarts.push(Math.max(0, Math.min(start, usableDuration)));
+    }
+
+    state.chunkStarts = chunkStarts;
+    state.totalChunks = chunkStarts.length;
+
+    console.log(
+      `[Preview] Calculated ${chunkStarts.length} chunks for ${entryId}:`,
+      chunkStarts.map((s) => s.toFixed(2)),
+    );
+    console.log(
+      `[Preview:D] Chunk boundaries: [${chunkStarts.map((s) => s.toFixed(2)).join(", ")}]`,
+    );
+
+    // 🔧 FIX: Use validatedCacheKey which is guaranteed to be a string
+    console.log("[Preview:D] Attempting to cache with key:", {
+      validatedCacheKey,
+    });
+
+    // Cache the calculated chunks (async, don't wait)
+    ChunkCache.set(validatedCacheKey, chunkStarts, duration)
+      .then(() => {
+        console.log("[Preview:D] Successfully cached chunks for key:", {
+          validatedCacheKey,
+        });
+      })
+      .catch((err) => {
+        console.warn("[Preview] Failed to cache chunks:", err);
+        console.warn("[Preview:D] Cache error type:", err?.constructor?.name);
+        console.warn("[Preview:D] Cache error message:", err?.message);
+      });
+  }
+
+  // ... rest of the function (startContinuousPlayback, startPositionMonitor,
+  //     stopPlayback, startLoop, stopLoop, onMouseEnter, onMouseLeave,
+  //     event listeners, and cleanup) remains EXACTLY THE SAME ...
+
+  /**
+   * Start continuous playback with position monitoring.
+   */
+  function startContinuousPlayback() {
+    if (!state.chunkStarts || state.chunkStarts.length === 0) {
+      console.warn(
+        `[Preview:D] No chunks available for ${entryId}, aborting playback`,
+      );
+      return;
+    }
+
+    if (state.monitorInterval) {
+      clearInterval(state.monitorInterval);
+      state.monitorInterval = null;
+    }
+
+    state.currentChunk = 0;
+    const firstChunkStart = state.chunkStarts[0];
+    console.log(
+      `[Preview] Starting continuous playback from ${firstChunkStart.toFixed(2)}s for ${entryId}`,
+    );
+    console.log(
+      `[Preview:D] Total chunks: ${state.totalChunks}, starting at chunk 0`,
+    );
+
+    previewVideo.currentTime = firstChunkStart;
+
+    const onSeeked = () => {
+      previewVideo.removeEventListener("seeked", onSeeked);
+      if (!state.isHovering || !state.isRunning) {
+        console.log(
+          `[Preview:D] Playback cancelled after seek (hovering: ${state.isHovering}, running: ${state.isRunning})`,
+        );
+        return;
+      }
+
       previewVideo
         .play()
         .then(() => {
-          if (isStoppedRef.current) return;
-          const t = setTimeout(() => {
-            if (isStoppedRef.current) return;
-            previewVideo.pause();
-            currentChunkIndexRef.current =
-              (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
-            const t2 = setTimeout(() => playPreviewChunkLocal(), 30);
-            chunkTimeoutRef.current = t2;
-          }, CHUNK_PLAY_DURATION_MS);
-          chunkTimeoutRef.current = t;
+          console.log(`[Preview] ✅ Playback started for ${entryId}`);
+          console.log(
+            `[Preview:D] Current position after seek: ${previewVideo.currentTime.toFixed(2)}s`,
+          );
+          state.playbackStarted = true;
+          startPositionMonitor();
         })
         .catch((err) => {
-          if (!isStoppedRef.current && tabIsVisible) {
-            log(`Chunk preview play failed for ${entryId}`, err.message);
+          console.warn(`[Preview] ❌ Play failed for ${entryId}:`, err.message);
+          console.warn(`[Preview:D] Play error details:`, err);
+          if (state.isHovering && state.isRunning) {
+            console.log(`[Preview:D] Will retry playback in 500ms`);
+            setTimeout(() => {
+              startContinuousPlayback();
+            }, 500);
           }
-          if (isStoppedRef.current) return;
-          currentChunkIndexRef.current =
-            (currentChunkIndexRef.current + 1) % NUM_PREVIEW_CHUNKS;
-          const t = setTimeout(() => playPreviewChunkLocal(), 150);
-          chunkTimeoutRef.current = t;
         });
-    }, 50);
+    };
+
+    previewVideo.addEventListener("seeked", onSeeked, { once: true });
+
+    setTimeout(() => {
+      if (!state.playbackStarted && state.isHovering && state.isRunning) {
+        previewVideo.removeEventListener("seeked", onSeeked);
+        console.warn(
+          `[Preview] ⚠️ Seek timeout for ${entryId}, forcing playback`,
+        );
+        console.warn(
+          `[Preview:D] Ready state: ${previewVideo.readyState}, network state: ${previewVideo.networkState}`,
+        );
+        previewVideo
+          .play()
+          .then(() => {
+            state.playbackStarted = true;
+            startPositionMonitor();
+          })
+          .catch((err) => {
+            console.warn(`[Preview:D] Forced play also failed:`, err.message);
+            if (state.isHovering && state.isRunning) {
+              setTimeout(() => startContinuousPlayback(), 500);
+            }
+          });
+      }
+    }, 3000);
   }
 
-  // 🔧 NEW: Start chunk loop — only called on mouseenter
-  function startPreviewLoop() {
-    if (loopStarted) return; // Already running
-    if (isStoppedRef.current) return; // Was stopped (mouse left)
+  /**
+   * Monitor playback position and handle chunk transitions.
+   */
+  function startPositionMonitor() {
+    if (state.monitorInterval) {
+      clearInterval(state.monitorInterval);
+    }
 
-    loopStarted = true;
+    console.log(`[Preview] Starting position monitor for ${entryId}`);
+    console.log(
+      `[Preview:D] Monitor interval: 100ms, chunk duration: ${state.chunkDuration}s`,
+    );
 
-    if (
-      previewVideo.duration &&
-      !isNaN(previewVideo.duration) &&
-      previewVideo.duration > 1
-    ) {
-      playPreviewChunkLocal();
+    state.monitorInterval = setInterval(() => {
+      state.debugFrameCount++;
+
+      if (!state.isHovering || !state.isRunning) {
+        console.log(
+          `[Preview:D] Monitor stopping - hovering: ${state.isHovering}, running: ${state.isRunning}`,
+        );
+        stopPlayback();
+        return;
+      }
+
+      if (previewVideo.paused && state.playbackStarted) {
+        if (previewVideo.ended) {
+          console.log(
+            `[Preview:D] Video reached end naturally, restarting from first chunk`,
+          );
+          state.currentChunk = 0;
+          const firstChunkStart = state.chunkStarts[0];
+          previewVideo.currentTime = firstChunkStart;
+          previewVideo.play().catch((err) => {
+            console.warn(
+              `[Preview:D] Failed to restart after end:`,
+              err.message,
+            );
+          });
+          return;
+        }
+
+        if (state.debugFrameCount % 10 === 0) {
+          console.log(
+            `[Preview:D] Video paused unexpectedly (readyState: ${previewVideo.readyState}, ended: ${previewVideo.ended})`,
+          );
+        }
+        previewVideo.play().catch((err) => {
+          if (state.debugFrameCount % 10 === 0) {
+            console.warn(`[Preview:D] Failed to restart:`, err.message);
+          }
+        });
+        return;
+      }
+
+      if (!state.chunkStarts || state.chunkStarts.length === 0) return;
+
+      const currentTime = previewVideo.currentTime;
+      const currentChunkStart = state.chunkStarts[state.currentChunk];
+      const currentChunkEnd = currentChunkStart + state.chunkDuration;
+
+      const isLastChunk = state.currentChunk === state.totalChunks - 1;
+      const videoDuration = previewVideo.duration || Infinity;
+      const isNearVideoEnd = currentChunkEnd >= videoDuration - 0.1;
+
+      if (currentTime >= currentChunkEnd || isNearVideoEnd) {
+        const nextChunk = (state.currentChunk + 1) % state.chunkStarts.length;
+        const nextChunkStart = state.chunkStarts[nextChunk];
+
+        console.log(
+          `[Preview] Chunk ${state.currentChunk + 1}→${nextChunk + 1} at ${nextChunkStart.toFixed(2)}s for ${entryId}`,
+        );
+        console.log(
+          `[Preview:D] Current position: ${currentTime.toFixed(2)}s, chunk end: ${currentChunkEnd.toFixed(2)}s`,
+        );
+
+        state.currentChunk = nextChunk;
+
+        if (nextChunk === 0) {
+          console.log(`[Preview:D] Wrapping back to start, smooth reset`);
+          previewVideo.pause();
+          previewVideo.currentTime = nextChunkStart;
+          const onSeekComplete = () => {
+            previewVideo.removeEventListener("seeked", onSeekComplete);
+            previewVideo.play().catch((err) => {
+              console.warn(
+                `[Preview:D] Failed to play after wrap:`,
+                err.message,
+              );
+            });
+          };
+          previewVideo.addEventListener("seeked", onSeekComplete, {
+            once: true,
+          });
+        } else {
+          previewVideo.currentTime = nextChunkStart;
+        }
+      }
+
+      const expectedPosition = currentChunkStart + state.chunkDuration;
+      const positionDiff = Math.abs(currentTime - expectedPosition);
+      if (positionDiff > state.chunkDuration * 2) {
+        console.log(
+          `[Preview] ⚠️ Position drift detected (diff: ${positionDiff.toFixed(2)}s), resetting to chunk ${state.currentChunk + 1}`,
+        );
+        console.log(
+          `[Preview:D] Expected: ${expectedPosition.toFixed(2)}s, Actual: ${currentTime.toFixed(2)}s`,
+        );
+        previewVideo.currentTime = currentChunkStart;
+      }
+    }, 100);
+  }
+
+  /**
+   * Stop playback and clean up
+   */
+  function stopPlayback() {
+    console.log(
+      `[Preview:D] Stopping playback for ${entryId} (was started: ${state.playbackStarted})`,
+    );
+    state.playbackStarted = false;
+    if (state.monitorInterval) {
+      clearInterval(state.monitorInterval);
+      state.monitorInterval = null;
+      console.log(`[Preview:D] Position monitor cleared`);
+    }
+    if (!previewVideo.paused) {
+      previewVideo.pause();
+      console.log(`[Preview:D] Video paused`);
+    }
+    state.currentChunk = 0;
+  }
+
+  /**
+   * Start the continuous chunk playback loop
+   */
+  async function startLoop() {
+    if (state.isRunning) {
+      console.log(`[Preview:D] Loop already running for ${entryId}`);
+      return;
+    }
+
+    console.log(`[Preview] Starting chunk loop for ${entryId}`);
+    state.isRunning = true;
+    state.playbackStarted = false;
+
+    await loadChunkPositions();
+
+    if (previewVideo.readyState >= 1 && previewVideo.duration > 0) {
+      console.log(
+        `[Preview:D] Video ready (readyState: ${previewVideo.readyState}, duration: ${previewVideo.duration.toFixed(1)}s)`,
+      );
+      setTimeout(() => {
+        if (state.isHovering && state.isRunning) {
+          startContinuousPlayback();
+        }
+      }, 150);
     } else {
-      // Wait for metadata if not ready yet
-      const onReady = () => {
-        if (isStoppedRef.current) return;
-        playPreviewChunkLocal();
+      console.log(`[Preview] Waiting for metadata for ${entryId}`);
+      console.log(
+        `[Preview:D] Current readyState: ${previewVideo.readyState}, duration: ${previewVideo.duration}`,
+      );
+
+      const onReady = async () => {
+        if (state.isHovering && state.isRunning) {
+          previewVideo.removeEventListener("loadedmetadata", onReady);
+          console.log(
+            `[Preview:D] Metadata loaded, readyState: ${previewVideo.readyState}, duration: ${previewVideo.duration.toFixed(1)}s`,
+          );
+          await loadChunkPositions();
+          setTimeout(() => startContinuousPlayback(), 150);
+        }
       };
-      previewVideo.addEventListener("canplay", onReady, { once: true });
+
+      previewVideo.addEventListener("loadedmetadata", onReady, { once: true });
+
+      setTimeout(async () => {
+        if (state.isHovering && state.isRunning && !state.playbackStarted) {
+          previewVideo.removeEventListener("loadedmetadata", onReady);
+          console.warn(
+            `[Preview] ⚠️ Metadata timeout (5s), forcing start for ${entryId}`,
+          );
+          console.warn(
+            `[Preview:D] readyState: ${previewVideo.readyState}, networkState: ${previewVideo.networkState}`,
+          );
+          await loadChunkPositions();
+          startContinuousPlayback();
+        }
+      }, 5000);
     }
   }
 
-  // 🔧 NEW: Mouse enters → start playing
-  const onMouseEnter = () => {
-    if (!tabIsVisible) return;
-    isStoppedRef.current = false; // Reset stop flag
-    startPreviewLoop();
-  };
+  /**
+   * Stop the chunk playback loop completely
+   */
+  function stopLoop() {
+    console.log(`[Preview] Stopping chunk loop for ${entryId}`);
+    state.isRunning = false;
+    state.isHovering = false;
+    stopPlayback();
+  }
 
-  // 🔧 Mouse leaves → stop playing, reset for next hover
-  const onMouseLeave = () => {
-    stopPreviewLoop();
-    loopStarted = false; // Allow restart on next hover
-  };
+  /**
+   * Mouse enter handler
+   */
+  function onMouseEnter() {
+    if (!tabIsVisible) {
+      console.log(`[Preview:D] Tab hidden, ignoring mouseenter for ${entryId}`);
+      return;
+    }
+    console.log(`[Preview] Mouse entered ${entryId}`);
+    state.isHovering = true;
+    if (!state.isRunning) {
+      startLoop();
+    }
+  }
 
-  // 🔧 Attach hover listeners
+  /**
+   * Mouse leave handler
+   */
+  function onMouseLeave() {
+    console.log(`[Preview] Mouse left ${entryId}`);
+    stopLoop();
+  }
+
+  // Attach hover listeners
   previewVideo.addEventListener("mouseenter", onMouseEnter);
   previewVideo.addEventListener("mouseleave", onMouseLeave);
 
-  // 🔧 NEW: Also listen on the parent card for hover
-  // (The preview video is small, user might hover the card area)
   const card = previewVideo.closest(".video-card");
   if (card) {
     card.addEventListener("mouseenter", onMouseEnter);
     card.addEventListener("mouseleave", onMouseLeave);
+    console.log(`[Preview] Attached hover listeners to card for ${entryId}`);
+  } else {
+    console.warn(
+      `[Preview:D] No .video-card found for ${entryId}, hover listeners only on video`,
+    );
   }
 
   // Return cleanup function
   return () => {
-    stopPreviewLoop();
-    loopStarted = false;
-    delete previewVideo.dataset.previewLoopRunning;
+    console.log(`[Preview] Cleaning up chunk loop for ${entryId}`);
+    stopLoop();
+    delete previewVideo.dataset.previewLoopReady;
     previewVideo.removeEventListener("mouseenter", onMouseEnter);
     previewVideo.removeEventListener("mouseleave", onMouseLeave);
     if (card) {
@@ -643,16 +1615,32 @@ function setupLightChunkPreview(previewVideo, entryId) {
   };
 }
 
+/**
+ * Creates a preview video element for thumbnail preview.
+ * Simplified - just creates the element and sets up the chunk loop.
+ */
 function createSinglePreview(originalVideo, entryId) {
-  log(`Creating preview video element for ${entryId}`);
-  let videoUrl = originalVideo.currentSrc || originalVideo.src;
-  if (videoUrl) {
-    videoUrl += (videoUrl.includes("?") ? "&" : "?") + "t=0.8";
+  console.log(`[Preview] Creating preview video element for ${entryId}`);
+  const rawSrc = originalVideo.currentSrc || originalVideo.src || "";
+  const cleanSrc = rawSrc.split("?")[0];
+
+  // Store cache key on the entry so it can be reused
+  const entry = videos.get(originalVideo);
+  if (entry) {
+    entry.cacheKeySrc = cleanSrc;
   }
+
+  let videoUrl = rawSrc;
+  if (videoUrl) {
+    videoUrl += (videoUrl.includes("?") ? "&" : "?") + "preview=1";
+  }
+
   const preview = document.createElement("video");
   preview.src = videoUrl;
   preview.muted = true;
-  preview.preload = "metadata";
+  preview.loop = false;
+  preview.playsInline = true;
+  preview.preload = "auto";
   preview.style.width = "100%";
   preview.style.height = "auto";
   preview.style.maxHeight = "96px";
@@ -660,148 +1648,34 @@ function createSinglePreview(originalVideo, entryId) {
   preview.style.borderRadius = "4px";
   preview.style.background = "#1a1a2e";
   preview.style.display = "block";
+  preview.style.cursor = "pointer";
 
-  // Track state to prevent overlapping operations
-  let initialBoostCleanup = null;
-  let frameDisplayDone = false;
-  let chunkLoopStarted = false;
-  // Promise that resolves when frame display phase is complete
-  let frameDisplayResolve = null;
-  const frameDisplayPromise = new Promise((resolve) => {
-    frameDisplayResolve = resolve;
-  });
+  let isInitialized = false;
 
-  /**
-   * Sequential phase manager using Promise chaining.
-   * Phase 1: Boost → Phase 2: Show Frame → Phase 3: Chunk Loop
-   * Each phase completes fully before the next begins.
-   */
-  function startPhasedInit() {
-    // Phase 1: Apply boost immediately
-    if (tabIsVisible) {
-      initialBoostCleanup = boostPreviewBuffer(preview);
+  function initializePreview() {
+    if (isInitialized) {
+      console.log(`[Preview] Already initialized for ${entryId}`);
+      return;
     }
+    console.log(`[Preview] Initializing preview for ${entryId}`);
+    isInitialized = true;
 
-    // Phase 2: Show initial frame — wait for it to fully complete
-    showInitialFrame();
+    // Use the entry's stored cacheKeySrc
+    const stopLoop = setupLightChunkPreview(preview, entryId, cleanSrc);
+    preview._stopPreviewLoop = stopLoop;
 
-    // Phase 3: Start chunk loop ONLY after frame is done
-    frameDisplayPromise.then(() => {
-      startChunkLoop();
+    console.log(
+      `[Preview] Preview ready for ${entryId} - hover to play chunks`,
+    );
+  }
+
+  if (preview.readyState >= 1) {
+    initializePreview();
+  } else {
+    preview.addEventListener("loadedmetadata", initializePreview, {
+      once: true,
     });
   }
-
-  function showInitialFrame() {
-    // Ensure video is paused before seeking
-    if (!preview.paused) {
-      preview.pause();
-    }
-
-    preview.currentTime = 0.8;
-
-    // Wait for seek to complete, then play
-    const onSeeked = () => {
-      preview.removeEventListener("seeked", onSeeked);
-
-      preview
-        .play()
-        .then(() => {
-          // Display frame for 280ms, then resolve
-          setTimeout(() => {
-            preview.pause();
-
-            // Clean up initial boost
-            if (initialBoostCleanup) {
-              initialBoostCleanup();
-              initialBoostCleanup = null;
-            }
-
-            log(`Initial preview frame shown for ${entryId}`);
-
-            // 🔑 Signal that frame display is complete
-            frameDisplayDone = true;
-            if (frameDisplayResolve) {
-              frameDisplayResolve();
-              frameDisplayResolve = null;
-            }
-          }, 280);
-        })
-        .catch((err) => {
-          log(`Initial frame play failed for ${entryId}`, err.message);
-
-          // Clean up boost even on failure
-          if (initialBoostCleanup) {
-            initialBoostCleanup();
-            initialBoostCleanup = null;
-          }
-
-          // 🔑 Still signal completion so chunk loop can proceed
-          frameDisplayDone = true;
-          if (frameDisplayResolve) {
-            frameDisplayResolve();
-            frameDisplayResolve = null;
-          }
-        });
-    };
-
-    // Wait for seek to settle before playing
-    preview.addEventListener("seeked", onSeeked, { once: true });
-
-    // Safety timeout: if seeked never fires, force completion after 3s
-    setTimeout(() => {
-      if (!frameDisplayDone && frameDisplayResolve) {
-        log(`Frame display timeout for ${entryId}, forcing completion`);
-        frameDisplayDone = true;
-        frameDisplayResolve();
-        frameDisplayResolve = null;
-      }
-    }, 3000);
-  }
-
-  function startChunkLoop() {
-    if (chunkLoopStarted) return;
-    chunkLoopStarted = true;
-
-    // Ensure any lingering boost is cleaned up
-    if (initialBoostCleanup) {
-      initialBoostCleanup();
-      initialBoostCleanup = null;
-    }
-
-    // 🔑 Pause and wait a tick before starting chunk loop
-    // This ensures no lingering play() operations are in flight
-    if (!preview.paused) {
-      preview.pause();
-    }
-
-    setTimeout(() => {
-      const stopPreviewLoop = setupLightChunkPreview(preview, entryId);
-      preview.stopPreviewLoop = stopPreviewLoop;
-    }, 100); // Small buffer to ensure pause() settled
-  }
-
-  // Single trigger: loadedmetadata
-  if (preview.readyState >= 1) {
-    startPhasedInit();
-  } else {
-    preview.addEventListener("loadedmetadata", startPhasedInit, { once: true });
-
-    // Safety timeout
-    setTimeout(() => {
-      if (!chunkLoopStarted && !frameDisplayDone) {
-        log(`Metadata timeout for ${entryId}, forcing init`);
-        startPhasedInit();
-      }
-    }, 3000);
-  }
-
-  // Store cleanup reference
-  preview._initialBoostCleanup = () => {
-    if (initialBoostCleanup) {
-      initialBoostCleanup();
-      initialBoostCleanup = null;
-    }
-  };
 
   return preview;
 }
@@ -891,6 +1765,7 @@ function updateExistingCard(card, entry) {
   }
 }
 
+// Update cleanup functions to handle IndexedDB properly
 function cleanupVideoEntry(entry) {
   if (!entry) return;
   log(`Cleaning up video entry for RAM optimization: ${entry.id}`);
@@ -901,18 +1776,15 @@ function cleanupVideoEntry(entry) {
     entry.boostCleanup = null;
   }
 
-  if (entry.preview) {
-    // 🆕 NEW: Clean up preview initial boost
-    if (typeof entry.preview._initialBoostCleanup === "function") {
-      entry.preview._initialBoostCleanup();
-      delete entry.preview._initialBoostCleanup;
-    }
-    // Clean up preview boost (via previewBoostTimers)
-    cleanupPreviewBoost(entry.preview);
+  // Clean up stored cache key
+  delete entry.cacheKeySrc;
 
-    if (typeof entry.preview.stopPreviewLoop === "function") {
-      entry.preview.stopPreviewLoop();
-      delete entry.preview.stopPreviewLoop;
+  if (entry.preview) {
+    // Clean up preview boost
+    cleanupPreviewBoost(entry.preview);
+    if (typeof entry.preview._stopPreviewLoop === "function") {
+      entry.preview._stopPreviewLoop();
+      delete entry.preview._stopPreviewLoop;
     }
     entry.preview.pause();
     if (currentlyPlaying === entry.preview) currentlyPlaying = null;
@@ -920,10 +1792,12 @@ function cleanupVideoEntry(entry) {
     entry.preview.load();
     entry.preview = null;
   }
+
   if (entry.cleanups && entry.cleanups.length > 0) {
     entry.cleanups.forEach((cleanupFn) => cleanupFn());
     entry.cleanups = null;
   }
+
   if (entry.element && entry.element === currentlyPlaying) {
     currentlyPlaying = null;
   }
@@ -1018,6 +1892,7 @@ function trackVideo(video) {
   }
 }
 
+// Add cache stats to panel updates (optional)
 function performPanelUpdate() {
   if (!panel) return;
   const list = panel.querySelector("#videos-list");
@@ -1029,6 +1904,19 @@ function performPanelUpdate() {
     return;
   }
   empty.style.display = "none";
+
+  // Show cache stats in panel (optional)
+  ChunkCache.getStats()
+    .then((stats) => {
+      const statusEl = panel.querySelector(".status");
+      if (statusEl && stats) {
+        const cacheInfo =
+          stats.dbEntries > 0 ? ` • Cache: ${stats.dbEntries} videos` : "";
+        statusEl.innerHTML = `Observing <strong>.message-inner video</strong> • ${new Date().toLocaleTimeString()}${cacheInfo}`;
+      }
+    })
+    .catch(() => {});
+
   Array.from(videos.values()).forEach((entry) => {
     let card;
     if (!videoCards.has(entry.element)) {
@@ -1133,25 +2021,45 @@ function createFloatingPanel() {
 // ═══════════════════════════════════════════════════════════════
 // PAGE VISIBILITY: pause everything when tab is hidden
 // ═══════════════════════════════════════════════════════════════
-function stopAllPreviewLoops() {
-  for (const entry of videos.values()) {
-    if (entry.preview && typeof entry.preview.stopPreviewLoop === "function") {
-      entry.preview.stopPreviewLoop();
-    }
-  }
-}
 
 function restartAllPreviewLoops() {
   for (const entry of videos.values()) {
     if (entry.preview) {
-      // 🔧 FIX: Re-attach hover listeners but DON'T auto-start
-      // The user must hover to trigger playback
-      const stopFn = setupLightChunkPreview(entry.preview, entry.id);
-      entry.preview.stopPreviewLoop = stopFn;
+      // Get the stored cache key from the entry
+      const cacheKeySrc = entry.cacheKeySrc || "";
+
+      if (!cacheKeySrc) {
+        console.warn(
+          `[Preview] No cacheKeySrc stored for ${entry.id}, cannot restart loop`,
+        );
+        continue;
+      }
+
+      // Remove old stop function reference
+      if (typeof entry.preview._stopPreviewLoop === "function") {
+        entry.preview._stopPreviewLoop();
+      }
+      delete entry.preview.dataset.previewLoopReady;
+
+      // Re-attach with the correct cache key
+      const stopFn = setupLightChunkPreview(
+        entry.preview,
+        entry.id,
+        cacheKeySrc,
+      );
+      entry.preview._stopPreviewLoop = stopFn;
     }
   }
 }
 
+function stopAllPreviewLoops() {
+  for (const entry of videos.values()) {
+    if (entry.preview && typeof entry.preview._stopPreviewLoop === "function") {
+      entry.preview._stopPreviewLoop();
+      delete entry.preview.dataset.previewLoopReady;
+    }
+  }
+}
 function stopAllBoosts() {
   for (const entry of videos.values()) {
     if (entry.boostCleanup) {
@@ -1248,17 +2156,23 @@ function onTabVisible() {
   observeVideos();
 }
 
+// Add cache cleanup to global cleanup
 function cleanupGlobalResources() {
   globalResources.observers.forEach((o) => o.disconnect());
   globalResources.intervals.forEach((i) => clearInterval(i));
   globalResources.observers = [];
   globalResources.intervals = [];
+
+  // Clear both caches
+  ChunkCache.clear().catch((err) => {
+    console.warn("[Cleanup] Error clearing chunk cache:", err);
+  });
+
   for (const entry of videos.values()) {
     if (entry.boostCleanup) {
       entry.boostCleanup();
       entry.boostCleanup = null;
     }
-    // 🆕 NEW: Clean up preview boosts globally
     if (entry.preview) {
       if (typeof entry.preview._initialBoostCleanup === "function") {
         entry.preview._initialBoostCleanup();
