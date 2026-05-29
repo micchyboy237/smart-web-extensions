@@ -1,94 +1,49 @@
 /**
  * Video card component - creates and updates individual video cards
- * with smart preview loading based on boost window priority
+ * with chunk preview loading integrated with boost window priority
  */
 import { createCardHTML } from "./templates.js";
 import { AppState } from "../core/state.js";
 import { PlaybackController } from "../controllers/playback-controller.js";
 import { getVideoFromPlayer, getVideoInfo } from "../engine/video-utils.js";
+import { ChunkPreviewEngine } from "../engine/chunk-preview.js";
 import { DebugLogger as debug } from "../core/debug.js";
 
-// Track which cards have their preview loaded
-const loadedPreviews = new WeakSet();
-// Track visible cards for lazy loading
-let previewObserver = null;
+// Track which cards have their preview initialized
+const initializedPreviews = new WeakSet();
+// Track preview cleanups for proper teardown
+const previewCleanups = new WeakMap();
 
 /**
- * Set up intersection observer for lazy-loading preview videos
+ * Initialize chunk preview for a video element
  */
-function setupPreviewObserver() {
-  if (previewObserver) return;
+async function initializeChunkPreview(previewVideo, entryId, card) {
+  if (initializedPreviews.has(previewVideo)) {
+    console.log(`[VideoCard] Preview already initialized for ${entryId}`);
+    return;
+  }
 
-  previewObserver = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.isIntersecting) {
-          const card = entry.target;
-          const previewVideo = card.querySelector(".preview-container video");
-          if (previewVideo && !loadedPreviews.has(previewVideo)) {
-            // Load the preview
-            loadPreview(previewVideo);
-            loadedPreviews.add(previewVideo);
-          }
-        }
-      });
-    },
-    {
-      root: document.querySelector("#videos-list"),
-      rootMargin: "200px", // Load 200px before visible
-      threshold: 0.1,
-    },
-  );
+  console.log(`[VideoCard] Initializing chunk preview for ${entryId}`);
+
+  // Ensure video has a source
+  if (!previewVideo.src && previewVideo.dataset.src) {
+    previewVideo.src = previewVideo.dataset.src;
+  }
+
+  // Set up chunk preview
+  const cleanup = await ChunkPreviewEngine.setup(previewVideo, entryId, card);
+
+  // Store cleanup function
+  if (cleanup) {
+    previewCleanups.set(previewVideo, cleanup);
+  }
+
+  initializedPreviews.add(previewVideo);
+  console.log(`[VideoCard] Preview ready: ${entryId}`);
 }
 
 /**
- * Load a preview video (only metadata + first frame)
- */
-function loadPreview(video) {
-  if (!video || video.dataset.previewLoaded === "true") return;
-
-  video.dataset.previewLoaded = "true";
-
-  // Only preload metadata, don't autoplay
-  video.preload = "metadata";
-
-  // Load just enough to show first frame
-  video.addEventListener(
-    "loadedmetadata",
-    () => {
-      // Seek to 1 second for thumbnail
-      if (video.duration > 1) {
-        video.currentTime = 1;
-      }
-    },
-    { once: true },
-  );
-
-  // Prevent the preview from buffering the whole video
-  video.addEventListener("suspend", () => {
-    // Browser suspended loading - good, we have enough
-  });
-
-  // Stop loading after getting the poster frame
-  let stopped = false;
-  video.addEventListener(
-    "seeked",
-    () => {
-      if (!stopped && video.currentTime >= 1) {
-        stopped = true;
-        // Remove src to stop further buffering, but keep the frame
-        const src = video.src;
-        video.removeAttribute("src");
-        // Use the current frame as poster
-        video.poster = src + "#t=1";
-      }
-    },
-    { once: true },
-  );
-}
-
-/**
- * Create a video card with lazy preview loading
+ * Create a video card with chunk preview support
  */
 export function createVideoCard(entry) {
   debug.log("PANEL", `Creating card for ${entry.id}`);
@@ -98,24 +53,45 @@ export function createVideoCard(entry) {
   card.dataset.playerId = entry.id;
   card.innerHTML = createCardHTML(entry);
 
-  // ✅ Highlight if this is the currently selected video
-  const currentVideo = getVideoFromPlayer(entry.player);
-  if (currentVideo === AppState.getCurrentlyPlaying()) {
-    card.classList.add("selected");
-    card.dataset.priority = "playing";
-  }
-
-  // ✅ Add priority data attribute for styling
+  // Set initial priority
   card.dataset.priority = "background";
 
-  // Set up lazy preview loading
-  setupPreviewObserver();
+  // Get the preview video element
   const previewVideo = card.querySelector(".preview-container video");
+
   if (previewVideo) {
-    // Don't load yet - let intersection observer handle it
-    previewVideo.removeAttribute("src");
-    previewVideo.dataset.src = entry.info.src; // Store for later
-    previewObserver.observe(card);
+    // ✅ Store original src and set up for chunk preview
+    const originalSrc = previewVideo.src;
+
+    if (originalSrc) {
+      previewVideo.dataset.src = originalSrc;
+      // Keep src for metadata loading, chunk engine will manage it
+    }
+
+    // Initialize preview when video is ready or card becomes visible
+    const tryInit = () => {
+      if (
+        previewVideo.readyState >= 1 &&
+        !initializedPreviews.has(previewVideo)
+      ) {
+        initializeChunkPreview(previewVideo, entry.id, card);
+      }
+    };
+
+    // Try immediately if metadata is loaded
+    if (previewVideo.readyState >= 1) {
+      tryInit();
+    } else {
+      // Wait for metadata
+      previewVideo.addEventListener("loadedmetadata", tryInit, { once: true });
+
+      // Fallback: try after a delay
+      setTimeout(() => {
+        if (!initializedPreviews.has(previewVideo) && previewVideo.src) {
+          tryInit();
+        }
+      }, 3000);
+    }
   }
 
   // Click handler
@@ -142,24 +118,18 @@ export function createVideoCard(entry) {
 }
 
 /**
- * Update video card - now also manages preview loading based on priority
+ * Update video card with priority-based preview management
  */
 export function updateVideoCard(card, entry) {
   const info = entry.info;
 
-  // ✅ Update selected state
+  // Update selected state
   const currentVideo = getVideoFromPlayer(entry.player);
   if (currentVideo === AppState.getCurrentlyPlaying()) {
     card.classList.add("selected");
-  } else {
-    card.classList.remove("selected");
-  }
-
-  // ✅ Update priority indicator
-  if (currentVideo === AppState.getCurrentlyPlaying()) {
     card.dataset.priority = "playing";
   } else {
-    // Check if this card is in the boost window
+    card.classList.remove("selected");
     card.dataset.priority = entry.boostPriority || "background";
   }
 
@@ -179,7 +149,7 @@ export function updateVideoCard(card, entry) {
   // Update boost indicator
   const boostEl = card.querySelector(".boost-indicator");
   if (boostEl) {
-    const isBoosting = info.playbackRate > 1;
+    const isBoosting = info.playbackRate > 1.05;
     const buffPercent = info.duration
       ? Math.round((info.bufferAhead / info.duration) * 100)
       : 0;
@@ -189,19 +159,23 @@ export function updateVideoCard(card, entry) {
       : "";
   }
 
-  // ✅ Smart preview loading
+  // ✅ Smart preview initialization based on priority
   const previewVideo = card.querySelector(".preview-container video");
-  if (previewVideo && !loadedPreviews.has(previewVideo)) {
+  if (previewVideo && !initializedPreviews.has(previewVideo)) {
     const priority = card.dataset.priority;
 
-    // Immediately load previews for playing/nearby, lazy load for others
+    // Initialize previews for playing/nearby priority
     if (priority === "playing" || priority === "nearby") {
-      previewVideo.src = previewVideo.dataset.src || info.src;
-      loadPreview(previewVideo);
-      loadedPreviews.add(previewVideo);
-      previewObserver?.unobserve(card);
+      // Ensure video has source
+      if (!previewVideo.src && previewVideo.dataset.src) {
+        previewVideo.src = previewVideo.dataset.src;
+      }
+
+      if (previewVideo.src) {
+        initializeChunkPreview(previewVideo, entry.id, card);
+      }
     }
-    // Background cards: left to intersection observer
+    // Background cards: don't initialize until hovered or scrolled into view
   }
 }
 
@@ -210,11 +184,14 @@ export function updateVideoCard(card, entry) {
  */
 export function loadCardPreview(card) {
   const previewVideo = card.querySelector(".preview-container video");
-  if (previewVideo && !loadedPreviews.has(previewVideo)) {
-    previewVideo.src = previewVideo.dataset.src;
-    loadPreview(previewVideo);
-    loadedPreviews.add(previewVideo);
-    previewObserver?.unobserve(card);
+  if (previewVideo && !initializedPreviews.has(previewVideo)) {
+    if (!previewVideo.src && previewVideo.dataset.src) {
+      previewVideo.src = previewVideo.dataset.src;
+    }
+    if (previewVideo.src) {
+      const entryId = card.dataset.playerId || "unknown";
+      initializeChunkPreview(previewVideo, entryId, card);
+    }
   }
 }
 
@@ -223,10 +200,42 @@ export function loadCardPreview(card) {
  */
 export function unloadCardPreview(card) {
   const previewVideo = card.querySelector(".preview-container video");
-  if (previewVideo) {
+  if (previewVideo && initializedPreviews.has(previewVideo)) {
+    const cleanup = previewCleanups.get(previewVideo);
+    if (cleanup) {
+      cleanup();
+      previewCleanups.delete(previewVideo);
+    }
+
+    ChunkPreviewEngine.cleanup(previewVideo);
+    initializedPreviews.delete(previewVideo);
+
+    // Save src for later reload
+    if (previewVideo.src) {
+      previewVideo.dataset.src = previewVideo.src;
+    }
+
+    // Release memory
     previewVideo.removeAttribute("src");
-    loadedPreviews.delete(previewVideo);
-    // Re-observe for later
-    previewObserver?.observe(card);
+    previewVideo.load();
+
+    console.log(
+      `[VideoCard] Unloaded preview for ${card.dataset.playerId || "unknown"}`,
+    );
   }
+}
+
+/**
+ * Clean up all previews (for extension unload)
+ */
+export function cleanupAllPreviews() {
+  for (const [video, cleanup] of previewCleanups) {
+    try {
+      cleanup();
+    } catch (e) {
+      console.warn("[VideoCard] Cleanup error:", e);
+    }
+  }
+  previewCleanups.clear();
+  initializedPreviews.clear();
 }

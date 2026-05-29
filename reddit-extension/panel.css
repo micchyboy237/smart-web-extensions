@@ -5,7 +5,7 @@
   right: 20px;
   z-index: 2147483646;
   width: 320px;
-  max-height: 80vh;
+  max-height: 100vh;
   background: rgba(26, 26, 46, 0.95);
   backdrop-filter: blur(10px);
   border: 2px solid #ff4500;

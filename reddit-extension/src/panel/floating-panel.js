@@ -1,8 +1,14 @@
 /**
  * Floating panel manager - creates and manages the UI overlay
+ * Now with integrated chunk preview management
  */
 import { getPanelTemplate } from "./templates.js";
-import { createVideoCard, updateVideoCard } from "./video-card.js";
+import {
+  createVideoCard,
+  updateVideoCard,
+  loadCardPreview,
+  unloadCardPreview,
+} from "./video-card.js";
 import { AppState } from "../core/state.js";
 import {
   scanForPlayers,
@@ -10,19 +16,20 @@ import {
 } from "../tracker/player-tracker.js";
 import { getVideoFromPlayer, getVideoInfo } from "../engine/video-utils.js";
 import { BoostEngine } from "../engine/boost-engine.js";
+import { ChunkPreviewEngine } from "../engine/chunk-preview.js"; // ✅ NEW
 import { DebugLogger as debug } from "../core/debug.js";
 
 let panel = null;
 let autoRefreshInterval = null;
-let scheduledUpdate = null; // ✅ Track scheduled update
-let lastUpdateTime = 0; // ✅ Track last update time
-const UPDATE_COOLDOWN = 500; // ✅ Minimum 500ms between full updates
+let scheduledUpdate = null;
+let lastUpdateTime = 0;
+const UPDATE_COOLDOWN = 500;
+// ✅ Configuration for preview visibility management
+const UNLOAD_MARGIN = 400; // px margin for keeping previews loaded
 
 export const FloatingPanel = {
-  /** Create and show the floating panel */
   create() {
     if (panel) return;
-
     panel = document.createElement("div");
     panel.id = "video-observer-panel";
     panel.innerHTML = getPanelTemplate();
@@ -48,43 +55,42 @@ export const FloatingPanel = {
       panel.style.display = AppState.isPanelVisible() ? "flex" : "none";
     });
 
-    // ✅ Debounced listener for player changes
+    // Listen for player changes
     AppState.on("players:changed", () => {
       this.scheduleUpdate();
     });
 
-    debug.log("SUCCESS", "Panel created");
+    // Listen for tab visibility changes
+    AppState.on("tab:visibility", ({ visible }) => {
+      if (visible) {
+        ChunkPreviewEngine.resumeAll();
+      } else {
+        ChunkPreviewEngine.stopAll();
+      }
+    });
+
+    debug.log("SUCCESS", "Panel created with chunk preview support");
   },
 
-  // ✅ NEW: Schedule a debounced update
   scheduleUpdate() {
     const now = Date.now();
-
-    // If update just ran, don't schedule another immediately
     if (now - lastUpdateTime < UPDATE_COOLDOWN) {
-      // Cancel existing scheduled update and push it further out
-      if (scheduledUpdate) {
-        clearTimeout(scheduledUpdate);
-      }
+      if (scheduledUpdate) clearTimeout(scheduledUpdate);
       scheduledUpdate = setTimeout(() => {
         this.performUpdate();
         scheduledUpdate = null;
       }, UPDATE_COOLDOWN);
       return;
     }
-
-    // Run immediately if enough time has passed
     this.performUpdate();
   },
 
-  /** Perform a full panel update - sync state to DOM */
   performUpdate() {
     if (!panel || !AppState.isTabVisible()) return;
 
     const list = panel.querySelector("#videos-list");
     const countEl = panel.querySelector("#video-count");
     const empty = panel.querySelector("#empty-videos");
-
     if (!list || !countEl || !empty) return;
 
     // Cleanup stale players
@@ -102,7 +108,6 @@ export const FloatingPanel = {
 
     empty.style.display = "none";
 
-    // Track if we actually changed anything
     let cardsCreated = 0;
     let cardsUpdated = 0;
 
@@ -133,42 +138,67 @@ export const FloatingPanel = {
       }
     }
 
-    // ✅ Unload previews for videos far from boost window
-    // (see Untitled-72 / file_context_0 for logic)
-    const unloadMargin = 400; // px margin outside of panel to keep previews
-    const entriesMap = AppState.getPlayerEntries();
-    for (const [player, entry] of entriesMap) {
-      const card = AppState.getCard(player);
-      if (card && entry.boostPriority === "background") {
-        const listRect = list.getBoundingClientRect();
-        const cardRect = card.getBoundingClientRect();
-        const isVisibleInPanel =
-          cardRect.top < listRect.bottom + unloadMargin &&
-          cardRect.bottom > listRect.top - unloadMargin;
-        if (!isVisibleInPanel) {
-          unloadCardPreview(card);
-        }
-      }
-    }
+    // ✅ Manage preview visibility based on scroll position
+    this._managePreviewVisibility(list);
 
     lastUpdateTime = Date.now();
 
-    // ✅ Only log if something changed
     if (cardsCreated > 0) {
       debug.log(
         "PANEL",
-        `Panel updated: ${playerCount} players, ${cardsCreated} new, ${cardsUpdated} existing`,
+        `Panel: ${playerCount} players, ${cardsCreated} new, ${cardsUpdated} existing | Chunks: ${ChunkPreviewEngine.getStats().activeLoops} active`,
       );
     }
   },
 
-  /** Start periodic card updates (every second) */
+  /**
+   * Smart preview management - load previews for visible/nearby cards,
+   * unload for cards far out of view
+   */
+  _managePreviewVisibility(list) {
+    const listRect = list.getBoundingClientRect();
+    const entries = AppState.getPlayerEntries();
+    let loadedCount = 0;
+    let unloadedCount = 0;
+
+    for (const [player, entry] of entries) {
+      const card = AppState.getCard(player);
+      if (!card) continue;
+
+      const cardRect = card.getBoundingClientRect();
+      const isVisibleInPanel =
+        cardRect.top < listRect.bottom + UNLOAD_MARGIN &&
+        cardRect.bottom > listRect.top - UNLOAD_MARGIN;
+
+      const priority = card.dataset.priority || "background";
+
+      if (
+        isVisibleInPanel &&
+        (priority === "playing" || priority === "nearby")
+      ) {
+        // Ensure preview is loaded for high-priority visible cards
+        loadCardPreview(card);
+        loadedCount++;
+      } else if (!isVisibleInPanel && priority === "background") {
+        // Unload previews for cards far out of view
+        unloadCardPreview(card);
+        unloadedCount++;
+      }
+    }
+
+    // ✅ Log chunk preview stats periodically
+    if ((loadedCount > 0 || unloadedCount > 0) && Math.random() < 0.2) {
+      const stats = ChunkPreviewEngine.getStats();
+      console.log(
+        `[Panel] Preview visibility: ${loadedCount} loaded, ${unloadedCount} unloaded | Active chunks: ${stats.activeLoops}`,
+      );
+    }
+  },
+
   startAutoUpdate() {
     if (autoRefreshInterval) return;
-
     autoRefreshInterval = setInterval(() => {
       if (!AppState.isTabVisible() || !panel) return;
-
       const entries = AppState.getPlayerEntries();
       for (const [player, entry] of entries) {
         const video = getVideoFromPlayer(player);
@@ -181,11 +211,9 @@ export const FloatingPanel = {
         }
       }
     }, 1000);
-
-    debug.log("PANEL", "Auto-update started (1s interval)");
+    debug.log("PANEL", "Auto-update started (1s)");
   },
 
-  /** Stop auto-updates */
   stopAutoUpdate() {
     if (autoRefreshInterval) {
       clearInterval(autoRefreshInterval);

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "reddit Extension",
-  "description": "Automatically shows floating panel for reddit video elements",
+  "description": "Automatically shows floating panel for reddit video elements with chunk previews",
   "version": "1.0",
   "action": {
     "default_title": "reddit Video Observer (Floating Panel)"
@@ -28,7 +28,8 @@
         "src/controllers/playback-controller.js",
         "src/controllers/keyboard-controller.js",
         "src/engine/boost-engine.js",
-        "src/engine/video-utils.js"
+        "src/engine/video-utils.js",
+        "src/engine/chunk-preview.js"
       ],
       "matches": ["https://*.reddit.com/*"]
     }
