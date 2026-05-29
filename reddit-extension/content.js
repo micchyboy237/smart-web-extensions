@@ -1,8 +1,8 @@
 // content.js - Reddit Video Observer with Floating Panel + Buffer Boost
-// FIXED: Shadow DOM handling, cleanup logic, and deduplication
+// FIXED v2: Track by shreddit-player, not by video element
 
-let videos = new Map(); // video element → entry
-let videoCards = new Map(); // video element → card DOM element
+let players = new Map(); // shreddit-player → entry (NOT video → entry)
+let videoCards = new Map(); // shreddit-player → card DOM element
 let currentlyPlaying = null;
 let videoCounter = 0;
 let panel = null;
@@ -28,50 +28,12 @@ const DEBUG = {
   log(level, message, data = null) {
     if (!this.enabled) return;
     const ts = new Date().toLocaleTimeString();
-    const prefix = `[Reddit Panel ${ts}]`;
     console.log(
-      `${this.levels[level] || "📝"} ${prefix} ${message}`,
+      `${this.levels[level] || "📝"} [Reddit ${ts}] ${message}`,
       data || "",
     );
   },
-  info(msg, data) {
-    this.log("INFO", msg, data);
-  },
-  success(msg, data) {
-    this.log("SUCCESS", msg, data);
-  },
-  warn(msg, data) {
-    this.log("WARN", msg, data);
-  },
-  error(msg, data) {
-    this.log("ERROR", msg, data);
-  },
-  boost(msg, data) {
-    this.log("BOOST", msg, data);
-  },
-  panel(msg, data) {
-    this.log("PANEL", msg, data);
-  },
-  dom(msg, data) {
-    this.log("DOM", msg, data);
-  },
-  cleanup(msg, data) {
-    this.log("CLEANUP", msg, data);
-  },
 };
-
-// Also log to panel if visible
-function logToPanel(message) {
-  if (!panel || !tabIsVisible) return;
-  const logsEl = panel.querySelector("#logs");
-  if (logsEl) {
-    const ts = new Date().toLocaleTimeString();
-    const entry = document.createElement("div");
-    entry.textContent = `[${ts}] ${message}`;
-    logsEl.prepend(entry);
-    if (logsEl.children.length > 60) logsEl.removeChild(logsEl.lastChild);
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════
 // BUFFER BOOST ENGINE
@@ -110,10 +72,6 @@ function getEffectiveBufferRatio(video) {
 
 function cleanupBoost(video) {
   if (!video) return;
-  DEBUG.boost(
-    `Cleaning up boost for ${video.dataset.videoObserverId || "unknown"}`,
-  );
-
   const timers = boostTimers.get(video);
   if (timers) {
     if (timers.boostTimeout) clearTimeout(timers.boostTimeout);
@@ -126,14 +84,12 @@ function cleanupBoost(video) {
   }
   if (video.__boostState) {
     video.__boostState.active = false;
-    video.__boostState.paused = true;
   }
   if (
     video.__originalPlaybackRate &&
     video.playbackRate === video.__boostTargetRate
   ) {
     video.playbackRate = video.__originalPlaybackRate;
-    DEBUG.boost(`Restored playback rate to ${video.__originalPlaybackRate}x`);
   }
   delete video.__originalPlaybackRate;
   delete video.__boostTargetRate;
@@ -156,14 +112,6 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
   let rate = isSeek
     ? BOOST_CONFIG.SEEK_BOOST_RATE
     : BOOST_CONFIG.BOOST_RATE_NORMAL;
-
-  if (isSeek) {
-    const initialAhead = getBufferAhead(video);
-    if (initialAhead < 2) {
-      rate = Math.min(rate, 1.25);
-    }
-  }
-
   let duration = isSeek
     ? BOOST_CONFIG.SEEK_BOOST_DURATION
     : BOOST_CONFIG.BOOST_DURATION;
@@ -191,8 +139,9 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
     paused: video.paused,
   };
 
-  DEBUG.boost(
-    `Boost activated: ${targetRate}x for ${duration}ms | Buffer ahead: ${getBufferAhead(video).toFixed(1)}s`,
+  DEBUG.log(
+    "BOOST",
+    `Boost: ${targetRate}x for ${duration}ms | Buffer: ${getBufferAhead(video).toFixed(1)}s`,
   );
 
   function evaluateBoost() {
@@ -212,9 +161,9 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
     } else if (
       video.__boostState.extensionCount >= BOOST_CONFIG.MAX_BOOST_EXTENSIONS
     ) {
-      endReason = `max extensions (${BOOST_CONFIG.MAX_BOOST_EXTENSIONS})`;
+      endReason = "max extensions";
     } else if (elapsed > BOOST_CONFIG.MAX_TOTAL_BOOST_MS) {
-      endReason = `max total time (${BOOST_CONFIG.MAX_TOTAL_BOOST_MS / 1000}s)`;
+      endReason = "max time";
     } else if (
       elapsed >
       video.__boostBaseDuration +
@@ -225,9 +174,6 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
         elapsed <= BOOST_CONFIG.MAX_TOTAL_BOOST_MS
       ) {
         video.__boostState.extensionCount++;
-        DEBUG.boost(
-          `Extension ${video.__boostState.extensionCount}/${BOOST_CONFIG.MAX_BOOST_EXTENSIONS}`,
-        );
         if (video.__boostTimeout) clearTimeout(video.__boostTimeout);
         video.__boostTimeout = setTimeout(
           evaluateBoost,
@@ -236,20 +182,20 @@ function boostBufferAfterSeek(video, isSeek = false, options = {}) {
         if (timers) timers.boostTimeout = video.__boostTimeout;
         return;
       } else {
-        endReason = "max limits reached";
+        endReason = "limits reached";
       }
     }
 
     if (endReason) {
-      DEBUG.boost(
-        `Boost ended: ${endReason} | Buffer ahead: ${currentAhead.toFixed(1)}s`,
+      DEBUG.log(
+        "BOOST",
+        `Boost end: ${endReason} | Buffer: ${currentAhead.toFixed(1)}s`,
       );
       if (video.playbackRate === targetRate) {
         video.playbackRate = video.__originalPlaybackRate || 1.0;
       }
       video.__boostState.active = false;
     }
-
     if (video.__boostTimeout) {
       clearTimeout(video.__boostTimeout);
       video.__boostTimeout = null;
@@ -267,16 +213,14 @@ function attachBoostToVideo(video) {
   if (!video || video.dataset.boostAttached === "true") return () => {};
   video.dataset.boostAttached = "true";
 
-  DEBUG.boost(
-    `Boost attached to ${video.dataset.videoObserverId || "unknown"}`,
+  DEBUG.log(
+    "BOOST",
+    `Attached to ${video.dataset.videoObserverId || "unknown"}`,
   );
 
   const initialCheck = setTimeout(() => {
     if (!tabIsVisible) return;
     const ahead = getBufferAhead(video);
-    DEBUG.boost(
-      `Initial buffer check: ${ahead.toFixed(1)}s ahead (target: ${BOOST_CONFIG.INITIAL_BUFFER_TARGET}s)`,
-    );
     if (
       ahead < BOOST_CONFIG.INITIAL_BUFFER_TARGET &&
       !video.__hasBoostedOnLoad
@@ -289,59 +233,27 @@ function attachBoostToVideo(video) {
   const onSeeked = () => {
     if (!tabIsVisible) return;
     const ratio = getEffectiveBufferRatio(video);
-    const needsExtension = ratio < BOOST_CONFIG.SEEK_MIN_EFFECTIVE_RATIO;
-    DEBUG.boost(
-      `Seek detected | Buffer ratio: ${ratio.toFixed(2)} | Extension needed: ${needsExtension}`,
-    );
-    boostBufferAfterSeek(video, true, { extendDuration: needsExtension });
+    boostBufferAfterSeek(video, true, {
+      extendDuration: ratio < BOOST_CONFIG.SEEK_MIN_EFFECTIVE_RATIO,
+    });
   };
 
   const onPlay = () => {
-    if (!tabIsVisible) return;
     if (video.__boostState?.active && video.__boostState.paused) {
       video.__boostState.paused = false;
-      DEBUG.boost("Play resumed during boost");
-      const timers = boostTimers.get(video);
-      if (timers?.boostTimeout) {
-        clearTimeout(timers.boostTimeout);
-        const remaining = Math.max(
-          1000,
-          (video.__boostBaseDuration || BOOST_CONFIG.BOOST_DURATION) -
-            (Date.now() - (video.__boostStartTime || Date.now())),
-        );
-        if (video.__boostTimeout) clearTimeout(video.__boostTimeout);
-        video.__boostTimeout = setTimeout(
-          () => {
-            if (video.__boostState?.active) {
-              const ahead = getBufferAhead(video);
-              if (ahead >= BOOST_CONFIG.BUFFER_LOW * 1.5) {
-                video.playbackRate = video.__originalPlaybackRate || 1.0;
-                video.__boostState.active = false;
-              }
-            }
-          },
-          Math.min(remaining, 5000),
-        );
-        timers.boostTimeout = video.__boostTimeout;
-      }
-    }
-  };
-
-  const onPause = () => {
-    if (video.__boostState?.active) {
-      video.__boostState.paused = true;
     }
   };
 
   video.addEventListener("seeked", onSeeked);
   video.addEventListener("play", onPlay);
-  video.addEventListener("pause", onPause);
+  video.addEventListener("pause", () => {
+    if (video.__boostState?.active) video.__boostState.paused = true;
+  });
 
   return () => {
     clearTimeout(initialCheck);
     video.removeEventListener("seeked", onSeeked);
     video.removeEventListener("play", onPlay);
-    video.removeEventListener("pause", onPause);
     cleanupBoost(video);
     delete video.dataset.boostAttached;
   };
@@ -350,30 +262,41 @@ function attachBoostToVideo(video) {
 // ═══════════════════════════════════════════════════════════════
 // REDDIT SHADOW DOM HELPER
 // ═══════════════════════════════════════════════════════════════
-function getVideoFromRedditPlayer(player) {
+function getVideoFromPlayer(player) {
   if (!player) return null;
-  // Reddit shreddit-player uses shadow DOM
   if (player.shadowRoot) {
     return player.shadowRoot.querySelector("video");
   }
   return player.querySelector("video");
 }
 
-function getAllRedditVideoPlayers() {
-  return Array.from(document.querySelectorAll("shreddit-player")).filter(
-    (player) => {
-      const video = getVideoFromRedditPlayer(player);
-      return video !== null;
-    },
-  );
+function getPlayerId(player) {
+  // Use the post ID from the parent shreddit-post
+  const post = player.closest("shreddit-post");
+  if (post) {
+    return post.getAttribute("post-id") || post.id || `player-${videoCounter}`;
+  }
+  return player.id || `player-${videoCounter}`;
 }
 
 // ═══════════════════════════════════════════════════════════════
 // VIDEO INFO
 // ═══════════════════════════════════════════════════════════════
 function getVideoInfo(video) {
+  if (!video)
+    return {
+      id: "no-video",
+      src: "No source",
+      currentTime: 0,
+      duration: 0,
+      paused: true,
+      playbackRate: 1,
+      bufferAhead: 0,
+      muted: true,
+      readyState: 0,
+    };
   return {
-    id: video.dataset.videoObserverId || `video-${++videoCounter}`,
+    id: video.dataset.videoObserverId || "unknown",
     src: video.currentSrc || video.src || "No source",
     currentTime: video.currentTime || 0,
     duration: video.duration || 0,
@@ -390,285 +313,235 @@ function getVideoInfo(video) {
 // ═══════════════════════════════════════════════════════════════
 function enforceSinglePlayback(videoToPlay) {
   if (currentlyPlaying && currentlyPlaying !== videoToPlay) {
-    DEBUG.info(
-      `Pausing previous video: ${currentlyPlaying.dataset.videoObserverId}`,
-    );
     currentlyPlaying.pause();
   }
   currentlyPlaying = videoToPlay;
-
   const onEnded = () => {
-    if (currentlyPlaying === videoToPlay) {
-      DEBUG.info(`Video ended: ${videoToPlay.dataset.videoObserverId}`);
-      currentlyPlaying = null;
-    }
+    if (currentlyPlaying === videoToPlay) currentlyPlaying = null;
   };
   videoToPlay.addEventListener("ended", onEnded, { once: true });
 }
 
 // ═══════════════════════════════════════════════════════════════
-// CARD CREATION & MANAGEMENT
+// CARD CREATION
 // ═══════════════════════════════════════════════════════════════
 function createVideoCard(entry) {
-  DEBUG.panel(`Creating card for ${entry.id}`);
+  DEBUG.log("PANEL", `Creating card for ${entry.id}`);
 
   const card = document.createElement("div");
   card.className = "video-card";
-  card.dataset.videoId = entry.id;
+  card.dataset.playerId = entry.id;
 
-  const buffPercent = entry.info.duration
-    ? Math.round((getBufferAhead(entry.element) / entry.info.duration) * 100)
+  const info = entry.info;
+  const buffPercent = info.duration
+    ? Math.round((info.bufferAhead / info.duration) * 100)
     : 0;
-  const isBoosting = entry.info.playbackRate > 1;
 
   card.innerHTML = `
     <div class="preview-container">
-      <video 
-        src="${entry.info.src}" 
-        muted 
-        preload="metadata"
-        style="width:100%;height:100%;object-fit:cover;border-radius:4px;background:#1a1a2e;"
-      ></video>
+      <video src="${info.src}" muted preload="metadata"
+        style="width:100%;height:100%;object-fit:cover;border-radius:4px;background:#1a1a2e;"></video>
     </div>
     <div class="video-info-row">
       <div class="video-id-meta">
         <span class="video-id">${entry.id}</span>
-        <span class="video-meta">${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s</span>
+        <span class="video-meta">${Math.floor(info.currentTime)}/${Math.floor(info.duration)}s</span>
       </div>
-      <span class="video-status ${entry.info.paused ? "paused" : "playing"}">
-        ${entry.info.paused ? "⏸ Paused" : "▶ Playing"}
-      </span>
+      <span class="video-status ${info.paused ? "paused" : "playing"}">${info.paused ? "⏸ Paused" : "▶ Playing"}</span>
     </div>
-    <div class="boost-indicator" style="
-      font-size:10px;
-      color:#4CAF50;
-      text-align:center;
-      padding:2px;
-      display:${isBoosting ? "block" : "none"};
-    ">
-      🚀 Boost ${entry.info.playbackRate.toFixed(2)}x | Buffer: ${buffPercent}%
+    <div class="boost-indicator" style="font-size:10px;color:#4CAF50;text-align:center;padding:2px;display:none;">
+      🚀 Boost 1.00x | Buffer: 0%
     </div>
   `;
-
-  const previewVideo = card.querySelector("video");
-  entry.cardPreview = previewVideo;
 
   // Click handler
   card.addEventListener("click", (e) => {
     e.stopImmediatePropagation();
-    const videoEl = entry.element;
-    if (!videoEl) {
-      DEBUG.warn(`No element for ${entry.id}`);
+
+    // Get current video from player
+    const video = getVideoFromPlayer(entry.player);
+    if (!video) {
+      DEBUG.log("WARN", `No video for ${entry.id}`);
       return;
     }
 
-    DEBUG.panel(`Card clicked: ${entry.id} | paused: ${videoEl.paused}`);
-
-    if (videoEl.paused) {
-      enforceSinglePlayback(videoEl);
-      videoEl.play().catch((err) => {
-        DEBUG.error(`Play failed: ${err.message}`);
-      });
+    if (video.paused) {
+      enforceSinglePlayback(video);
+      video
+        .play()
+        .catch((err) => DEBUG.log("ERROR", `Play failed: ${err.message}`));
     } else {
-      if (currentlyPlaying === videoEl) {
-        videoEl.pause();
+      if (currentlyPlaying === video) {
+        video.pause();
       } else {
-        enforceSinglePlayback(videoEl);
-        videoEl.play().catch((err) => {
-          DEBUG.error(`Play failed: ${err.message}`);
-        });
+        enforceSinglePlayback(video);
+        video
+          .play()
+          .catch((err) => DEBUG.log("ERROR", `Play failed: ${err.message}`));
       }
     }
 
-    // Scroll to the actual video
-    const redditPlayer = videoEl.closest("shreddit-player");
-    if (redditPlayer) {
-      redditPlayer.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+    entry.player.scrollIntoView({ behavior: "smooth", block: "center" });
   });
 
   return card;
 }
 
 function updateExistingCard(card, entry) {
+  const info = entry.info;
   const statusEl = card.querySelector(".video-status");
   if (statusEl) {
-    statusEl.className = `video-status ${entry.info.paused ? "paused" : "playing"}`;
-    statusEl.textContent = entry.info.paused ? "⏸ Paused" : "▶ Playing";
+    statusEl.className = `video-status ${info.paused ? "paused" : "playing"}`;
+    statusEl.textContent = info.paused ? "⏸ Paused" : "▶ Playing";
   }
 
   const timeEl = card.querySelector(".video-meta");
   if (timeEl) {
-    timeEl.textContent = `${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s`;
+    timeEl.textContent = `${Math.floor(info.currentTime)}/${Math.floor(info.duration)}s`;
   }
 
   const boostEl = card.querySelector(".boost-indicator");
   if (boostEl) {
-    const isBoosting = entry.info.playbackRate > 1;
-    const buffPercent = entry.info.duration
-      ? Math.round((getBufferAhead(entry.element) / entry.info.duration) * 100)
+    const isBoosting = info.playbackRate > 1;
+    const buffPercent = info.duration
+      ? Math.round((info.bufferAhead / info.duration) * 100)
       : 0;
-
     boostEl.style.display = isBoosting ? "block" : "none";
     boostEl.innerHTML = isBoosting
-      ? `🚀 Boost ${entry.info.playbackRate.toFixed(2)}x | Buffer: ${buffPercent}%`
+      ? `🚀 Boost ${info.playbackRate.toFixed(2)}x | Buffer: ${buffPercent}%`
       : "";
   }
-}
 
-// ═══════════════════════════════════════════════════════════════
-// FIXED: PANEL UPDATE - Checks video existence properly
-// ═══════════════════════════════════════════════════════════════
-function isVideoStillInDOM(video) {
-  if (!video) return false;
-
-  // Check if video is still in any document
-  if (!document.contains(video)) {
-    // Video might be in shadow DOM
-    const shredditPlayer = document.querySelector("shreddit-player");
-    if (shredditPlayer && shredditPlayer.shadowRoot) {
-      return shredditPlayer.shadowRoot.contains(video);
-    }
-    return false;
+  // Update preview video src if it changed
+  const previewVideo = card.querySelector(".preview-container video");
+  if (previewVideo && previewVideo.src !== info.src) {
+    previewVideo.src = info.src;
   }
-  return true;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// FIXED: Panel update - track by PLAYER, not video element
+// ═══════════════════════════════════════════════════════════════
 function performPanelUpdate() {
-  if (!panel) {
-    DEBUG.warn("Panel not created yet, skipping update");
-    return;
-  }
-
-  DEBUG.panel(`Panel update - Videos tracked: ${videos.size}`);
+  if (!panel) return;
 
   const list = panel.querySelector("#videos-list");
   const countEl = panel.querySelector("#video-count");
   const empty = panel.querySelector("#empty-videos");
 
-  if (!list || !countEl || !empty) {
-    DEBUG.error("Panel DOM elements missing!");
-    return;
+  if (!list || !countEl || !empty) return;
+
+  // FIXED: Remove players that are no longer in the DOM
+  const playersToRemove = [];
+  for (const [player, entry] of players) {
+    if (!document.contains(player)) {
+      DEBUG.log("CLEANUP", `Player ${entry.id} removed from DOM`);
+      playersToRemove.push([player, entry]);
+    }
   }
 
-  countEl.textContent = videos.size;
+  for (const [player, entry] of playersToRemove) {
+    cleanupPlayerEntry(entry);
+    players.delete(player);
+    const card = videoCards.get(player);
+    if (card) {
+      card.remove();
+      videoCards.delete(player);
+    }
+  }
 
-  if (videos.size === 0) {
+  countEl.textContent = players.size;
+
+  if (players.size === 0) {
     empty.style.display = "block";
-    DEBUG.panel("No videos to show");
     return;
   }
 
   empty.style.display = "none";
 
-  // FIXED: Only cleanup videos that are truly gone
-  const videosToRemove = [];
+  // Create/update cards for each player
+  for (const [player, entry] of players) {
+    // Always get fresh video reference from shadow DOM
+    const video = getVideoFromPlayer(player);
 
-  for (let [videoEl, entry] of Array.from(videos.entries())) {
-    if (!isVideoStillInDOM(videoEl)) {
-      DEBUG.cleanup(`Video ${entry.id} no longer in DOM - marking for removal`);
-      videosToRemove.push([videoEl, entry]);
+    // Update info with current video state
+    if (video) {
+      entry.info = getVideoInfo(video);
+      // Re-attach boost if video element changed
+      if (video.dataset.boostAttached !== "true" && video.readyState >= 1) {
+        entry.boostCleanup?.();
+        entry.boostCleanup = attachBoostToVideo(video);
+      }
     }
-  }
 
-  // Remove dead videos
-  for (let [videoEl, entry] of videosToRemove) {
-    cleanupVideoEntry(entry);
-    videos.delete(videoEl);
-    const card = videoCards.get(videoEl);
-    if (card) {
-      card.remove();
-      videoCards.delete(videoEl);
-      DEBUG.cleanup(`Removed card for ${entry.id}`);
-    }
-  }
-
-  // Update count after cleanup
-  countEl.textContent = videos.size;
-
-  if (videos.size === 0) {
-    empty.style.display = "block";
-    return;
-  }
-
-  // Create or update cards
-  Array.from(videos.values()).forEach((entry) => {
     let card;
-    if (!videoCards.has(entry.element)) {
+    if (!videoCards.has(player)) {
       card = createVideoCard(entry);
-      videoCards.set(entry.element, card);
+      videoCards.set(player, card);
       list.appendChild(card);
-      DEBUG.panel(`Added card for ${entry.id}`);
     } else {
-      card = videoCards.get(entry.element);
+      card = videoCards.get(player);
       updateExistingCard(card, entry);
     }
-  });
+  }
 
-  DEBUG.panel(`Panel updated: ${videos.size} videos, ${videoCards.size} cards`);
+  DEBUG.log(
+    "PANEL",
+    `Panel: ${players.size} players, ${videoCards.size} cards`,
+  );
 }
 
 function updateAllCards() {
   if (!panel || !tabIsVisible) return;
 
-  for (const [videoEl, entry] of videos) {
-    entry.info = getVideoInfo(videoEl);
-    const card = videoCards.get(videoEl);
+  for (const [player, entry] of players) {
+    const video = getVideoFromPlayer(player);
+    if (video) {
+      entry.info = getVideoInfo(video);
+    }
+    const card = videoCards.get(player);
     if (card) {
       updateExistingCard(card, entry);
     }
   }
 
-  // Schedule next update
   setTimeout(updateAllCards, 1000);
 }
 
-function cleanupVideoEntry(entry) {
+function cleanupPlayerEntry(entry) {
   if (!entry) return;
-  DEBUG.cleanup(`Cleaning up entry: ${entry.id}`);
+  DEBUG.log("CLEANUP", `Cleaning: ${entry.id}`);
 
-  if (entry.boostCleanup) {
+  const video = getVideoFromPlayer(entry.player);
+  if (video && entry.boostCleanup) {
     entry.boostCleanup();
     entry.boostCleanup = null;
   }
 
-  if (entry.cleanups && entry.cleanups.length > 0) {
-    entry.cleanups.forEach((cleanupFn) => cleanupFn());
+  if (entry.cleanups) {
+    entry.cleanups.forEach((fn) => fn());
     entry.cleanups = null;
   }
 
-  if (entry.cardPreview) {
-    entry.cardPreview.pause();
-    entry.cardPreview.src = "";
-    entry.cardPreview.load();
-    entry.cardPreview = null;
-  }
-
-  if (entry.element && entry.element === currentlyPlaying) {
-    currentlyPlaying = null;
-  }
-
-  // Clear observer data
-  if (entry.element) {
-    delete entry.element.dataset.videoObserverAttached;
-    delete entry.element.dataset.videoObserverId;
+  if (currentlyPlaying) {
+    const currentVideo = getVideoFromPlayer(entry.player);
+    if (currentVideo && currentVideo === currentlyPlaying) {
+      currentlyPlaying = null;
+    }
   }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// FLOATING PANEL CREATION
+// FLOATING PANEL
 // ═══════════════════════════════════════════════════════════════
 function createFloatingPanel() {
-  if (panel) {
-    DEBUG.warn("Panel already exists");
-    return;
-  }
+  if (panel) return;
 
   panel = document.createElement("div");
   panel.id = "video-observer-panel";
   panel.innerHTML = `
     <header>
-      🎥 Reddit Video Observer 
+      🎥 Reddit Videos 
       <button class="close-btn" id="toggle-panel">✕</button>
     </header>
     <div class="tabs">
@@ -677,23 +550,17 @@ function createFloatingPanel() {
     </div>
     <div id="videos-tab" class="content">
       <div id="videos-list"></div>
-      <div id="empty-videos">
-        No videos detected yet<br>
-        <small>Scroll to load Reddit video posts</small>
-      </div>
+      <div id="empty-videos">No videos detected yet<br><small>Scroll to load posts</small></div>
     </div>
     <div id="logs-tab" class="content" style="display:none">
       <div id="logs" class="log-container"></div>
     </div>
-    <div class="status">
-      Observing <strong>shreddit-player</strong> • ${new Date().toLocaleTimeString()}
-    </div>
+    <div class="status">shreddit-player • ${new Date().toLocaleTimeString()}</div>
   `;
 
   document.body.appendChild(panel);
-  DEBUG.success("Floating panel created and appended to body");
+  DEBUG.log("SUCCESS", "Panel created");
 
-  // Tab switching
   panel.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       panel
@@ -707,215 +574,154 @@ function createFloatingPanel() {
     });
   });
 
-  // Toggle panel visibility
   panel.querySelector("#toggle-panel").addEventListener("click", () => {
     isPanelVisible = !isPanelVisible;
     panel.style.display = isPanelVisible ? "flex" : "none";
-    DEBUG.info(`Panel ${isPanelVisible ? "shown" : "hidden"}`);
-    if (!isPanelVisible && currentlyPlaying) {
-      currentlyPlaying.pause();
-      currentlyPlaying = null;
-    }
   });
 
-  // Start periodic card updates
   updateAllCards();
 }
 
 // ═══════════════════════════════════════════════════════════════
-// FIXED: VIDEO TRACKING with deduplication
+// FIXED: Track by SHREDDIT-PLAYER, not video element
 // ═══════════════════════════════════════════════════════════════
-function trackVideo(video, player) {
+function trackPlayer(player) {
+  const playerId = getPlayerId(player);
+
   // Skip if already tracked
-  if (video.dataset.videoObserverAttached === "true") {
-    DEBUG.dom(
-      `Video already tracked, skipping: ${video.dataset.videoObserverId}`,
-    );
+  if (players.has(player)) {
     return;
   }
 
-  // Skip if we already have this exact video element
-  if (videos.has(video)) {
-    DEBUG.dom(`Video already in Map, skipping`);
+  const video = getVideoFromPlayer(player);
+  if (!video) {
+    DEBUG.log("DOM", `No video in player ${playerId} yet`);
     return;
   }
 
-  video.dataset.videoObserverAttached = "true";
-
-  const id = `reddit-video-${++videoCounter}`;
+  const id = `video-${++videoCounter}`;
   video.dataset.videoObserverId = id;
-
-  // Ensure Reddit videos start muted (we'll unmute on interaction)
   video.muted = true;
   video.volume = 0.5;
 
   const entry = {
     id,
-    element: video,
-    player: player,
+    player: player, // Track the PLAYER, not the video
     info: getVideoInfo(video),
-    cardPreview: null,
-    cleanups: [],
     boostCleanup: null,
+    cleanups: [],
+    cardPreview: null,
   };
 
-  videos.set(video, entry);
+  players.set(player, entry);
 
-  DEBUG.dom(`Video tracked: ${id}`, {
-    src: (video.currentSrc || video.src || "").substring(0, 60) + "...",
-    duration: video.duration || "unknown",
-    readyState: video.readyState,
-    totalTracked: videos.size,
+  DEBUG.log("DOM", `Tracked: ${id}`, {
+    playerId,
+    src: (video.currentSrc || video.src || "").substring(0, 50) + "...",
+    totalTracked: players.size,
   });
 
-  logToPanel(`Video detected: ${id}`);
-
-  // Attach buffer boost
+  // Attach buffer boost to current video
   entry.boostCleanup = attachBoostToVideo(video);
 
-  // Track all video events
-  const events = [
-    "loadstart",
-    "progress",
-    "suspend",
-    "abort",
-    "error",
-    "emptied",
-    "stalled",
-    "loadedmetadata",
-    "loadeddata",
-    "canplay",
-    "canplaythrough",
-    "durationchange",
-    "play",
-    "playing",
-    "pause",
-    "ended",
-    "waiting",
-    "seeking",
-    "seeked",
-    "ratechange",
-    "volumechange",
-    "resize",
-  ];
-
-  events.forEach((ev) => {
-    const handler = () => {
-      entry.info = getVideoInfo(video);
-      if (ev === "ratechange") {
-        const card = videoCards.get(video);
-        if (card) updateExistingCard(card, entry);
+  // Watch for video element changes inside the shadow DOM
+  if (player.shadowRoot) {
+    const shadowObserver = new MutationObserver(() => {
+      const newVideo = getVideoFromPlayer(player);
+      if (newVideo && newVideo.dataset.boostAttached !== "true") {
+        // Clean old boost
+        if (entry.boostCleanup) entry.boostCleanup();
+        // Attach to new video
+        newVideo.dataset.videoObserverId = id;
+        newVideo.muted = true;
+        newVideo.volume = 0.5;
+        entry.boostCleanup = attachBoostToVideo(newVideo);
+        entry.info = getVideoInfo(newVideo);
+        DEBUG.log("DOM", `Video element changed in ${id}, reattached boost`);
       }
-    };
-    video.addEventListener(ev, handler, { passive: true });
-    entry.cleanups.push(() => video.removeEventListener(ev, handler));
-  });
+    });
 
-  // Unmute on first user interaction
-  const unmuteOnInteraction = () => {
-    if (video.muted) {
-      video.muted = false;
-      video.volume = 0.5;
-      DEBUG.info(`Unmuted video: ${id}`);
-      logToPanel(`Unmuted: ${id}`);
+    shadowObserver.observe(player.shadowRoot, {
+      childList: true,
+      subtree: true,
+    });
+    entry.cleanups.push(() => shadowObserver.disconnect());
+  }
+
+  // Unmute on interaction
+  const unmuteHandler = () => {
+    const currentVideo = getVideoFromPlayer(player);
+    if (currentVideo && currentVideo.muted) {
+      currentVideo.muted = false;
+      currentVideo.volume = 0.5;
     }
-    document.removeEventListener("click", unmuteOnInteraction);
-    document.removeEventListener("keydown", unmuteOnInteraction);
   };
-  document.addEventListener("click", unmuteOnInteraction, { once: true });
-  document.addEventListener("keydown", unmuteOnInteraction, { once: true });
+  player.addEventListener("click", unmuteHandler, { once: true });
 }
 
-// FIXED: Observe function with proper deduplication
-let lastObserveTime = 0;
-const OBSERVE_DEBOUNCE_MS = 500;
-
 function observeVideos() {
-  const now = Date.now();
-  if (now - lastObserveTime < OBSERVE_DEBOUNCE_MS) {
-    DEBUG.dom(`Debouncing video scan (${now - lastObserveTime}ms since last)`);
-    return;
-  }
-  lastObserveTime = now;
+  DEBUG.log("DOM", "Scanning for players...");
 
-  DEBUG.dom("Scanning for Reddit video players...");
+  const allPlayers = document.querySelectorAll("shreddit-player");
+  let newCount = 0;
+  let existingCount = 0;
 
-  const players = getAllRedditVideoPlayers();
-  DEBUG.dom(`Found ${players.length} players with videos`);
-
-  let newVideos = 0;
-  let existingVideos = 0;
-
-  players.forEach((player) => {
-    const video = getVideoFromRedditPlayer(player);
+  allPlayers.forEach((player) => {
+    const video = getVideoFromPlayer(player);
     if (video) {
-      if (video.dataset.videoObserverAttached === "true") {
-        existingVideos++;
+      if (!players.has(player)) {
+        trackPlayer(player);
+        newCount++;
       } else {
-        trackVideo(video, player);
-        newVideos++;
+        existingCount++;
       }
     }
   });
 
-  DEBUG.dom(
-    `Scan results: ${newVideos} new, ${existingVideos} existing, ${videos.size} total tracked`,
+  DEBUG.log(
+    "DOM",
+    `Scan: ${newCount} new, ${existingCount} existing, ${players.size} total`,
   );
 
   performPanelUpdate();
 }
 
 // ═══════════════════════════════════════════════════════════════
-// FIXED: MutationObserver with better debouncing
+// MUTATION OBSERVER
 // ═══════════════════════════════════════════════════════════════
-let mutationDebounceTimer = null;
-
 function setupMutationObserver() {
+  let debounceTimer = null;
+
   const observer = new MutationObserver((mutations) => {
     if (!tabIsVisible) return;
 
     let hasNewPlayers = false;
-
     for (const mutation of mutations) {
       if (mutation.type !== "childList") continue;
-
       mutation.addedNodes.forEach((node) => {
         if (node.nodeType !== Node.ELEMENT_NODE) return;
-
-        const players = node.matches?.("shreddit-player") ? [node] : [];
-        players.push(...(node.querySelectorAll?.("shreddit-player") || []));
-
-        if (players.length > 0) {
+        if (
+          node.matches?.("shreddit-player") ||
+          node.querySelectorAll?.("shreddit-player")?.length > 0
+        ) {
           hasNewPlayers = true;
         }
       });
     }
 
     if (hasNewPlayers) {
-      DEBUG.dom("New shreddit-player elements detected by MutationObserver");
-      clearTimeout(mutationDebounceTimer);
-      mutationDebounceTimer = setTimeout(() => {
-        observeVideos();
-      }, 1000); // Wait 1 second for shadow DOM to render
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(observeVideos, 1000);
     }
   });
 
-  // Find the feed container
   chatRoot =
     document.querySelector("shreddit-feed") ||
-    document.querySelector('[data-testid="post-container"]') ||
     document.querySelector("main") ||
     document.body;
+  observer.observe(chatRoot, { childList: true, subtree: true });
 
-  observer.observe(chatRoot, {
-    childList: true,
-    subtree: true,
-  });
-
-  DEBUG.dom(
-    `MutationObserver watching: ${chatRoot.tagName || "body"}.${chatRoot.className || ""}`,
-  );
-  return observer;
+  DEBUG.log("DOM", `Observer watching: ${chatRoot.tagName}`);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -923,7 +729,6 @@ function setupMutationObserver() {
 // ═══════════════════════════════════════════════════════════════
 function setupKeyboardNavigation() {
   document.addEventListener("keydown", (e) => {
-    // Don't capture when typing
     if (
       e.target.tagName === "INPUT" ||
       e.target.tagName === "TEXTAREA" ||
@@ -931,63 +736,46 @@ function setupKeyboardNavigation() {
     )
       return;
 
+    const playerEntries = Array.from(players.entries());
+    if (playerEntries.length === 0) return;
+
+    let currentIndex = -1;
+    if (currentlyPlaying) {
+      for (let i = 0; i < playerEntries.length; i++) {
+        const video = getVideoFromPlayer(playerEntries[i][0]);
+        if (video === currentlyPlaying) {
+          currentIndex = i;
+          break;
+        }
+      }
+    }
+
+    let targetIndex;
     if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-      e.preventDefault();
-      navigateToVideo("next");
+      targetIndex =
+        currentIndex === -1
+          ? 0
+          : Math.min(currentIndex + 1, playerEntries.length - 1);
     } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-      e.preventDefault();
-      navigateToVideo("prev");
-    }
-  });
+      targetIndex = currentIndex === -1 ? 0 : Math.max(currentIndex - 1, 0);
+    } else return;
 
-  DEBUG.info("⌨️ Arrow key navigation enabled (← → ↑ ↓)");
-}
-
-function navigateToVideo(direction) {
-  const videoEntries = Array.from(videos.entries());
-  if (videoEntries.length === 0) {
-    DEBUG.warn("No videos to navigate");
-    return;
-  }
-
-  let currentIndex = -1;
-
-  if (currentlyPlaying) {
-    currentIndex = videoEntries.findIndex(
-      ([video]) => video === currentlyPlaying,
-    );
-  }
-
-  let targetIndex;
-  if (currentIndex === -1) {
-    targetIndex = 0;
-  } else if (direction === "next") {
-    targetIndex = Math.min(currentIndex + 1, videoEntries.length - 1);
-  } else {
-    targetIndex = Math.max(currentIndex - 1, 0);
-  }
-
-  const [targetVideo] = videoEntries[targetIndex];
-
-  if (targetVideo) {
-    DEBUG.info(
-      `⌨️ Navigating ${direction} to video ${targetIndex + 1}/${videoEntries.length}`,
-    );
-
-    const player = targetVideo.closest("shreddit-player");
-    if (player) {
-      player.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+    e.preventDefault();
+    const [targetPlayer] = playerEntries[targetIndex];
+    targetPlayer.scrollIntoView({ behavior: "smooth", block: "center" });
 
     setTimeout(() => {
-      enforceSinglePlayback(targetVideo);
-      targetVideo.muted = false;
-      targetVideo.volume = 0.5;
-      targetVideo.play().catch((err) => {
-        DEBUG.error(`Navigation play failed: ${err.message}`);
-      });
+      const video = getVideoFromPlayer(targetPlayer);
+      if (video) {
+        enforceSinglePlayback(video);
+        video.muted = false;
+        video.volume = 0.5;
+        video.play().catch(() => {});
+      }
     }, 400);
-  }
+  });
+
+  DEBUG.log("INFO", "Arrow keys enabled");
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -995,88 +783,46 @@ function navigateToVideo(direction) {
 // ═══════════════════════════════════════════════════════════════
 function onTabHidden() {
   tabIsVisible = false;
-  DEBUG.info("Tab hidden — pausing boosts");
-
-  for (const entry of videos.values()) {
-    if (entry.boostCleanup) {
-      cleanupBoost(entry.element);
+  for (const entry of players.values()) {
+    const video = getVideoFromPlayer(entry.player);
+    if (video && entry.boostCleanup) {
+      cleanupBoost(video);
     }
   }
-
-  if (currentlyPlaying) {
-    currentlyPlaying.pause();
-  }
+  if (currentlyPlaying) currentlyPlaying.pause();
 }
 
 function onTabVisible() {
   tabIsVisible = true;
-  DEBUG.info("Tab visible — resuming");
-
-  for (const entry of videos.values()) {
-    if (entry.element && entry.element.dataset.boostAttached !== "true") {
-      entry.boostCleanup = attachBoostToVideo(entry.element);
-    }
-  }
-
   observeVideos();
 }
 
 // ═══════════════════════════════════════════════════════════════
 // INITIALIZATION
 // ═══════════════════════════════════════════════════════════════
-function waitForBody(callback) {
-  if (document.body) return callback();
-
-  DEBUG.info("Waiting for document.body...");
-  const observer = new MutationObserver(() => {
-    if (document.body) {
-      observer.disconnect();
-      DEBUG.info("document.body found");
-      callback();
-    }
-  });
-  observer.observe(document.documentElement, { childList: true });
-
-  setTimeout(() => {
-    if (document.body) callback();
-  }, 1500);
-}
-
 function init() {
-  if (window.__REDDIT_VIDEO_OBSERVER_INITIALIZED__) {
-    DEBUG.warn("Already initialized, skipping");
-    return;
-  }
-  window.__REDDIT_VIDEO_OBSERVER_INITIALIZED__ = true;
+  if (window.__REDDIT_OBSERVER_INIT__) return;
+  window.__REDDIT_OBSERVER_INIT__ = true;
 
-  DEBUG.success("=== Reddit Video Observer Initializing ===");
-  DEBUG.info("Features: Floating Panel + Buffer Boost");
+  DEBUG.log("SUCCESS", "=== Init: Panel + Boost ===");
 
   createFloatingPanel();
 
-  // Initial scan with longer delay for Reddit to fully render
-  setTimeout(() => {
-    DEBUG.info("Running initial video scan...");
-    observeVideos();
-  }, 3000);
+  // Delay scan for Reddit to render
+  setTimeout(observeVideos, 3000);
 
-  // Watch for new posts
   setupMutationObserver();
-
-  // Keyboard navigation
   setupKeyboardNavigation();
 
-  // Tab visibility
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      onTabHidden();
-    } else {
-      onTabVisible();
-    }
+    document.hidden ? onTabHidden() : onTabVisible();
   });
 
-  DEBUG.success("=== Initialization Complete ===");
-  logToPanel("✅ Extension loaded - Panel + Buffer Boost active");
+  DEBUG.log("SUCCESS", "=== Ready ===");
 }
 
-waitForBody(init);
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}
