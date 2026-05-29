@@ -1267,6 +1267,10 @@ function setupLightChunkPreview(previewVideo, entryId, cacheKeySrc) {
     debugFrameCount: 0,
   };
 
+  // 🔧 NEW: Debounce hover state to prevent duplicate events
+  let hoverDebounceTimer = null;
+  const HOVER_DEBOUNCE_MS = 100; // 100ms debounce
+
   async function loadChunkPositions() {
     if (state.chunkStarts && state.chunkStarts.length > 0) {
       console.log(`[Preview:D] Chunk positions already loaded for ${entryId}`);
@@ -1522,52 +1526,94 @@ function setupLightChunkPreview(previewVideo, entryId, cacheKeySrc) {
   }
 
   function onMouseEnter() {
-    if (!tabIsVisible) {
+    // Clear any pending leave
+    clearTimeout(hoverDebounceTimer);
+
+    // 🔧 FIX: Only process if not already hovering
+    if (state.isHovering) {
+      // Already hovering, just refresh the downgrade timeout
+      clearTimeout(previewVideo._downgradeTimeout);
       return;
     }
 
-    // 🔧 FIX: Cancel any pending buffer downgrade
-    clearTimeout(previewVideo._downgradeTimeout);
-
-    console.log(`[Preview] Mouse entered ${entryId}`);
-    state.isHovering = true;
-
-    BufferManager.setStrategy(previewVideo, RAM_CONFIG.BUFFER_STRATEGY.ACTIVE);
-
-    if (!state.isRunning) {
-      startLoop();
+    if (!tabIsVisible) {
+      console.log(`[Preview:D] Tab hidden, ignoring mouseenter for ${entryId}`);
+      return;
     }
+
+    // Debounce to prevent rapid enter/leave cycles
+    hoverDebounceTimer = setTimeout(() => {
+      console.log(`[Preview] Mouse entered ${entryId}`);
+      state.isHovering = true;
+
+      // Cancel any pending buffer downgrade
+      clearTimeout(previewVideo._downgradeTimeout);
+
+      BufferManager.setStrategy(
+        previewVideo,
+        RAM_CONFIG.BUFFER_STRATEGY.ACTIVE,
+      );
+
+      if (!state.isRunning) {
+        startLoop();
+      }
+    }, HOVER_DEBOUNCE_MS);
   }
 
   function onMouseLeave() {
-    console.log(`[Preview] Mouse left ${entryId}`);
-    state.isHovering = false;
+    clearTimeout(hoverDebounceTimer);
 
-    // 🔧 FIX: Add a small delay before downgrading buffer
-    // This prevents rapid strategy changes during quick hover/unhover
-    clearTimeout(previewVideo._downgradeTimeout);
-    previewVideo._downgradeTimeout = setTimeout(() => {
-      if (!state.isHovering) {
-        // Double-check still not hovering
-        BufferManager.setStrategy(
-          previewVideo,
-          RAM_CONFIG.BUFFER_STRATEGY.METADATA,
-        );
-      }
-    }, 2000); // Wait 2 seconds before releasing buffer
+    hoverDebounceTimer = setTimeout(() => {
+      if (!state.isHovering) return;
 
-    stopLoop();
+      console.log(`[Preview] Mouse left ${entryId}`);
+      state.isHovering = false;
+
+      stopLoop();
+
+      // 🔧 FIX: After 2 seconds of no hover, downgrade to INITIAL (not metadata)
+      // This keeps a small buffer for quick re-hover, but frees most RAM
+      clearTimeout(previewVideo._downgradeTimeout);
+      previewVideo._downgradeTimeout = setTimeout(() => {
+        if (!state.isHovering) {
+          // Check if we should go to metadata (very long idle) or initial (recent activity)
+          const timeSinceLastAccess =
+            Date.now() -
+            (BufferManager.managedVideos.get(previewVideo)?.lastAccess || 0);
+          if (timeSinceLastAccess > 30000) {
+            // Idle for >30 seconds, release to metadata
+            BufferManager.setStrategy(
+              previewVideo,
+              RAM_CONFIG.BUFFER_STRATEGY.METADATA,
+            );
+          } else {
+            // Keep initial buffer for quick re-hover
+            BufferManager.setStrategy(
+              previewVideo,
+              RAM_CONFIG.BUFFER_STRATEGY.INITIAL,
+            );
+          }
+        }
+      }, 2000);
+    }, HOVER_DEBOUNCE_MS);
   }
 
+  // Attach hover listeners
   previewVideo.addEventListener("mouseenter", onMouseEnter);
   previewVideo.addEventListener("mouseleave", onMouseLeave);
+
   const card = previewVideo.closest(".video-card");
   if (card) {
     card.addEventListener("mouseenter", onMouseEnter);
     card.addEventListener("mouseleave", onMouseLeave);
     console.log(`[Preview] Attached hover listeners to card for ${entryId}`);
   }
+
+  // Return cleanup function
   return () => {
+    console.log(`[Preview] Cleaning up chunk loop for ${entryId}`);
+    clearTimeout(hoverDebounceTimer);
+    clearTimeout(previewVideo._downgradeTimeout);
     stopLoop();
     delete previewVideo.dataset.previewLoopReady;
     previewVideo.removeEventListener("mouseenter", onMouseEnter);
