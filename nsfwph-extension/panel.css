@@ -8,7 +8,7 @@
   top: 20px;
   right: 20px;
   width: 460px;
-  max-height: 85vh;
+  max-height: 100vh;
   background: #1e1e2e;
   color: #e0e0ff;
   border-radius: 12px;
@@ -126,7 +126,7 @@
 /* Preview area: taller than wide for chunk previews but compact enough to show more cards */
 .preview-container {
   width: 100%;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: 16 / 11; /* was 3/4 (portrait) — landscape shows more cards */
   background: #0d0d1a;
   position: relative;
   overflow: hidden;
@@ -276,19 +276,23 @@
 
 /* Size mode variants */
 #vo-player[data-size="s"] {
-  width: min(580px, 94vw);
+  width: min(900px, 97vw);
+  max-height: 85vh;
 }
 #vo-player[data-size="m"] {
-  width: min(860px, 94vw);
+  width: min(1280px, 99vw);
+  max-height: 90vh;
 }
 #vo-player[data-size="l"] {
-  width: min(1120px, 96vw);
+  width: min(1680px, 100vw);
+  max-height: 95vh;
 }
 
 /* Video wrap */
 #vo-video-wrap {
   width: 100%;
   aspect-ratio: 16 / 9;
+  max-height: 72vh;
   background: #000;
   position: relative;
   display: flex;
