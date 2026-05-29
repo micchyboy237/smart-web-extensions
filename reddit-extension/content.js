@@ -10,7 +10,7 @@
   const { DOM_CONFIG } = await import(
     chrome.runtime.getURL("src/core/config.js")
   );
-  const { scanForPlayers } = await import(
+  const { scanForPlayers, resetAutoSelect } = await import(
     chrome.runtime.getURL("src/tracker/player-tracker.js")
   );
   const { DOMObserver } = await import(
@@ -35,7 +35,7 @@
     clearTimeout(scrollTimer);
     scrollTimer = setTimeout(() => {
       BoostEngine.recalculateWindow();
-    }, 500); // Recalculate 500ms after scrolling stops
+    }, 500);
   }
 
   function onTabHidden() {
@@ -48,10 +48,13 @@
 
   function onTabVisible() {
     AppState.setTabVisible(true);
+    // ✅ Reset auto-select when tab becomes visible again
+    // (in case feed refreshed while tab was hidden)
+    resetAutoSelect();
     scanForPlayers();
     setTimeout(() => {
       FloatingPanel.performUpdate();
-      BoostEngine.recalculateWindow(); // Recalculate boosts
+      BoostEngine.recalculateWindow();
     }, 200);
     FloatingPanel.startAutoUpdate();
     debug.log("INFO", "Tab visible - resumed");
@@ -66,10 +69,10 @@
     FloatingPanel.create();
 
     setTimeout(() => {
-      scanForPlayers();
+      scanForPlayers(); // ✅ This now triggers autoSelectFirstVideo internally
       setTimeout(() => {
         FloatingPanel.performUpdate();
-        BoostEngine.recalculateWindow(); // Initial boost calculation
+        BoostEngine.recalculateWindow();
       }, 200);
       FloatingPanel.startAutoUpdate();
     }, DOM_CONFIG.INITIAL_SCAN_DELAY);

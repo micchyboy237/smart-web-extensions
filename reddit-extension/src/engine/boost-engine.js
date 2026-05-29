@@ -26,6 +26,9 @@ const boostStates = new WeakMap();
 const activeManagers = new Map(); // video -> BoostManager
 let recalculateTimer = null;
 
+const pendingBoosts = new Map(); // video -> { priority, scheduled }
+let boostScheduler = null;
+
 function getState(video) {
   if (!boostStates.has(video)) {
     boostStates.set(video, {
@@ -159,13 +162,13 @@ class BoostManager {
   constructor(video) {
     this.video = video;
     this.state = getState(video);
+    this._id = BoostManager._nextId++; // ✅ Unique ID for staggering
   }
 
   start({ rate, duration, isSeek = false, priority = "background" } = {}) {
     const video = this.video;
     if (!video || !AppState.isTabVisible()) return;
 
-    // If already boosting with same or higher priority, skip
     if (
       this.state.active &&
       this._priorityValue(this.state.priority) >= this._priorityValue(priority)
@@ -180,7 +183,6 @@ class BoostManager {
       duration ||
       (isSeek ? BOOST_CONFIG.SEEK_BOOST_DURATION : BOOST_CONFIG.BOOST_DURATION);
 
-    // Save original rate (only first time)
     if (this.state.originalRate === null) {
       this.state.originalRate = video.playbackRate || 1.0;
     }
@@ -193,7 +195,17 @@ class BoostManager {
     this.state.paused = video.paused;
     this.state.priority = priority;
 
-    video.playbackRate = effectiveRate;
+    // ✅ Batch with other DOM writes using requestAnimationFrame
+    if (BoostManager._pendingWrites.size === 0) {
+      requestAnimationFrame(() => {
+        for (const [vid, rate] of BoostManager._pendingWrites) {
+          vid.playbackRate = rate;
+        }
+        BoostManager._pendingWrites.clear();
+      });
+    }
+    BoostManager._pendingWrites.set(video, effectiveRate);
+
     activeManagers.set(video, this);
 
     debug.log(
@@ -210,10 +222,12 @@ class BoostManager {
 
   _scheduleEvaluation() {
     this.clearTimer();
-    this.state.timer = setTimeout(
-      () => this._evaluate(),
-      this.state.baseDuration,
-    );
+
+    // ✅ Stagger timer based on video ID to prevent evaluation spikes
+    const stagger = (this._id * 137) % 500; // Spread evaluations over 500ms
+    const delay = this.state.baseDuration + stagger;
+
+    this.state.timer = setTimeout(() => this._evaluate(), delay);
   }
 
   _evaluate() {
@@ -297,6 +311,10 @@ class BoostManager {
     clearState(this.video);
   }
 }
+
+// ✅ Static properties for batching and ID generation
+BoostManager._nextId = 0;
+BoostManager._pendingWrites = new Map();
 
 // Global boost manager registry
 const managers = new WeakMap();
@@ -394,11 +412,16 @@ export const BoostEngine = {
     }, BOOST_WINDOW.RECALCULATE_DELAY);
   },
 
+  /**
+   * Optimized boost recalculation with:
+   * - Priority-based scheduling
+   * - requestIdleCallback for low-priority
+   * - Staggered timers to prevent spikes
+   * - Batch DOM writes
+   */
   _performRecalculation() {
     if (!AppState.isTabVisible()) return;
 
-    // ✅ Prevent duplicate recalculations
-    const windowKey = this._lastWindowKey;
     const newWindow = calculateBoostWindow();
     const newKey = JSON.stringify({
       playing: newWindow.priority?.[1]?.id || "none",
@@ -412,8 +435,7 @@ export const BoostEngine = {
         .join(","),
     });
 
-    if (newKey === windowKey) {
-      debug.log("BOOST", "Window unchanged, skipping recalculation");
+    if (newKey === this._lastWindowKey) {
       return;
     }
     this._lastWindowKey = newKey;
@@ -423,7 +445,7 @@ export const BoostEngine = {
       `Window recalc: playing=${newWindow.priority ? "yes" : "no"}, nearby=${newWindow.nearby.length}, background=${newWindow.background.length}`,
     );
 
-    // Collect videos that should be in the new window
+    // Collect target videos with priorities
     const newWindowVideos = new Map(); // video -> priority
 
     if (newWindow.priority) {
@@ -448,57 +470,50 @@ export const BoostEngine = {
       if (video) newWindowVideos.set(video, "background");
     }
 
-    // Stop videos no longer in window
-    for (const [video, manager] of activeManagers) {
+    // ✅ Mark entries with boost priority for panel
+    for (const [, entry] of AppState.getPlayerEntries()) {
+      entry.boostPriority = "background";
+    }
+    if (newWindow.priority) {
+      newWindow.priority[1].boostPriority = "playing";
+    }
+    for (const [, entry] of newWindow.nearby) {
+      entry.boostPriority = "nearby";
+    }
+    for (const [, entry] of newWindow.background) {
+      entry.boostPriority = "background";
+    }
+    AppState.notifyPlayersChanged();
+
+    // Cancel pending boosts that are no longer needed
+    for (const [video, scheduled] of pendingBoosts) {
       if (!newWindowVideos.has(video)) {
-        manager.stop("outside window");
+        clearTimeout(scheduled.timeout);
+        pendingBoosts.delete(video);
       }
     }
 
-    // Start/update boosts for videos in window
-    for (const [video, priority] of newWindowVideos) {
-      const manager = managers.get(video);
-      if (!manager) continue;
-
-      const currentBuffer = getBufferAhead(video);
-
-      // ✅ Skip if already sufficiently buffered
-      if (priority !== "playing" && currentBuffer >= BOOST_CONFIG.BUFFER_LOW) {
-        continue;
+    // Stop active boosts not in window
+    const toStop = [];
+    for (const [video, manager] of activeManagers) {
+      if (!newWindowVideos.has(video)) {
+        toStop.push(video);
       }
+    }
 
-      // ✅ For playing video, only boost if buffer is low
-      if (
-        priority === "playing" &&
-        currentBuffer >= BOOST_CONFIG.BUFFER_LOW * 1.5
-      ) {
-        continue;
-      }
-
-      // ✅ Skip if already active with same or higher priority
-      if (manager.state.active) {
-        const currentPriority = manager._priorityValue(manager.state.priority);
-        const newPriority = manager._priorityValue(priority);
-        if (currentPriority >= newPriority) {
-          continue;
+    // ✅ Batch stop: collect first, then execute
+    if (toStop.length > 0) {
+      // Use requestAnimationFrame for smooth visual transition
+      requestAnimationFrame(() => {
+        for (const video of toStop) {
+          const manager = managers.get(video);
+          if (manager) manager.stop("outside window");
         }
-      }
-
-      manager.start({
-        rate: BOOST_CONFIG.BOOST_RATE_NORMAL,
-        duration: BOOST_CONFIG.BOOST_DURATION,
-        priority,
       });
     }
 
-    // Log stats
-    const stats = this.getStats();
-    if (stats.total > 0) {
-      debug.log(
-        "BOOST",
-        `Active boosts: ${stats.total} (P:${stats.byPriority.playing} N:${stats.byPriority.nearby} B:${stats.byPriority.background})`,
-      );
-    }
+    // ✅ Schedule starts with priority ordering
+    this._scheduleBoosts(newWindowVideos);
   },
 
   /** Get manager for a video */
@@ -529,5 +544,130 @@ export const BoostEngine = {
       stats.byPriority[manager.state.priority]++;
     }
     return stats;
+  },
+
+  /**
+   * Schedule boosts with intelligent prioritization
+   */
+  _scheduleBoosts(newWindowVideos) {
+    // Cancel existing scheduler
+    if (boostScheduler) {
+      clearTimeout(boostScheduler);
+      boostScheduler = null;
+    }
+
+    // Sort by priority: playing > nearby > background
+    const priorityOrder = { playing: 0, nearby: 1, background: 2 };
+    const sorted = [...newWindowVideos.entries()].sort(
+      ([, a], [, b]) => priorityOrder[a] - priorityOrder[b],
+    );
+
+    let index = 0;
+    const total = sorted.length;
+
+    const scheduleNext = () => {
+      if (index >= total) {
+        this._logStats();
+        return;
+      }
+
+      const [video, priority] = sorted[index];
+      const manager = managers.get(video);
+
+      if (!manager) {
+        index++;
+        scheduleNext();
+        return;
+      }
+
+      const currentBuffer = getBufferAhead(video);
+
+      // ✅ Skip conditions (unchanged)
+      if (priority !== "playing" && currentBuffer >= BOOST_CONFIG.BUFFER_LOW) {
+        index++;
+        scheduleNext();
+        return;
+      }
+      if (
+        priority === "playing" &&
+        currentBuffer >= BOOST_CONFIG.BUFFER_LOW * 1.5
+      ) {
+        index++;
+        scheduleNext();
+        return;
+      }
+      if (manager.state.active) {
+        const currentPriority = manager._priorityValue(manager.state.priority);
+        const newPriority = manager._priorityValue(priority);
+        if (currentPriority >= newPriority) {
+          index++;
+          scheduleNext();
+          return;
+        }
+      }
+
+      // ✅ Execute boost based on priority
+      const executeBoost = () => {
+        manager.start({
+          rate: BOOST_CONFIG.BOOST_RATE_NORMAL,
+          duration: BOOST_CONFIG.BOOST_DURATION,
+          priority,
+        });
+
+        index++;
+
+        // ✅ Use requestIdleCallback for background,
+        // setTimeout(0) for nearby, immediate for playing
+        if (index < total) {
+          const nextPriority = sorted[index][1];
+
+          if (nextPriority === "playing") {
+            // Playing: schedule immediately in next microtask
+            Promise.resolve().then(scheduleNext);
+          } else if (nextPriority === "nearby") {
+            // Nearby: short delay to avoid jank
+            setTimeout(scheduleNext, 16); // ~1 frame
+          } else {
+            // Background: use idle time
+            if (window.requestIdleCallback) {
+              requestIdleCallback(() => scheduleNext(), { timeout: 100 });
+            } else {
+              setTimeout(scheduleNext, 50);
+            }
+          }
+        } else {
+          this._logStats();
+        }
+      };
+
+      // Execute current boost
+      if (priority === "playing") {
+        // Playing: immediate, synchronous (user is waiting)
+        executeBoost();
+      } else if (priority === "nearby") {
+        // Nearby: next frame
+        requestAnimationFrame(executeBoost);
+      } else {
+        // Background: idle time
+        if (window.requestIdleCallback) {
+          requestIdleCallback(executeBoost, { timeout: 50 });
+        } else {
+          setTimeout(executeBoost, 32); // ~2 frames
+        }
+      }
+    };
+
+    // Start the chain
+    scheduleNext();
+  },
+
+  _logStats() {
+    const stats = this.getStats();
+    if (stats.total > 0) {
+      debug.log(
+        "BOOST",
+        `Active boosts: ${stats.total} (P:${stats.byPriority.playing} N:${stats.byPriority.nearby} B:${stats.byPriority.background})`,
+      );
+    }
   },
 };

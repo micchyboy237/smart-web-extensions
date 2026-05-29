@@ -10,16 +10,66 @@ import {
   getVideoInfo,
 } from "../engine/video-utils.js";
 import { BoostEngine } from "../engine/boost-engine.js";
+import { PlaybackController } from "../controllers/playback-controller.js";
 
 let scanRetryCount = 0;
 let scanRetryTimer = null;
+let initialAutoSelectDone = false; // ✅ Track if we've auto-selected
+
+/**
+ * ✅ Auto-select the first available video
+ * Sets volume, unmutes, and prepares for playback
+ */
+function autoSelectFirstVideo() {
+  if (initialAutoSelectDone) return;
+
+  const entries = AppState.getPlayerEntries();
+  if (entries.length === 0) return;
+
+  // Get the first player (top of feed)
+  const [firstPlayer, firstEntry] = entries[0];
+  const video = getVideoFromPlayer(firstPlayer);
+
+  if (!video || video.readyState < 1) {
+    debug.log("INFO", "First video not ready yet, waiting...");
+    return; // Will retry on next scan
+  }
+
+  initialAutoSelectDone = true;
+
+  debug.log("INFO", `Auto-selecting first video: ${firstEntry.id}`);
+
+  // ✅ Set volume to 50% of max
+  video.volume = 0.5;
+
+  // ✅ Unmute if muted
+  if (video.muted) {
+    video.muted = false;
+    debug.log("INFO", `Unmuted ${firstEntry.id}`);
+  }
+
+  // ✅ Verify settings
+  debug.log("INFO", `Audio settings for ${firstEntry.id}:`, {
+    volume: video.volume,
+    muted: video.muted,
+    readyState: video.readyState,
+  });
+
+  // Scroll the player into view
+  firstPlayer.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  // Set as currently playing (triggers boost priority)
+  AppState.setCurrentlyPlaying(video);
+
+  // Don't autoplay - user should click to play
+  // But the video is now "selected" and boost-prioritized
+}
 
 /**
  * Track a single shreddit-player element
  */
 export function trackPlayer(player) {
   if (AppState.hasPlayer(player)) {
-    debug.log("DOM", `Player ${getPlayerId(player)} already tracked, skipping`);
     return;
   }
 
@@ -34,6 +84,8 @@ export function trackPlayer(player) {
 
   const id = AppState.getNextVideoId();
   video.dataset.videoObserverId = id;
+
+  // ✅ Set initial audio: muted but volume at 50% ready
   video.muted = true;
   video.volume = 0.5;
 
@@ -50,17 +102,16 @@ export function trackPlayer(player) {
 
   // Watch for video element changes in shadow DOM
   if (player.shadowRoot) {
-    debug.log("DOM", `Setting up shadow DOM observer for ${id}`);
     const shadowObserver = new MutationObserver(() => {
       const newVideo = getVideoFromPlayer(player);
       if (newVideo && newVideo.dataset.boostAttached !== "true") {
-        debug.log("DOM", `Video element changed in ${id}, reattaching boost`);
         entry.boostCleanup?.();
         newVideo.dataset.videoObserverId = id;
         newVideo.muted = true;
         newVideo.volume = 0.5;
         entry.boostCleanup = BoostEngine.attach(newVideo);
         entry.info = getVideoInfo(newVideo);
+        debug.log("DOM", `Video element changed in ${id}, reattached boost`);
       }
     });
     shadowObserver.observe(player.shadowRoot, {
@@ -68,25 +119,26 @@ export function trackPlayer(player) {
       subtree: true,
     });
     entry.cleanups.push(() => shadowObserver.disconnect());
-  } else {
-    debug.log(
-      "DOM",
-      `No shadowRoot for player ${getPlayerId(player)} - may not be a web component`,
-    );
   }
 
-  // Unmute on first interaction
+  // ✅ Updated unmute handler with volume check
   const unmuteHandler = () => {
     const currentVideo = getVideoFromPlayer(player);
-    if (currentVideo?.muted) {
-      currentVideo.muted = false;
-      currentVideo.volume = 0.5;
-      debug.log("INFO", `Unmuted ${id}`);
+    if (currentVideo) {
+      // Set volume to 50% if it's at 0 or 100
+      if (currentVideo.volume === 0 || currentVideo.volume === 1) {
+        currentVideo.volume = 0.5;
+      }
+      if (currentVideo.muted) {
+        currentVideo.muted = false;
+        debug.log("INFO", `Unmuted ${id} on interaction`);
+      }
     }
   };
   player.addEventListener("click", unmuteHandler, { once: true });
 
   AppState.addPlayer(player, entry);
+
   debug.log("DOM", `Tracked: ${id} (player: ${getPlayerId(player)})`, {
     src: (video.currentSrc || video.src || "").substring(0, 50) + "...",
     totalTracked: AppState.getPlayerCount(),
@@ -101,7 +153,7 @@ export function trackPlayer(player) {
  * Remove tracking for a player and clean up
  */
 export function untrackPlayer(player, entry) {
-  // ✅ Guard against duplicate cleanup
+  // Guard against duplicate cleanup
   if (!AppState.hasPlayer(player)) {
     debug.log(
       "CLEANUP",
@@ -172,6 +224,18 @@ export function scanForPlayers() {
     `Scan complete: ${newCount} new, ${existingCount} existing, ${noVideoCount} no-video, ${AppState.getPlayerCount()} total tracked`,
   );
 
+  // ✅ Try to auto-select first video after tracking
+  if (!initialAutoSelectDone && AppState.getPlayerCount() > 0) {
+    // Small delay to let videos initialize
+    setTimeout(() => {
+      autoSelectFirstVideo();
+      // If still not done, try again after another delay
+      if (!initialAutoSelectDone) {
+        setTimeout(autoSelectFirstVideo, 2000);
+      }
+    }, 500);
+  }
+
   // Retry logic: if no players found, schedule retries (Reddit loads async)
   if (
     AppState.getPlayerCount() === 0 &&
@@ -193,6 +257,13 @@ export function scanForPlayers() {
 }
 
 /**
+ * ✅ Reset auto-select state (for testing or when feed refreshes)
+ */
+export function resetAutoSelect() {
+  initialAutoSelectDone = false;
+}
+
+/**
  * Clean up players no longer in DOM
  */
 export function cleanupStalePlayers() {
@@ -204,7 +275,7 @@ export function cleanupStalePlayers() {
     }
   }
 
-  // ✅ Deduplicate before processing
+  // Deduplicate before processing
   const uniqueToRemove = [];
   const seen = new Set();
   for (const item of toRemove) {
@@ -220,6 +291,18 @@ export function cleanupStalePlayers() {
     const card = AppState.removeCard(player);
     card?.remove();
   });
+
+  // ✅ If the auto-selected video was removed, allow re-select
+  if (uniqueToRemove.length > 0 && initialAutoSelectDone) {
+    const remainingEntries = AppState.getPlayerEntries();
+    const stillHasSelected = remainingEntries.some(([player]) => {
+      const video = getVideoFromPlayer(player);
+      return video === AppState.getCurrentlyPlaying();
+    });
+    if (!stillHasSelected) {
+      resetAutoSelect();
+    }
+  }
 
   return uniqueToRemove.length;
 }

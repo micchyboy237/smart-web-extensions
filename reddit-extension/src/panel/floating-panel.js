@@ -133,6 +133,24 @@ export const FloatingPanel = {
       }
     }
 
+    // ✅ Unload previews for videos far from boost window
+    // (see Untitled-72 / file_context_0 for logic)
+    const unloadMargin = 400; // px margin outside of panel to keep previews
+    const entriesMap = AppState.getPlayerEntries();
+    for (const [player, entry] of entriesMap) {
+      const card = AppState.getCard(player);
+      if (card && entry.boostPriority === "background") {
+        const listRect = list.getBoundingClientRect();
+        const cardRect = card.getBoundingClientRect();
+        const isVisibleInPanel =
+          cardRect.top < listRect.bottom + unloadMargin &&
+          cardRect.bottom > listRect.top - unloadMargin;
+        if (!isVisibleInPanel) {
+          unloadCardPreview(card);
+        }
+      }
+    }
+
     lastUpdateTime = Date.now();
 
     // ✅ Only log if something changed

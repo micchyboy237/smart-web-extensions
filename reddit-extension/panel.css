@@ -183,3 +183,33 @@
   padding: 2px 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
+
+.video-card[data-priority="playing"] {
+  border-color: #4caf50;
+  border-width: 2px;
+  box-shadow: 0 0 12px rgba(76, 175, 80, 0.3);
+}
+
+.video-card[data-priority="nearby"] {
+  border-color: #ff9800;
+  border-width: 1.5px;
+}
+
+.video-card[data-priority="background"] {
+  border-color: rgba(255, 69, 0, 0.1);
+}
+
+/* Preview placeholder for unloaded cards */
+.video-card .preview-container video:not([src]) {
+  background: linear-gradient(135deg, #1a1a2e, #16213e);
+}
+
+.video-card .preview-container video:not([src])::after {
+  content: "📹";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 24px;
+  opacity: 0.5;
+}
