@@ -486,6 +486,360 @@ const ChunkCache = {
 })();
 
 // ═══════════════════════════════════════════════════════════════
+// RAM MANAGEMENT CONFIGURATION
+// ═══════════════════════════════════════════════════════════════
+const RAM_CONFIG = {
+  // Maximum number of previews that can be actively buffered at once
+  MAX_ACTIVE_PREVIEWS: 3,
+
+  // Buffer strategies
+  BUFFER_STRATEGY: {
+    NONE: "none", // Don't buffer at all (off-screen, tab hidden)
+    METADATA: "metadata", // Only load metadata (minimal RAM)
+    INITIAL: "initial", // Buffer first 2 seconds (viewport visible)
+    ACTIVE: "active", // Buffer multiple chunks (user is hovering)
+  },
+
+  // Buffer targets per strategy (in seconds of video)
+  BUFFER_TARGETS: {
+    metadata: 0,
+    initial: 2,
+    active: 5,
+  },
+
+  // Maximum total video buffer RAM in bytes (approximate)
+  MAX_TOTAL_BUFFER_RAM: 10 * 1024 * 1024, // 10MB
+};
+
+/**
+ * Smart buffer manager that controls how much video data is buffered
+ * to prevent RAM overuse across multiple previews and tabs.
+ */
+const BufferManager = {
+  // Track all preview videos and their buffer state
+  managedVideos: new Map(), // previewVideo → { strategy, lastAccess, entryId }
+  activeBufferCount: 0,
+  totalEstimatedRAM: 0,
+
+  /**
+   * Register a preview video for buffer management.
+   */
+  register(previewVideo, entryId) {
+    if (this.managedVideos.has(previewVideo)) return;
+
+    this.managedVideos.set(previewVideo, {
+      strategy: RAM_CONFIG.BUFFER_STRATEGY.NONE,
+      lastAccess: 0,
+      entryId,
+      bufferTarget: 0,
+    });
+
+    console.log(`[BufferMgr] Registered preview for ${entryId}`);
+  },
+
+  /**
+   * Unregister a preview video (when it's being cleaned up).
+   */
+  unregister(previewVideo) {
+    this.releaseBuffer(previewVideo);
+    this.managedVideos.delete(previewVideo);
+  },
+
+  /**
+   * Set the buffer strategy for a preview video.
+   * Automatically enforces global RAM limits.
+   */
+  async setStrategy(previewVideo, strategy) {
+    if (!this.managedVideos.has(previewVideo)) return;
+
+    const info = this.managedVideos.get(previewVideo);
+    const oldStrategy = info.strategy;
+    info.strategy = strategy;
+    info.lastAccess = Date.now();
+    info.bufferTarget = RAM_CONFIG.BUFFER_TARGETS[strategy];
+
+    console.log(`[BufferMgr] ${info.entryId}: ${oldStrategy} → ${strategy}`);
+
+    switch (strategy) {
+      case RAM_CONFIG.BUFFER_STRATEGY.NONE:
+        this.releaseBuffer(previewVideo);
+        break;
+
+      case RAM_CONFIG.BUFFER_STRATEGY.METADATA:
+        this.lightBuffer(previewVideo);
+        break;
+
+      case RAM_CONFIG.BUFFER_STRATEGY.INITIAL:
+        await this.initialBuffer(previewVideo, info);
+        break;
+
+      case RAM_CONFIG.BUFFER_STRATEGY.ACTIVE:
+        await this.activeBuffer(previewVideo, info);
+        break;
+    }
+
+    // Enforce global limits
+    this.enforceLimits();
+  },
+
+  /**
+   * Release buffer memory by unloading the video source.
+   */
+  releaseBuffer(previewVideo) {
+    if (!previewVideo || previewVideo.dataset.bufferReleased === "true") return;
+
+    const info = this.managedVideos.get(previewVideo);
+    const wasPlaying = !previewVideo.paused;
+
+    // Pause first
+    previewVideo.pause();
+
+    // Store the src so we can restore it later
+    if (!previewVideo.dataset.savedSrc) {
+      previewVideo.dataset.savedSrc = previewVideo.src;
+    }
+
+    // Remove source to free decoded frames from RAM
+    previewVideo.removeAttribute("src");
+    previewVideo.load();
+    previewVideo.dataset.bufferReleased = "true";
+
+    if (info) {
+      this.activeBufferCount = Math.max(0, this.activeBufferCount - 1);
+      this.totalEstimatedRAM = Math.max(0, this.totalEstimatedRAM - 500000); // ~500KB
+    }
+
+    console.log(
+      `[BufferMgr] Released buffer for ${info?.entryId || "unknown"}`,
+    );
+  },
+
+  /**
+   * Light buffer - just load metadata, no video data.
+   */
+  lightBuffer(previewVideo) {
+    previewVideo.preload = "metadata";
+
+    if (previewVideo.dataset.bufferReleased === "true") {
+      previewVideo.src = previewVideo.dataset.savedSrc || "";
+      previewVideo.dataset.bufferReleased = "false";
+      previewVideo.load();
+    }
+  },
+
+  /**
+   * Initial buffer - buffer first 2 seconds for visible previews.
+   */
+  async initialBuffer(previewVideo, info) {
+    if (!tabIsVisible) return;
+
+    // Restore source if it was released
+    if (previewVideo.dataset.bufferReleased === "true") {
+      previewVideo.src = previewVideo.dataset.savedSrc || "";
+      previewVideo.dataset.bufferReleased = "false";
+      previewVideo.load();
+    }
+
+    previewVideo.preload = "auto";
+
+    // Wait for metadata
+    if (previewVideo.readyState < 1) {
+      await new Promise((resolve) => {
+        previewVideo.addEventListener("loadedmetadata", resolve, {
+          once: true,
+        });
+      });
+    }
+
+    // Seek to start to trigger buffering of the beginning
+    previewVideo.currentTime = 0;
+
+    // Brief play to start buffering, then pause
+    try {
+      await previewVideo.play();
+      // Wait for ~2 seconds of buffer or 500ms max
+      await this.waitForBuffer(previewVideo, 2, 500);
+      previewVideo.pause();
+
+      this.activeBufferCount++;
+      this.totalEstimatedRAM += 500000; // ~500KB
+      console.log(`[BufferMgr] Initial buffer complete for ${info.entryId}`);
+    } catch (err) {
+      console.warn(
+        `[BufferMgr] Initial buffer failed for ${info.entryId}:`,
+        err.message,
+      );
+    }
+  },
+
+  /**
+   * Active buffer - buffer multiple chunks for hovered preview.
+   */
+  async activeBuffer(previewVideo, info) {
+    if (!tabIsVisible) return;
+
+    // Already has initial buffer, just extend it
+    const ahead = getBufferAhead(previewVideo);
+    if (ahead >= 5) return; // Already enough
+
+    // Resume playback briefly to fill buffer
+    if (previewVideo.paused) {
+      try {
+        await previewVideo.play();
+        await this.waitForBuffer(previewVideo, 5, 2000);
+        // Don't pause - let the chunk loop handle it
+      } catch (err) {
+        console.warn(`[BufferMgr] Active buffer failed:`, err.message);
+      }
+    }
+  },
+
+  /**
+   * Wait until the video has buffered up to target seconds or timeout.
+   */
+  waitForBuffer(video, targetSeconds, maxWaitMs) {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+
+      const check = () => {
+        const ahead = getBufferAhead(video);
+        if (ahead >= targetSeconds || Date.now() - startTime >= maxWaitMs) {
+          resolve();
+          return;
+        }
+        setTimeout(check, 100);
+      };
+
+      check();
+    });
+  },
+
+  /**
+   * Enforce global RAM limits by releasing buffers from least-recently-used previews.
+   */
+  enforceLimits() {
+    // Count active buffers
+    let activeVideos = [];
+    for (const [video, info] of this.managedVideos) {
+      if (
+        info.strategy === RAM_CONFIG.BUFFER_STRATEGY.ACTIVE ||
+        info.strategy === RAM_CONFIG.BUFFER_STRATEGY.INITIAL
+      ) {
+        activeVideos.push({ video, info });
+      }
+    }
+
+    // If under limit, nothing to do
+    if (
+      activeVideos.length <= RAM_CONFIG.MAX_ACTIVE_PREVIEWS &&
+      this.totalEstimatedRAM <= RAM_CONFIG.MAX_TOTAL_BUFFER_RAM
+    ) {
+      return;
+    }
+
+    // Sort by last access (oldest first)
+    activeVideos.sort((a, b) => a.info.lastAccess - b.info.lastAccess);
+
+    // Release oldest until we're under limits
+    while (
+      activeVideos.length > RAM_CONFIG.MAX_ACTIVE_PREVIEWS ||
+      this.totalEstimatedRAM > RAM_CONFIG.MAX_TOTAL_BUFFER_RAM
+    ) {
+      const oldest = activeVideos.shift();
+      if (!oldest) break;
+
+      console.log(
+        `[BufferMgr] Evicting buffer for ${oldest.info.entryId} (RAM pressure)`,
+      );
+      this.setStrategy(oldest.video, RAM_CONFIG.BUFFER_STRATEGY.METADATA);
+    }
+  },
+
+  /**
+   * Handle tab hidden: release ALL buffers to save RAM.
+   */
+  onTabHidden() {
+    for (const [video, info] of this.managedVideos) {
+      if (info.strategy !== RAM_CONFIG.BUFFER_STRATEGY.NONE) {
+        this.setStrategy(video, RAM_CONFIG.BUFFER_STRATEGY.NONE);
+      }
+    }
+    console.log(`[BufferMgr] Tab hidden - released all buffers`);
+  },
+
+  /**
+   * Handle tab visible: restore buffers for visible previews only.
+   */
+  onTabVisible() {
+    // Only restore buffers for previews currently visible in the panel
+    let restored = 0;
+    for (const [video, info] of this.managedVideos) {
+      // Check if the video/card is actually visible in the viewport
+      const card = video.closest(".video-card");
+      if (
+        card &&
+        this.isElementInViewport(card) &&
+        restored < RAM_CONFIG.MAX_ACTIVE_PREVIEWS
+      ) {
+        this.setStrategy(video, RAM_CONFIG.BUFFER_STRATEGY.INITIAL);
+        restored++;
+      }
+    }
+    console.log(`[BufferMgr] Tab visible - restored ${restored} buffers`);
+  },
+
+  /**
+   * Check if an element is visible in the viewport.
+   */
+  isElementInViewport(el) {
+    const rect = el.getBoundingClientRect();
+    const panelEl = document.getElementById("video-observer-panel");
+
+    // If in the floating panel, check against panel bounds
+    if (panelEl && panelEl.contains(el)) {
+      const panelRect = panelEl.getBoundingClientRect();
+      return (
+        rect.top >= panelRect.top &&
+        rect.bottom <= panelRect.bottom &&
+        rect.left >= panelRect.left &&
+        rect.right <= panelRect.right
+      );
+    }
+
+    // Otherwise check against viewport
+    return (
+      rect.top >= 0 &&
+      rect.bottom <= window.innerHeight &&
+      rect.left >= 0 &&
+      rect.right <= window.innerWidth
+    );
+  },
+
+  /**
+   * Get buffer statistics for debugging.
+   */
+  getStats() {
+    let stats = {
+      totalManaged: this.managedVideos.size,
+      activeBuffers: 0,
+      estimatedRAM: this.totalEstimatedRAM,
+      maxRAM: RAM_CONFIG.MAX_TOTAL_BUFFER_RAM,
+      byStrategy: {},
+    };
+
+    for (const [, info] of this.managedVideos) {
+      stats.byStrategy[info.strategy] =
+        (stats.byStrategy[info.strategy] || 0) + 1;
+      if (info.strategy !== RAM_CONFIG.BUFFER_STRATEGY.NONE) {
+        stats.activeBuffers++;
+      }
+    }
+
+    return stats;
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════
 // BUFFER BOOST FUNCTIONS (unchanged from original)
 // ═══════════════════════════════════════════════════════════════
 function getBufferAhead(video) {
@@ -1098,11 +1452,24 @@ function setupLightChunkPreview(previewVideo, entryId, cacheKeySrc) {
       console.log(`[Preview:D] Tab hidden, ignoring mouseenter for ${entryId}`);
       return;
     }
+    console.log(`[Preview] Mouse entered ${entryId}`);
     state.isHovering = true;
-    if (!state.isRunning) startLoop();
+
+    // 🔧 NEW: Upgrade to active buffer strategy
+    BufferManager.setStrategy(previewVideo, RAM_CONFIG.BUFFER_STRATEGY.ACTIVE);
+
+    if (!state.isRunning) {
+      startLoop();
+    }
   }
 
   function onMouseLeave() {
+    console.log(`[Preview] Mouse left ${entryId}`);
+    state.isHovering = false;
+
+    // 🔧 NEW: Downgrade to initial buffer (keep some data, but release excess)
+    BufferManager.setStrategy(previewVideo, RAM_CONFIG.BUFFER_STRATEGY.INITIAL);
+
     stopLoop();
   }
 
@@ -1131,7 +1498,6 @@ function createSinglePreview(originalVideo, entryId) {
   const rawSrc = originalVideo.currentSrc || originalVideo.src || "";
   const cleanSrc = rawSrc.split("?")[0];
 
-  // Store cache key on the entry so it can be reused on tab resume
   const entry = videos.get(originalVideo);
   if (entry) {
     entry.cacheKeySrc = cleanSrc;
@@ -1147,8 +1513,8 @@ function createSinglePreview(originalVideo, entryId) {
   preview.muted = true;
   preview.loop = false;
   preview.playsInline = true;
-  // 🔧 FIX: Use "auto" preload to start downloading video data immediately
-  preview.preload = "auto";
+  // 🔧 FIX: Start with minimal preload - BufferManager will upgrade as needed
+  preview.preload = "metadata";
   preview.style.width = "100%";
   preview.style.height = "auto";
   preview.style.maxHeight = "96px";
@@ -1158,12 +1524,13 @@ function createSinglePreview(originalVideo, entryId) {
   preview.style.display = "block";
   preview.style.cursor = "pointer";
 
+  // 🔧 NEW: Register with BufferManager
+  BufferManager.register(preview, entryId);
+
   let isInitialized = false;
 
-  // 🔧 FIX: Start pre-buffering immediately after metadata loads
   function initializePreview() {
     if (isInitialized) {
-      console.log(`[Preview] Already initialized for ${entryId}`);
       return;
     }
     console.log(`[Preview] Initializing preview for ${entryId}`);
@@ -1172,68 +1539,8 @@ function createSinglePreview(originalVideo, entryId) {
     const stopLoop = setupLightChunkPreview(preview, entryId, cleanSrc);
     preview._stopPreviewLoop = stopLoop;
 
-    // 🔧 NEW: Pre-warm the buffer so first hover is instant
-    // Seek to first chunk position and let it buffer
-    const preWarmBuffer = () => {
-      if (!preview.duration || !tabIsVisible) return;
-
-      // Start buffering from the beginning
-      preview.currentTime = 0;
-
-      // Wait for the first chunk area to buffer, then pause
-      const checkBuffer = () => {
-        if (!preview.buffered || !preview.buffered.length) {
-          setTimeout(checkBuffer, 200);
-          return;
-        }
-
-        const bufferedEnd = preview.buffered.end(preview.buffered.length - 1);
-        const targetBuffer = Math.min(2, preview.duration * 0.3); // Buffer ~2s or 30%
-
-        if (bufferedEnd >= targetBuffer) {
-          console.log(
-            `[Preview:D] Pre-warm complete for ${entryId} (buffered ${bufferedEnd.toFixed(1)}s)`,
-          );
-          preview.pause();
-
-          // Apply gentle boost to fill the rest
-          if (entry && tabIsVisible) {
-            entry._initialBoostCleanup = boostPreviewBuffer(preview);
-          }
-        } else {
-          // Still buffering, check again
-          setTimeout(checkBuffer, 300);
-        }
-      };
-
-      // Start playback briefly to trigger buffering
-      preview
-        .play()
-        .then(() => {
-          setTimeout(checkBuffer, 300);
-        })
-        .catch((err) => {
-          console.warn(
-            `[Preview:D] Pre-warm play failed for ${entryId}:`,
-            err.message,
-          );
-          // Still try to buffer even if play fails
-          setTimeout(checkBuffer, 500);
-        });
-    };
-
-    // Start pre-warming once we have duration
-    if (preview.readyState >= 1 && preview.duration > 0) {
-      preWarmBuffer();
-    } else {
-      preview.addEventListener(
-        "loadedmetadata",
-        () => {
-          setTimeout(preWarmBuffer, 100);
-        },
-        { once: true },
-      );
-    }
+    // 🔧 NEW: Smart buffer strategy based on visibility
+    scheduleSmartBuffering(preview, entryId);
 
     console.log(
       `[Preview] Preview ready for ${entryId} - hover to play chunks`,
@@ -1248,6 +1555,35 @@ function createSinglePreview(originalVideo, entryId) {
     });
   }
   return preview;
+}
+
+/**
+ * Schedule smart buffering based on element visibility and tab state.
+ */
+function scheduleSmartBuffering(previewVideo, entryId) {
+  // Don't buffer if tab is hidden
+  if (!tabIsVisible) {
+    BufferManager.setStrategy(previewVideo, RAM_CONFIG.BUFFER_STRATEGY.NONE);
+    return;
+  }
+
+  // Check if the card is in the visible portion of the panel
+  const card = previewVideo.closest(".video-card");
+  if (card && BufferManager.isElementInViewport(card)) {
+    // Visible in panel - give initial buffer
+    BufferManager.setStrategy(previewVideo, RAM_CONFIG.BUFFER_STRATEGY.INITIAL);
+  } else {
+    // Off-screen - just load metadata
+    BufferManager.setStrategy(
+      previewVideo,
+      RAM_CONFIG.BUFFER_STRATEGY.METADATA,
+    );
+  }
+
+  // Log buffer stats periodically
+  if (videoCounter % 4 === 0) {
+    console.log("[BufferMgr] Stats:", BufferManager.getStats());
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1329,12 +1665,17 @@ function updateExistingCard(card, entry) {
 function cleanupVideoEntry(entry) {
   if (!entry) return;
   log(`Cleaning up video entry for RAM optimization: ${entry.id}`);
+
   if (entry.boostCleanup) {
     entry.boostCleanup();
     entry.boostCleanup = null;
   }
   delete entry.cacheKeySrc;
+
   if (entry.preview) {
+    // 🔧 NEW: Unregister from buffer manager
+    BufferManager.unregister(entry.preview);
+
     cleanupPreviewBoost(entry.preview);
     if (typeof entry.preview._stopPreviewLoop === "function") {
       entry.preview._stopPreviewLoop();
@@ -1346,6 +1687,7 @@ function cleanupVideoEntry(entry) {
     entry.preview.load();
     entry.preview = null;
   }
+
   if (entry.cleanups && entry.cleanups.length > 0) {
     entry.cleanups.forEach((cleanupFn) => cleanupFn());
     entry.cleanups = null;
@@ -1570,6 +1912,10 @@ function onTabHidden() {
   log("Tab hidden — pausing everything");
   stopAllPreviewLoops();
   stopAllBoosts();
+
+  // 🔧 NEW: Release ALL video buffers to free RAM
+  BufferManager.onTabHidden();
+
   if (currentlyPlaying) {
     currentlyPlaying.pause();
     currentlyPlaying = null;
@@ -1588,6 +1934,10 @@ function onTabVisible() {
   log("Tab visible — resuming everything");
   restartAllPreviewLoops();
   restartAllBoosts();
+
+  // 🔧 NEW: Restore buffers only for visible previews
+  BufferManager.onTabVisible();
+
   if (pollingInterval === null) {
     pollingInterval = setInterval(observeVideos, 30000);
     globalResources.intervals.push(pollingInterval);
