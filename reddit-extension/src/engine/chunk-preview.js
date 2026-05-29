@@ -1,28 +1,26 @@
 /**
  * Chunk Preview Engine - Lightweight video preview system
- * Creates hover-triggered, looping previews that play
- * small segments (chunks) of video instead of full playback.
- *
- * Integrates with BoostEngine priority system to avoid conflicts.
+ * UPDATED: Better metadata timeout handling, duplicate hover event prevention,
+ * graceful fallback when metadata fails
  */
 import { DebugLogger as debug } from "../core/debug.js";
 import { AppState } from "../core/state.js";
-import { getBufferAhead } from "./video-utils.js";
 
 // ═══════════════════════════════════════════════════════════════
 // CHUNK CONFIGURATION
 // ═══════════════════════════════════════════════════════════════
 const CHUNK_CONFIG = {
-  NUM_CHUNKS: 5, // Number of 4-second segments
-  CHUNK_DURATION_MS: 4000, // Duration of each chunk
-  MONITOR_INTERVAL: 100, // Position check frequency (ms)
-  HOVER_DEBOUNCE_MS: 100, // Debounce hover events
-  DOWNGRADE_DELAY: 2000, // Downgrade buffer after leaving
-  IDLE_DOWNGRADE_DELAY: 30000, // Full metadata release after idle
-  BOOST_RATE: 1.08, // Preview buffer boost rate
-  BOOST_DURATION: 4000, // Preview boost duration
-  BUFFER_TARGET: 3, // Target buffer ahead (seconds)
-  PREVIEW_CHECK_INTERVAL: 500, // Buffer check interval
+  NUM_CHUNKS: 5,
+  CHUNK_DURATION_MS: 4000,
+  MONITOR_INTERVAL: 100,
+  HOVER_DEBOUNCE_MS: 150, // ✅ Increased to prevent rapid fire
+  DOWNGRADE_DELAY: 2000,
+  IDLE_DOWNGRADE_DELAY: 30000,
+  BOOST_RATE: 1.08,
+  BOOST_DURATION: 4000,
+  BUFFER_TARGET: 3,
+  PREVIEW_CHECK_INTERVAL: 500,
+  METADATA_TIMEOUT_MS: 8000, // ✅ Increased from 5000
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -33,7 +31,7 @@ const ChunkCacheDB = {
   DB_VERSION: 1,
   STORE_NAME: "chunks",
   MAX_ENTRIES: 50,
-  MAX_AGE_MS: 24 * 60 * 60 * 1000, // 24 hours
+  MAX_AGE_MS: 24 * 60 * 60 * 1000,
   db: null,
   initPromise: null,
 
@@ -90,16 +88,10 @@ const ChunkCacheDB = {
         request.onsuccess = () => {
           const entry = request.result;
           if (!entry) {
-            console.log(
-              `[ChunkCacheDB:Reddit] Miss: ${videoSrc.substring(0, 50)}...`,
-            );
             resolve(null);
             return;
           }
           if (Date.now() - entry.timestamp > this.MAX_AGE_MS) {
-            console.log(
-              `[ChunkCacheDB:Reddit] Expired: ${videoSrc.substring(0, 50)}...`,
-            );
             store.delete(videoSrc);
             resolve(null);
             return;
@@ -107,9 +99,6 @@ const ChunkCacheDB = {
           entry.accessCount = (entry.accessCount || 0) + 1;
           entry.lastAccessed = Date.now();
           store.put(entry);
-          console.log(
-            `[ChunkCacheDB:Reddit] Hit: ${videoSrc.substring(0, 50)}...`,
-          );
           resolve({ chunks: entry.chunks, duration: entry.duration });
         };
 
@@ -139,10 +128,7 @@ const ChunkCacheDB = {
           accessCount: 1,
         };
         const request = store.put(entry);
-        request.onsuccess = () => {
-          console.log(`[ChunkCacheDB:Reddit] Cached ${chunks.length} chunks`);
-          resolve();
-        };
+        request.onsuccess = () => resolve();
         request.onerror = () => resolve();
         tx.onabort = () => resolve();
       });
@@ -158,10 +144,7 @@ const ChunkCacheDB = {
       return new Promise((resolve) => {
         const tx = this.db.transaction([this.STORE_NAME], "readwrite");
         const store = tx.objectStore(this.STORE_NAME);
-        store.clear().onsuccess = () => {
-          console.log("[ChunkCacheDB:Reddit] Cleared");
-          resolve();
-        };
+        store.clear().onsuccess = () => resolve();
         tx.onabort = () => resolve();
       });
     } catch (error) {
@@ -170,16 +153,15 @@ const ChunkCacheDB = {
   },
 };
 
-// In-memory L1 cache (fast access)
+// In-memory L1 cache
 const memoryCache = new Map();
 const MAX_MEMORY_ENTRIES = 10;
 
-// Track active chunk loops for cleanup
+// Track active chunk loops
 const activeChunkLoops = new Map(); // video -> ChunkLoop
 
 /**
  * Calculate optimal chunk positions for a video
- * Returns array of timestamps evenly distributed across the video
  */
 function calculateChunkPositions(duration, numChunks, chunkDuration) {
   if (!duration || isNaN(duration) || duration < 1) {
@@ -215,21 +197,17 @@ async function getChunkPositions(videoSrc, duration) {
 
   // Check L1 memory cache
   if (memoryCache.has(videoSrc)) {
-    console.log(`[ChunkPreview] L1 cache hit`);
     return memoryCache.get(videoSrc);
   }
 
   // Check L2 IndexedDB cache
-  console.log(`[ChunkPreview] L1 miss, checking L2...`);
   const dbEntry = await ChunkCacheDB.get(videoSrc);
   if (dbEntry) {
-    // Promote to L1
     if (memoryCache.size >= MAX_MEMORY_ENTRIES) {
       const oldestKey = memoryCache.keys().next().value;
       memoryCache.delete(oldestKey);
     }
     memoryCache.set(videoSrc, dbEntry);
-    console.log(`[ChunkPreview] Promoted from L2 cache`);
     return dbEntry;
   }
 
@@ -241,7 +219,6 @@ async function getChunkPositions(videoSrc, duration) {
     CHUNK_CONFIG.CHUNK_DURATION_MS,
   );
 
-  // Store in both caches
   const entry = { chunks, duration };
   if (memoryCache.size >= MAX_MEMORY_ENTRIES) {
     const oldestKey = memoryCache.keys().next().value;
@@ -255,6 +232,7 @@ async function getChunkPositions(videoSrc, duration) {
 
 /**
  * ChunkLoop class - manages playback of chunk sequences for one preview video
+ * ✅ FIXED: Duplicate hover prevention with debounce
  */
 class ChunkLoop {
   constructor(previewVideo, entryId, videoSrc) {
@@ -272,50 +250,59 @@ class ChunkLoop {
     this.cacheLoaded = false;
     this.downgradeTimer = null;
     this.debugFrameCount = 0;
+    // ✅ Hover debounce
+    this._hoverDebounceTimer = null;
+    this._lastHoverEvent = 0;
 
-    // Bound event handlers for cleanup
+    // Bound event handlers
     this._onMouseEnter = this._onMouseEnter.bind(this);
     this._onMouseLeave = this._onMouseLeave.bind(this);
   }
 
   async init() {
-    // Mark that chunk loop is active on this video
     this.video.dataset.chunkLoopActive = "true";
 
-    // Load chunk positions from cache or calculate
-    const cached = await getChunkPositions(this.videoSrc, this.video.duration);
+    // Use duration if available, otherwise default to 60s estimate
+    const duration = this.video.duration || 60;
+
+    const cached = await getChunkPositions(this.videoSrc, duration);
     if (cached && cached.chunks) {
       this.chunkStarts = cached.chunks;
       this.totalChunks = cached.chunks.length;
       this.cacheLoaded = true;
-      console.log(
-        `[ChunkPreview] ${this.entryId}: ${this.totalChunks} chunks ready`,
-      );
     }
   }
 
   attachHoverListeners(card) {
-    // Attach to both video and card for better UX
-    this.video.addEventListener("mouseenter", this._onMouseEnter);
-    this.video.addEventListener("mouseleave", this._onMouseLeave);
-
+    // ✅ Only attach to card to prevent duplicate events
     if (card) {
       card.addEventListener("mouseenter", this._onMouseEnter);
       card.addEventListener("mouseleave", this._onMouseLeave);
+    } else {
+      // Fallback: attach to video only
+      this.video.addEventListener("mouseenter", this._onMouseEnter);
+      this.video.addEventListener("mouseleave", this._onMouseLeave);
     }
   }
 
   _onMouseEnter() {
     if (!AppState.isTabVisible()) return;
 
+    // ✅ Debounce hover to prevent rapid enter/leave cycles
+    const now = Date.now();
+    if (now - this._lastHoverEvent < CHUNK_CONFIG.HOVER_DEBOUNCE_MS) {
+      return;
+    }
+    this._lastHoverEvent = now;
+
+    clearTimeout(this._hoverDebounceTimer);
     clearTimeout(this.downgradeTimer);
 
     if (this.isHovering) return; // Already hovering
 
-    console.log(`[ChunkPreview] ${this.entryId}: Hover started`);
     this.isHovering = true;
+    console.log(`[ChunkPreview] ${this.entryId}: Hover started`);
 
-    // Cancel any pending buffer downgrade
     if (this.video._downgradeTimeout) {
       clearTimeout(this.video._downgradeTimeout);
     }
@@ -326,17 +313,13 @@ class ChunkLoop {
   }
 
   _onMouseLeave() {
-    console.log(`[ChunkPreview] ${this.entryId}: Hover ended`);
-    this.isHovering = false;
-    this._stopLoop();
+    clearTimeout(this._hoverDebounceTimer);
 
-    // Schedule buffer downgrade after delay
-    this.video._downgradeTimeout = setTimeout(() => {
-      if (!this.isHovering && !this.video.dataset.chunkLoopActive) {
-        // Video is idle - could release buffer here
-        // BufferManager would handle this in the NSFWPH version
-      }
-    }, CHUNK_CONFIG.DOWNGRADE_DELAY);
+    this._hoverDebounceTimer = setTimeout(() => {
+      this.isHovering = false;
+      console.log(`[ChunkPreview] ${this.entryId}: Hover ended`);
+      this._stopLoop();
+    }, CHUNK_CONFIG.HOVER_DEBOUNCE_MS);
   }
 
   _startLoop() {
@@ -346,7 +329,6 @@ class ChunkLoop {
       return;
     }
 
-    console.log(`[ChunkPreview] ${this.entryId}: Starting chunk loop`);
     this.isRunning = true;
     this.playbackStarted = false;
     this.video.dataset.chunkLoopActive = "true";
@@ -358,24 +340,18 @@ class ChunkLoop {
     this.currentChunk = 0;
     const firstChunkStart = this.chunkStarts[0];
 
-    console.log(
-      `[ChunkPreview] ${this.entryId}: Seeking to chunk 0 at ${firstChunkStart.toFixed(2)}s`,
-    );
-
     this.video.currentTime = firstChunkStart;
 
     const onSeeked = () => {
       this.video.removeEventListener("seeked", onSeeked);
 
       if (!this.isHovering || !this.isRunning) {
-        console.log(`[ChunkPreview] ${this.entryId}: Playback cancelled`);
         return;
       }
 
       this.video
         .play()
         .then(() => {
-          console.log(`[ChunkPreview] ${this.entryId}: Playback started`);
           this.playbackStarted = true;
           this._startPositionMonitor();
         })
@@ -392,13 +368,10 @@ class ChunkLoop {
 
     this.video.addEventListener("seeked", onSeeked, { once: true });
 
-    // Fallback timeout if seek never fires
+    // Fallback timeout
     setTimeout(() => {
       if (!this.playbackStarted && this.isHovering && this.isRunning) {
         this.video.removeEventListener("seeked", onSeeked);
-        console.warn(
-          `[ChunkPreview] ${this.entryId}: Seek timeout, forcing play`,
-        );
         this.video
           .play()
           .then(() => {
@@ -415,27 +388,21 @@ class ChunkLoop {
       clearInterval(this.monitorInterval);
     }
 
-    console.log(`[ChunkPreview] ${this.entryId}: Position monitor active`);
-
     this.monitorInterval = setInterval(() => {
       this.debugFrameCount++;
 
-      // Stop if not hovering or not running
       if (!this.isHovering || !this.isRunning) {
         this._stopPlayback();
         return;
       }
 
-      // Resume if paused unexpectedly
       if (this.video.paused && this.playbackStarted) {
         if (this.video.ended) {
-          // Reached end - loop back to first chunk
           this.currentChunk = 0;
           this.video.currentTime = this.chunkStarts[0];
           this.video.play().catch(() => {});
           return;
         }
-        // Try to resume
         this.video.play().catch(() => {});
         return;
       }
@@ -447,18 +414,12 @@ class ChunkLoop {
       const currentChunkEnd = currentChunkStart + this.chunkDuration;
 
       if (currentTime >= currentChunkEnd) {
-        // Move to next chunk
         const nextChunk = (this.currentChunk + 1) % this.chunkStarts.length;
         const nextChunkStart = this.chunkStarts[nextChunk];
-
-        console.log(
-          `[ChunkPreview] ${this.entryId}: Chunk ${this.currentChunk + 1} → ${nextChunk + 1} at ${nextChunkStart.toFixed(2)}s`,
-        );
 
         this.currentChunk = nextChunk;
 
         if (nextChunk === 0) {
-          // Looping back to start - need to handle carefully
           this.video.pause();
           this.video.currentTime = nextChunkStart;
 
@@ -497,26 +458,20 @@ class ChunkLoop {
   }
 
   dispose() {
-    console.log(`[ChunkPreview] ${this.entryId}: Disposing chunk loop`);
-
-    // Clear timers
+    clearTimeout(this._hoverDebounceTimer);
     clearTimeout(this.downgradeTimer);
     if (this.video._downgradeTimeout) {
       clearTimeout(this.video._downgradeTimeout);
     }
 
-    // Stop playback
     this._stopLoop();
 
-    // Remove event listeners
     this.video.removeEventListener("mouseenter", this._onMouseEnter);
     this.video.removeEventListener("mouseleave", this._onMouseLeave);
 
-    // Clean up dataset
     delete this.video.dataset.chunkLoopActive;
     delete this.video.dataset.previewLoopReady;
 
-    // Remove from active loops
     activeChunkLoops.delete(this.video);
   }
 }
@@ -525,30 +480,21 @@ class ChunkLoop {
 // PUBLIC API
 // ═══════════════════════════════════════════════════════════════
 export const ChunkPreviewEngine = {
-  /**
-   * Initialize chunk preview for a video element
-   * Returns cleanup function
-   */
   async setup(previewVideo, entryId, cardElement) {
     if (!previewVideo) {
-      console.error("[ChunkPreview] No video element provided");
       return () => {};
     }
 
     if (previewVideo.dataset.previewLoopReady === "true") {
-      console.log(`[ChunkPreview] ${entryId}: Already set up`);
       return () => {};
     }
 
-    // Clean up any existing loop
     this.cleanup(previewVideo);
 
-    // Get clean video source for cache key
     const rawSrc = previewVideo.currentSrc || previewVideo.src || "";
-    const cacheKey = rawSrc.split("?")[0]; // Remove query params
+    const cacheKey = rawSrc.split("?")[0];
 
     if (!cacheKey) {
-      console.error(`[ChunkPreview] ${entryId}: No valid video source`);
       return () => {};
     }
 
@@ -558,16 +504,14 @@ export const ChunkPreviewEngine = {
     previewVideo.playsInline = true;
     previewVideo.preload = "metadata";
 
-    console.log(`[ChunkPreview] ${entryId}: Setting up`);
-
-    // Wait for video to have metadata
+    // ✅ Wait for metadata with longer timeout and graceful fallback
     if (previewVideo.readyState < 1) {
       try {
         await new Promise((resolve, reject) => {
           const timeout = setTimeout(() => {
             previewVideo.removeEventListener("loadedmetadata", handler);
             reject(new Error("Metadata timeout"));
-          }, 5000);
+          }, CHUNK_CONFIG.METADATA_TIMEOUT_MS);
 
           const handler = () => {
             clearTimeout(timeout);
@@ -580,21 +524,19 @@ export const ChunkPreviewEngine = {
         });
       } catch (err) {
         console.warn(
-          `[ChunkPreview] ${entryId}: Metadata wait failed:`,
+          `[ChunkPreview] ${entryId}: Metadata wait failed (will use estimate):`,
           err.message,
         );
+        // ✅ Continue anyway - we'll use a default duration estimate
       }
     }
 
-    // Create chunk loop
+    // Create chunk loop (works even without perfect metadata)
     const loop = new ChunkLoop(previewVideo, entryId, cacheKey);
     await loop.init();
     loop.attachHoverListeners(cardElement);
 
-    // Register for tracking
     activeChunkLoops.set(previewVideo, loop);
-
-    console.log(`[ChunkPreview] ${entryId}: Ready for hover`);
 
     // Return cleanup function
     return () => {
@@ -602,9 +544,6 @@ export const ChunkPreviewEngine = {
     };
   },
 
-  /**
-   * Clean up chunk preview for a video
-   */
   cleanup(previewVideo) {
     if (!previewVideo) return;
 
@@ -617,31 +556,16 @@ export const ChunkPreviewEngine = {
     delete previewVideo.dataset.chunkLoopActive;
   },
 
-  /**
-   * Stop all active chunk loops (for tab hide)
-   */
   stopAll() {
-    console.log(
-      `[ChunkPreview] Stopping all (${activeChunkLoops.size} active)`,
-    );
     for (const [video, loop] of activeChunkLoops) {
       loop._stopLoop();
     }
   },
 
-  /**
-   * Resume all active chunk loops (for tab visible)
-   */
   resumeAll() {
-    console.log(
-      `[ChunkPreview] Resuming all (${activeChunkLoops.size} active)`,
-    );
-    // Loops will resume on next hover - no need to force
+    // Loops resume on next hover
   },
 
-  /**
-   * Get stats for debugging
-   */
   getStats() {
     return {
       activeLoops: activeChunkLoops.size,
@@ -649,12 +573,8 @@ export const ChunkPreviewEngine = {
     };
   },
 
-  /**
-   * Clear all caches
-   */
   async clearAllCaches() {
     memoryCache.clear();
     await ChunkCacheDB.clear();
-    console.log("[ChunkPreview] All caches cleared");
   },
 };

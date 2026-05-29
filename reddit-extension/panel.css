@@ -1,11 +1,13 @@
 /* panel.css - Floating Video Observer Panel (Reddit Compatible) */
+/* ✅ UPDATED: Wider panel, 2-row header, info bar, active-pointer */
+
 #video-observer-panel {
   position: fixed;
   top: 20px;
   right: 20px;
   z-index: 2147483646;
-  width: 320px;
-  max-height: 100vh;
+  width: 380px; /* ✅ Wider */
+  max-height: 80vh;
   background: rgba(26, 26, 46, 0.95);
   backdrop-filter: blur(10px);
   border: 2px solid #ff4500;
@@ -19,15 +21,93 @@
   overflow: hidden;
 }
 
-#video-observer-panel header {
-  padding: 12px 16px;
+/* ═══════════════════════════════════════════════════════════════
+   2-ROW HEADER
+   ═══════════════════════════════════════════════════════════════ */
+.panel-header-row {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+}
+
+.panel-header-top {
+  justify-content: space-between;
   background: linear-gradient(135deg, #ff4500, #ff6b35);
+  border-radius: 10px 10px 0 0;
+  min-height: 36px;
+}
+
+.panel-header-info {
+  background: rgba(0, 0, 0, 0.4);
+  border-bottom: 1px solid rgba(255, 69, 0, 0.3);
+  gap: 12px;
+  font-size: 11px;
+  flex-wrap: wrap;
+  min-height: 28px;
+}
+
+.panel-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel-title {
   font-weight: bold;
   font-size: 14px;
+  white-space: nowrap;
+}
+
+.panel-video-counter {
+  font-size: 11px;
+  opacity: 0.85;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.panel-controls-group {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  border-radius: 10px 10px 0 0;
+  gap: 8px;
+}
+
+.panel-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.panel-checkbox-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #ff4500;
+  cursor: pointer;
+  margin: 0;
+}
+
+.panel-checkbox-text {
+  opacity: 0.9;
+}
+
+.panel-info-item {
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.panel-info-playing {
+  color: #4caf50;
+  font-weight: bold;
+}
+
+.panel-info-paused {
+  color: #ffa000;
+  font-weight: bold;
 }
 
 #video-observer-panel .close-btn {
@@ -45,6 +125,9 @@
   opacity: 1;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   TABS
+   ═══════════════════════════════════════════════════════════════ */
 #video-observer-panel .tabs {
   display: flex;
   background: rgba(0, 0, 0, 0.3);
@@ -66,6 +149,9 @@
   color: #ff4500;
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   CONTENT
+   ═══════════════════════════════════════════════════════════════ */
 #video-observer-panel .content {
   flex: 1;
   overflow-y: auto;
@@ -103,7 +189,9 @@
   text-align: center;
 }
 
-/* Video Cards */
+/* ═══════════════════════════════════════════════════════════════
+   VIDEO CARDS
+   ═══════════════════════════════════════════════════════════════ */
 .video-card {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 69, 0, 0.2);
@@ -118,6 +206,16 @@
   border-color: #ff4500;
   background: rgba(255, 69, 0, 0.1);
   transform: scale(1.02);
+}
+
+/* ✅ NEW: Active pointer indicator (keyboard selection) */
+.video-card.active-pointer {
+  border-color: #ff4500;
+  border-width: 2px;
+  box-shadow:
+    0 0 12px rgba(255, 69, 0, 0.5),
+    inset 0 0 8px rgba(255, 69, 0, 0.1);
+  background: rgba(255, 69, 0, 0.15);
 }
 
 .video-card .preview-container {
@@ -170,20 +268,9 @@
   padding: 2px 8px 6px;
 }
 
-/* Logs tab */
-#logs.log-container {
-  font-size: 11px;
-  font-family: monospace;
-  color: #aaa;
-  max-height: 100%;
-  overflow-y: auto;
-}
-
-#logs.log-container div {
-  padding: 2px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-
+/* ═══════════════════════════════════════════════════════════════
+   PRIORITY COLORS
+   ═══════════════════════════════════════════════════════════════ */
 .video-card[data-priority="playing"] {
   border-color: #4caf50;
   border-width: 2px;
@@ -199,7 +286,25 @@
   border-color: rgba(255, 69, 0, 0.1);
 }
 
-/* Preview placeholder for unloaded cards */
+/* ═══════════════════════════════════════════════════════════════
+   LOGS
+   ═══════════════════════════════════════════════════════════════ */
+#logs.log-container {
+  font-size: 11px;
+  font-family: monospace;
+  color: #aaa;
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+#logs.log-container div {
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PREVIEW PLACEHOLDER
+   ═══════════════════════════════════════════════════════════════ */
 .video-card .preview-container video:not([src]) {
   background: linear-gradient(135deg, #1a1a2e, #16213e);
 }

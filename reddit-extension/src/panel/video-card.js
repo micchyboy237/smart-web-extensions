@@ -1,6 +1,7 @@
 /**
  * Video card component - creates and updates individual video cards
- * with chunk preview loading integrated with boost window priority
+ * UPDATED: Prevents duplicate initialization spam, fixes metadata timeout handling,
+ * prioritizes "playing" over "nearby" for preview loading
  */
 import { createCardHTML } from "./templates.js";
 import { AppState } from "../core/state.js";
@@ -13,33 +14,52 @@ import { DebugLogger as debug } from "../core/debug.js";
 const initializedPreviews = new WeakSet();
 // Track preview cleanups for proper teardown
 const previewCleanups = new WeakMap();
+// ✅ Track which cards are PENDING initialization (prevents duplicate attempts)
+const pendingInitialization = new WeakSet();
 
 /**
  * Initialize chunk preview for a video element
+ * ✅ Added deduplication guard
  */
 async function initializeChunkPreview(previewVideo, entryId, card) {
+  // Guard: already initialized
   if (initializedPreviews.has(previewVideo)) {
-    console.log(`[VideoCard] Preview already initialized for ${entryId}`);
+    return;
+  }
+  // Guard: already pending initialization
+  if (pendingInitialization.has(previewVideo)) {
     return;
   }
 
-  console.log(`[VideoCard] Initializing chunk preview for ${entryId}`);
+  pendingInitialization.add(previewVideo);
 
-  // Ensure video has a source
-  if (!previewVideo.src && previewVideo.dataset.src) {
-    previewVideo.src = previewVideo.dataset.src;
+  try {
+    console.log(`[VideoCard] Initializing chunk preview for ${entryId}`);
+
+    // Ensure video has a source
+    if (!previewVideo.src && previewVideo.dataset.src) {
+      previewVideo.src = previewVideo.dataset.src;
+    }
+
+    if (!previewVideo.src) {
+      console.warn(`[VideoCard] No source for ${entryId}, skipping`);
+      pendingInitialization.delete(previewVideo);
+      return;
+    }
+
+    // Set up chunk preview
+    const cleanup = await ChunkPreviewEngine.setup(previewVideo, entryId, card);
+
+    // Store cleanup function
+    if (cleanup) {
+      previewCleanups.set(previewVideo, cleanup);
+    }
+
+    initializedPreviews.add(previewVideo);
+    console.log(`[VideoCard] Preview ready: ${entryId}`);
+  } finally {
+    pendingInitialization.delete(previewVideo);
   }
-
-  // Set up chunk preview
-  const cleanup = await ChunkPreviewEngine.setup(previewVideo, entryId, card);
-
-  // Store cleanup function
-  if (cleanup) {
-    previewCleanups.set(previewVideo, cleanup);
-  }
-
-  initializedPreviews.add(previewVideo);
-  console.log(`[VideoCard] Preview ready: ${entryId}`);
 }
 
 /**
@@ -53,45 +73,71 @@ export function createVideoCard(entry) {
   card.dataset.playerId = entry.id;
   card.innerHTML = createCardHTML(entry);
 
-  // Set initial priority
-  card.dataset.priority = "background";
+  // ✅ Set initial priority based on boost state
+  card.dataset.priority = entry.boostPriority || "background";
+
+  // ✅ Highlight if this is the currently selected video
+  const currentVideo = getVideoFromPlayer(entry.player);
+  if (currentVideo === AppState.getCurrentlyPlaying()) {
+    card.classList.add("selected");
+    card.classList.add("active-pointer"); // ✅ NEW: panel pointer class
+    card.dataset.priority = "playing";
+  }
 
   // Get the preview video element
   const previewVideo = card.querySelector(".preview-container video");
 
   if (previewVideo) {
-    // ✅ Store original src and set up for chunk preview
+    // Store original src for later use
     const originalSrc = previewVideo.src;
-
     if (originalSrc) {
       previewVideo.dataset.src = originalSrc;
-      // Keep src for metadata loading, chunk engine will manage it
     }
 
-    // Initialize preview when video is ready or card becomes visible
-    const tryInit = () => {
-      if (
-        previewVideo.readyState >= 1 &&
-        !initializedPreviews.has(previewVideo)
-      ) {
-        initializeChunkPreview(previewVideo, entry.id, card);
-      }
-    };
-
-    // Try immediately if metadata is loaded
-    if (previewVideo.readyState >= 1) {
-      tryInit();
-    } else {
-      // Wait for metadata
-      previewVideo.addEventListener("loadedmetadata", tryInit, { once: true });
-
-      // Fallback: try after a delay
-      setTimeout(() => {
-        if (!initializedPreviews.has(previewVideo) && previewVideo.src) {
-          tryInit();
+    // ✅ Only initialize if priority is playing or nearby
+    if (
+      card.dataset.priority === "playing" ||
+      card.dataset.priority === "nearby"
+    ) {
+      // Initialize when video is ready
+      const tryInit = () => {
+        if (
+          previewVideo.readyState >= 1 &&
+          !initializedPreviews.has(previewVideo) &&
+          !pendingInitialization.has(previewVideo)
+        ) {
+          initializeChunkPreview(previewVideo, entry.id, card);
         }
-      }, 3000);
+      };
+
+      if (previewVideo.readyState >= 1) {
+        tryInit();
+      } else {
+        // Wait for metadata with a single listener
+        previewVideo.addEventListener("loadedmetadata", tryInit, {
+          once: true,
+        });
+
+        // Fallback: try after a delay (only once)
+        const fallbackTimer = setTimeout(() => {
+          if (
+            !initializedPreviews.has(previewVideo) &&
+            !pendingInitialization.has(previewVideo) &&
+            previewVideo.src
+          ) {
+            tryInit();
+          }
+        }, 5000); // ✅ Increased from 3s to 5s for slower connections
+
+        // Clean up fallback timer if metadata loads first
+        previewVideo.addEventListener(
+          "loadedmetadata",
+          () => clearTimeout(fallbackTimer),
+          { once: true },
+        );
+      }
     }
+    // Background cards: don't initialize until hovered or promoted
   }
 
   // Click handler
@@ -119,17 +165,21 @@ export function createVideoCard(entry) {
 
 /**
  * Update video card with priority-based preview management
+ * ✅ FIXED: Checks pendingInitialization to prevent spam
+ * ✅ FIXED: "playing" priority takes precedence over "nearby"
  */
 export function updateVideoCard(card, entry) {
   const info = entry.info;
 
-  // Update selected state
+  // Update selected state & priority
   const currentVideo = getVideoFromPlayer(entry.player);
   if (currentVideo === AppState.getCurrentlyPlaying()) {
     card.classList.add("selected");
+    card.classList.add("active-pointer"); // ✅ Panel pointer
     card.dataset.priority = "playing";
   } else {
     card.classList.remove("selected");
+    card.classList.remove("active-pointer");
     card.dataset.priority = entry.boostPriority || "background";
   }
 
@@ -161,16 +211,18 @@ export function updateVideoCard(card, entry) {
 
   // ✅ Smart preview initialization based on priority
   const previewVideo = card.querySelector(".preview-container video");
-  if (previewVideo && !initializedPreviews.has(previewVideo)) {
+  if (
+    previewVideo &&
+    !initializedPreviews.has(previewVideo) &&
+    !pendingInitialization.has(previewVideo) // ✅ Prevent duplicate attempts
+  ) {
     const priority = card.dataset.priority;
 
-    // Initialize previews for playing/nearby priority
+    // ✅ "playing" takes absolute priority over everything
     if (priority === "playing" || priority === "nearby") {
-      // Ensure video has source
       if (!previewVideo.src && previewVideo.dataset.src) {
         previewVideo.src = previewVideo.dataset.src;
       }
-
       if (previewVideo.src) {
         initializeChunkPreview(previewVideo, entry.id, card);
       }
@@ -181,10 +233,15 @@ export function updateVideoCard(card, entry) {
 
 /**
  * Force load preview for a specific card
+ * ✅ Added pending check
  */
 export function loadCardPreview(card) {
   const previewVideo = card.querySelector(".preview-container video");
-  if (previewVideo && !initializedPreviews.has(previewVideo)) {
+  if (
+    previewVideo &&
+    !initializedPreviews.has(previewVideo) &&
+    !pendingInitialization.has(previewVideo)
+  ) {
     if (!previewVideo.src && previewVideo.dataset.src) {
       previewVideo.src = previewVideo.dataset.src;
     }
@@ -218,10 +275,6 @@ export function unloadCardPreview(card) {
     // Release memory
     previewVideo.removeAttribute("src");
     previewVideo.load();
-
-    console.log(
-      `[VideoCard] Unloaded preview for ${card.dataset.playerId || "unknown"}`,
-    );
   }
 }
 

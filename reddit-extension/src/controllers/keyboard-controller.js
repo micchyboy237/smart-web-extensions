@@ -1,5 +1,6 @@
 /**
  * Keyboard navigation controller for arrow key video switching
+ * ✅ UPDATED: Fires AppState playback change so panel pointer updates
  */
 import { AppState } from "../core/state.js";
 import { PlaybackController } from "./playback-controller.js";
@@ -7,14 +8,12 @@ import { getVideoFromPlayer } from "../engine/video-utils.js";
 import { DebugLogger as debug } from "../core/debug.js";
 
 export const KeyboardController = {
-  /** Initialize keyboard listeners */
   init() {
     document.addEventListener("keydown", this._handleKeyDown.bind(this));
-    debug.log("INFO", "Arrow keys enabled");
+    debug.log("INFO", "Arrow keys enabled (with panel pointer sync)");
   },
 
   _handleKeyDown(e) {
-    // Ignore when typing in inputs
     if (
       e.target.tagName === "INPUT" ||
       e.target.tagName === "TEXTAREA" ||
@@ -52,8 +51,13 @@ export const KeyboardController = {
       targetIndex = currentIndex === -1 ? 0 : Math.max(currentIndex - 1, 0);
     }
 
+    // ✅ Don't do anything if already on this video
+    if (targetIndex === currentIndex) return;
+
     e.preventDefault();
-    const [targetPlayer] = entries[targetIndex];
+    const [targetPlayer, targetEntry] = entries[targetIndex];
+
+    // ✅ Scroll the page body to the target video
     targetPlayer.scrollIntoView({ behavior: "smooth", block: "center" });
 
     setTimeout(() => {
@@ -61,7 +65,13 @@ export const KeyboardController = {
       if (video) {
         video.muted = false;
         video.volume = 0.5;
+        // ✅ Use PlaybackController which fires AppState playback change
+        // This triggers the panel pointer update
         PlaybackController.playVideo(video);
+        debug.log(
+          "INFO",
+          `Arrow key: switched to ${targetEntry.id} (${targetIndex + 1}/${entries.length})`,
+        );
       }
     }, 400);
   },
