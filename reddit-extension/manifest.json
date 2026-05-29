@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "reddit Extension",
+  "description": "Automatically shows floating panel for reddit video elements",
+  "version": "1.0",
+  "action": {
+    "default_title": "reddit Video Observer (Floating Panel)"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.reddit.com/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "permissions": [],
+  "host_permissions": ["https://*.reddit.com/*"]
+}

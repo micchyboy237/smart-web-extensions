@@ -1,0 +1,139 @@
+/* panel.css - Floating Video Observer Panel (Reddit Compatible) */
+#video-observer-panel {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 2147483646;
+  width: 320px;
+  max-height: 80vh;
+  background: rgba(26, 26, 46, 0.95);
+  backdrop-filter: blur(10px);
+  border: 2px solid #FF4500;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #fff;
+  box-shadow: 0 8px 32px rgba(255, 69, 0, 0.3);
+  overflow: hidden;
+}
+
+#video-observer-panel header {
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #FF4500, #FF6B35);
+  font-weight: bold;
+  font-size: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-radius: 10px 10px 0 0;
+}
+
+#video-observer-panel .close-btn {
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  font-size: 18px;
+  padding: 0 4px;
+  opacity: 0.8;
+  transition: opacity 0.2s;
+}
+
+#video-observer-panel .close-btn:hover {
+  opacity: 1;
+}
+
+#video-observer-panel .tabs {
+  display: flex;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+#video-observer-panel .tab {
+  flex: 1;
+  padding: 8px;
+  text-align: center;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+}
+
+#video-observer-panel .tab.active {
+  border-bottom-color: #FF4500;
+  color: #FF4500;
+}
+
+#video-observer-panel .content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  min-height: 100px;
+  max-height: 50vh;
+}
+
+#video-observer-panel .content::-webkit-scrollbar {
+  width: 6px;
+}
+
+#video-observer-panel .content::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+#video-observer-panel .content::-webkit-scrollbar-thumb {
+  background: #FF4500;
+  border-radius: 3px;
+}
+
+#video-observer-panel #empty-videos {
+  text-align: center;
+  padding: 20px;
+  color: #888;
+  font-size: 13px;
+}
+
+#video-observer-panel .status {
+  padding: 8px 16px;
+  font-size: 11px;
+  color: #888;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 0 0 10px 10px;
+  text-align: center;
+}
+
+/* Video Cards */
+.video-card {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 69, 0, 0.2);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.video-card:hover {
+  border-color: #FF4500;
+  background: rgba(255, 69, 0, 0.1);
+  transform: scale(1.02);
+}
+
+.video-card .preview-container {
+  width: 100%;
+  height: 140px;
+  background: #1a1a2e;
+  position: relative;
+}
+
+.video-card .video-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px;
+  font-size: 11px;
+}
+
+.video-card .video-id-meta {
+  display: flex;
+  flex-direction
