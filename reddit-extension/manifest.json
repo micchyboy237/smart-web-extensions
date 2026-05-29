@@ -14,6 +14,25 @@
       "run_at": "document_start"
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/core/debug.js",
+        "src/core/state.js",
+        "src/core/config.js",
+        "src/tracker/player-tracker.js",
+        "src/tracker/dom-observer.js",
+        "src/panel/floating-panel.js",
+        "src/panel/templates.js",
+        "src/panel/video-card.js",
+        "src/controllers/playback-controller.js",
+        "src/controllers/keyboard-controller.js",
+        "src/engine/boost-engine.js",
+        "src/engine/video-utils.js"
+      ],
+      "matches": ["https://*.reddit.com/*"]
+    }
+  ],
   "permissions": [],
   "host_permissions": ["https://*.reddit.com/*"]
 }
