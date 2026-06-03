@@ -254,7 +254,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     // If already boosting, adjust rate if needed
     if (state.isBoosting) {
       if (Math.abs(currentRate - targetRate) < 0.02) return true;
-      video.playbackRate = targetRate;
+      // video.playbackRate = targetRate;
       state.boostTargetRate = targetRate;
       state.currentBoostLevel = level;
       if (level === "maintenance") {
@@ -274,7 +274,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     if (!isEmergency && currentRate >= targetRate - 0.01) return false;
 
     // APPLY THE BOOST
-    video.playbackRate = targetRate;
+    // video.playbackRate = targetRate;
     state.isBoosting = true;
     state.boostStartTime = Date.now();
     state.boostTargetRate = targetRate;
@@ -336,7 +336,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     const normalRate = state.originalRate;
 
     if (Math.abs(previousRate - normalRate) > 0.01) {
-      video.playbackRate = normalRate;
+      // video.playbackRate = normalRate;
       const boostDuration = Date.now() - state.boostStartTime;
       state.totalBoostTime += boostDuration;
       state.lastBoostEndTime = Date.now();
@@ -482,7 +482,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
             // Increase rate instead of stopping
             const newRate = Math.min(2.0, video.playbackRate * 1.1);
             if (newRate > video.playbackRate) {
-              video.playbackRate = newRate;
+              // video.playbackRate = newRate;
               console.log(
                 `[Boost] ⚠️ Increasing rate to ${newRate.toFixed(2)}x (buffer shrinking)`,
               );
@@ -505,7 +505,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
 
       // Ensure rate never drops below 1.0
       if (video.playbackRate < 0.99 && !state.isBoosting) {
-        video.playbackRate = state.originalRate;
+        // video.playbackRate = state.originalRate;
       }
     }, BOOST_CONFIG.MONITOR_INTERVAL);
 
@@ -559,7 +559,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       if (state.boostTimeout) clearTimeout(state.boostTimeout);
       if (state.seekDebounceTimer) clearTimeout(state.seekDebounceTimer);
       if (state.isBoosting) {
-        video.playbackRate = state.originalRate;
+        // video.playbackRate = state.originalRate;
       }
       boostTimers.delete(video);
     }
@@ -674,7 +674,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       if (!state.isBoosting) {
         const trueOriginal = video.__trueOriginalPlaybackRate || 1.0;
         if (Math.abs(video.playbackRate - trueOriginal) > 0.01) {
-          video.playbackRate = trueOriginal;
+          // video.playbackRate = trueOriginal;
         }
       }
     };
