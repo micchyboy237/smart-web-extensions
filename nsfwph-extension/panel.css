@@ -106,6 +106,7 @@
 }
 
 .video-card {
+  position: relative;
   background: #252535;
   border-radius: 8px;
   border: 1px solid #3a3a4a;
@@ -494,4 +495,45 @@
   box-shadow: 0 0 36px 14px rgba(0, 212, 255, 0.6);
   outline: 3px solid rgba(0, 212, 255, 0.3);
   z-index: 9999;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   GALLERY BUTTON - Absolute positioned on video card
+   ═══════════════════════════════════════════════════════════════ */
+.gallery-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: rgba(0, 212, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  z-index: 10;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(4px);
+}
+
+.gallery-btn svg {
+  width: 100%;
+  height: 100%;
+  fill: none !important; /* Force no fill */
+  stroke: currentColor;
+  stroke-width: 2px;
+}
+
+.gallery-btn:hover {
+  background: rgba(0, 180, 220, 0.95);
+  transform: scale(1.1);
+  box-shadow: 0 2px 8px rgba(0, 212, 255, 0.4);
+}
+
+.gallery-btn:active {
+  transform: scale(0.95);
 }

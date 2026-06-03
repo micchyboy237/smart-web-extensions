@@ -1694,6 +1694,11 @@ function createVideoCard(entry) {
     <div class="preview-container">
       <div class="thumb-placeholder"></div>
     </div>
+    <button class="gallery-btn" title="Open preview gallery">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4 4h7v7H4V4zm9 0h7v7h-7V4zm-9 9h7v7H4v-7zm9 0h7v7h-7v-7z" fill="none" stroke="currentColor" stroke-width="2"/>
+      </svg>
+    </button>
     <div class="video-info-row">
       <div class="video-id-meta">
         <span class="video-id">${entry.id}</span>
@@ -1704,6 +1709,9 @@ function createVideoCard(entry) {
   `;
 
   card.addEventListener("click", (e) => {
+    // Don't trigger card click if gallery button was clicked
+    if (e.target.closest(".gallery-btn")) return;
+
     e.stopImmediatePropagation();
     const videoEl = entry.element;
     if (!videoEl) return;
@@ -1712,7 +1720,6 @@ function createVideoCard(entry) {
     setTimeout(() => {
       delete videoEl.dataset.clickInProgress;
     }, 300);
-
     if (videoEl.paused) {
       enforceSinglePlayback(videoEl);
       showVideoOverlay(videoEl, entry);
@@ -1726,9 +1733,18 @@ function createVideoCard(entry) {
         showVideoOverlay(videoEl, entry);
       }
     }
-
     videoEl.scrollIntoView({ behavior: "smooth", block: "center" });
   });
+
+  // Add gallery button handler
+  const galleryBtn = card.querySelector(".gallery-btn");
+  if (galleryBtn) {
+    galleryBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      openGallery(entry);
+    });
+  }
 
   return card;
 }
