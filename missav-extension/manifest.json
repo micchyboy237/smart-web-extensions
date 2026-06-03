@@ -1,7 +1,7 @@
 {
-  "manifest_version": 3,
+  "manifest_version": 4,
   "name": "MissAV Quick Viewer",
-  "version": "1.3",
+  "version": "1.4",
   "description": "Search and filter structured data",
   "permissions": ["storage", "tabs"],
   "action": {
