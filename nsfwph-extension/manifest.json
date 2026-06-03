@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "nsfwPH Extension",
   "description": "Automatically shows floating panel for .message-inner video elements",
-  "version": "1.9",
+  "version": "2.0",
   "action": {
     "default_title": "nsfwph.org Video Observer (Floating Panel)"
   },

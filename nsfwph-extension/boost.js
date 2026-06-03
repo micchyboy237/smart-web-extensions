@@ -1,6 +1,6 @@
-// boost.js - Forward Buffer Boost Engine (v2.5 - PERSISTENT BUFFER PROTECTION)
+// boost.js - Forward Buffer Boost Engine (v2.6 - HIDDEN PRELOADER)
 // Standalone module for smart buffer management
-// Features: Minimum buffer enforcement that survives pause/seek cycles
+// Features: Hidden preloader for silent buffer protection (no fast-forward UX impact)
 // ═══════════════════════════════════════════════════════════════
 // Prevent double initialization
 if (window.__BOOST_ENGINE_INITIALIZED__) {
@@ -13,18 +13,25 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
   // ═══════════════════════════════════════════════════════════════
   const BOOST_CONFIG = {
     // BUFFER ZONES (forward buffer in seconds)
-    MIN_FORWARD_BUFFER: 5, // ABSOLUTE MINIMUM: Never let buffer drop below this
-    BUFFER_CRITICAL: 5, // Critical threshold
-    BUFFER_LOW: 8, // Start boosting more aggressively
-    BUFFER_COMFORT: 15, // Comfortable buffer
-    BUFFER_TARGET: 20, // Target buffer - maintenance only
+    MIN_FORWARD_BUFFER: 5,
+    BUFFER_CRITICAL: 5,
+    BUFFER_LOW: 8,
+    BUFFER_COMFORT: 15,
+    BUFFER_TARGET: 20,
 
-    // Boost rates - PROPERLY ADAPTIVE
-    BOOST_RATE_AGGRESSIVE: 1.3, // Critical zone: Fast recovery
-    BOOST_RATE_NORMAL: 1.2, // Low zone: Moderate boost
-    BOOST_RATE_GENTLE: 1.12, // Comfort zone: Slow fill
-    BOOST_RATE_MAINTENANCE: 1.08, // Target zone: Barely perceptible
-    BOOST_RATE_SEEK: 1.35, // Post-seek: Fastest recovery
+    // Preloader settings (silent buffer protection)
+    PRELOADER_ENABLED: true,
+    PRELOADER_SYNC_INTERVAL: 2000, // Check every 2 seconds
+    PRELOADER_ADVANCE_SEEK: 20, // Seek 20s ahead of current position
+    PRELOADER_MAX_AHEAD: 60, // Don't seek more than 60s ahead
+    PRELOADER_STOP_AT_BUFFER: 20, // Stop preloader when main buffer >= this
+
+    // Boost rates (kept for emergency/compatibility but NOT applied to playbackRate)
+    BOOST_RATE_AGGRESSIVE: 1.3,
+    BOOST_RATE_NORMAL: 1.2,
+    BOOST_RATE_GENTLE: 1.12,
+    BOOST_RATE_MAINTENANCE: 1.08,
+    BOOST_RATE_SEEK: 1.35,
 
     // Boost timing
     BOOST_DURATION: 30000,
@@ -50,14 +57,10 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     // Seek handling
     SEEK_DEBOUNCE_MS: 800,
 
-    // DEBUG
-    DEBUG_VERBOSE: false,
+    // DEBUG - Enable for detailed preloader logs
+    DEBUG_VERBOSE: true, // ← ENABLED for verification
+    DEBUG_PRELOADER: true, // ← NEW: Preloader-specific debug flag
   };
-
-  // ═══════════════════════════════════════════════════════════════
-  // BOOST STATE STORAGE
-  // ═══════════════════════════════════════════════════════════════
-  const boostTimers = new WeakMap();
 
   // ═══════════════════════════════════════════════════════════════
   // UTILITY FUNCTIONS
@@ -76,9 +79,287 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     return Math.max(0, maxEnd - currentTime);
   }
 
+  // Get total buffered range (for comparing main vs preloader)
+  function getTotalBufferedRange(video) {
+    if (!video || !video.buffered || !video.buffered.length)
+      return { start: 0, end: 0 };
+    let minStart = Infinity;
+    let maxEnd = 0;
+    for (let i = 0; i < video.buffered.length; i++) {
+      minStart = Math.min(minStart, video.buffered.start(i));
+      maxEnd = Math.max(maxEnd, video.buffered.end(i));
+    }
+    return { start: minStart === Infinity ? 0 : minStart, end: maxEnd };
+  }
+
   // ═══════════════════════════════════════════════════════════════
-  // BOOST STATE MANAGEMENT
+  // HIDDEN PRELOADER - Silent buffer protection (NO fast-forward)
   // ═══════════════════════════════════════════════════════════════
+  /**
+   * Creates a hidden <video> element that silently downloads video data
+   * ahead of the user's playback position. Since the browser caches video
+   * data by URL, the main video benefits from this preloaded data.
+   *
+   * ┌─────────────────────────────────────────────────────────────┐
+   * │                    HOW IT WORKS                              │
+   * ├─────────────────────────────────────────────────────────────┤
+   * │                                                              │
+   * │   Main Video (visible)         Preloader (hidden)            │
+   * │   ┌──────────────────┐        ┌──────────────────┐          │
+   * │   │ You watch here   │        │ Seeks ahead      │          │
+   * │   │ at 1.0x speed    │        │ to trigger       │          │
+   * │   │                  │        │ download         │          │
+   * │   │ ████████░░░░░░░░ │        │ ░░░░░░░░████████ │          │
+   * │   │ current  future  │        │  skip    future  │          │
+   * │   │ buffer           │        │  ahead   data    │          │
+   * │   └──────────────────┘        └──────────────────┘          │
+   * │                                                              │
+   * │   Same URL → Browser cache shared → Main video benefits     │
+   * │                                                              │
+   * └─────────────────────────────────────────────────────────────┘
+   */
+  function createHiddenPreloader(originalVideo) {
+    if (!BOOST_CONFIG.PRELOADER_ENABLED) {
+      console.log("[Preloader] ⏭️ Disabled in config, skipping");
+      return { cleanup: () => {}, preloader: null };
+    }
+
+    const videoId = originalVideo.dataset.videoObserverId || "unknown";
+    const videoSrc = originalVideo.currentSrc || originalVideo.src;
+
+    if (!videoSrc) {
+      console.warn(
+        `[Preloader] ❌ No source for ${videoId}, cannot create preloader`,
+      );
+      return { cleanup: () => {}, preloader: null };
+    }
+
+    console.log(`[Preloader] 🎬 Creating hidden preloader for ${videoId}`);
+    console.log(`[Preloader:D] Source: ${videoSrc.substring(0, 80)}...`);
+
+    const preloader = document.createElement("video");
+
+    // Make it completely invisible and inert
+    preloader.style.cssText = `
+      position: fixed !important;
+      width: 1px !important;
+      height: 1px !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+      top: -9999px !important;
+      left: -9999px !important;
+      visibility: hidden !important;
+      z-index: -1 !important;
+    `;
+
+    // Copy the source (browser will recognize same URL and share cache)
+    preloader.src = videoSrc;
+    preloader.muted = true;
+    preloader.preload = "auto";
+    preloader.volume = 0; // Ensure no audio processing
+    preloader.dataset.isPreloader = "true";
+
+    // Performance: request minimal decoding
+    if ("decoding" in preloader) {
+      preloader.decoding = "async"; // Don't block main thread for decoding
+    }
+
+    // State tracking for logs
+    let preloaderStats = {
+      seekCount: 0,
+      lastSeekTime: 0,
+      lastLogTime: Date.now(),
+      bytesDownloaded: 0,
+      isActive: false,
+    };
+
+    // ─── Event: Metadata loaded ───
+    preloader.addEventListener(
+      "loadedmetadata",
+      () => {
+        const duration = preloader.duration;
+        console.log(
+          `[Preloader] 📋 Metadata loaded for ${videoId} | Duration: ${duration?.toFixed(1)}s`,
+        );
+
+        if (duration && isFinite(duration)) {
+          // Start downloading from current position
+          const currentTime = originalVideo.currentTime;
+          preloader.currentTime = Math.min(currentTime, duration - 1);
+          console.log(
+            `[Preloader] 🎯 Initial seek to ${preloader.currentTime.toFixed(1)}s (main at ${currentTime.toFixed(1)}s)`,
+          );
+          preloaderStats.seekCount++;
+          preloaderStats.lastSeekTime = Date.now();
+        }
+      },
+      { once: true },
+    );
+
+    // ─── Event: Seeking ───
+    preloader.addEventListener("seeking", () => {
+      if (BOOST_CONFIG.DEBUG_PRELOADER) {
+        console.log(
+          `[Preloader] 🔍 Seeking to ${preloader.currentTime?.toFixed(1)}s...`,
+        );
+      }
+    });
+
+    // ─── Event: Seeked ───
+    preloader.addEventListener("seeked", () => {
+      preloaderStats.seekCount++;
+      preloaderStats.lastSeekTime = Date.now();
+      if (BOOST_CONFIG.DEBUG_PRELOADER) {
+        const buffered = getTotalBufferedRange(preloader);
+        console.log(
+          `[Preloader] ✅ Seeked to ${preloader.currentTime.toFixed(1)}s | Buffered: ${buffered.start.toFixed(1)}s–${buffered.end.toFixed(1)}s`,
+        );
+      }
+    });
+
+    // ─── Event: Progress (data downloaded) ───
+    preloader.addEventListener("progress", () => {
+      const buffered = getTotalBufferedRange(preloader);
+      const totalBuffered = buffered.end - buffered.start;
+      if (
+        BOOST_CONFIG.DEBUG_PRELOADER &&
+        Date.now() - preloaderStats.lastLogTime > 5000
+      ) {
+        preloaderStats.lastLogTime = Date.now();
+        console.log(
+          `[Preloader] 📥 Downloading... | Total buffered: ${totalBuffered.toFixed(1)}s (${buffered.start.toFixed(1)}–${buffered.end.toFixed(1)})`,
+        );
+      }
+    });
+
+    // ─── Event: Waiting (stalled) ───
+    preloader.addEventListener("waiting", () => {
+      if (BOOST_CONFIG.DEBUG_PRELOADER) {
+        console.log(
+          `[Preloader] ⏳ Waiting for data at ${preloader.currentTime?.toFixed(1)}s...`,
+        );
+      }
+    });
+
+    // ─── Event: Error ───
+    preloader.addEventListener("error", (e) => {
+      console.error(
+        `[Preloader] ❌ Error:`,
+        preloader.error?.message || "Unknown error",
+      );
+    });
+
+    // Add to DOM (required for loading)
+    document.body.appendChild(preloader);
+    console.log(`[Preloader] 📌 Added to DOM for ${videoId}`);
+
+    // ─── Sync Loop: Keep preloader ahead of main video ───
+    let syncIteration = 0;
+    const syncInterval = setInterval(() => {
+      syncIteration++;
+
+      // Clean up if main video is gone
+      if (!document.body.contains(originalVideo)) {
+        console.log(
+          `[Preloader] 🗑️ Main video removed, cleaning up preloader for ${videoId}`,
+        );
+        clearInterval(syncInterval);
+        preloader.pause();
+        preloader.remove();
+        return;
+      }
+
+      const mainBuffer = getBufferAhead(originalVideo);
+      const mainTime = originalVideo.currentTime;
+      const mainDuration = originalVideo.duration || Infinity;
+      const mainBuffered = getTotalBufferedRange(originalVideo);
+      const preloaderBuffered = getTotalBufferedRange(preloader);
+
+      const isMainPlaying = !originalVideo.paused;
+      const needsMoreBuffer =
+        mainBuffer < BOOST_CONFIG.PRELOADER_STOP_AT_BUFFER;
+
+      // ─── Log every 10 iterations or on state change ───
+      const wasActive = preloaderStats.isActive;
+      preloaderStats.isActive = isMainPlaying && needsMoreBuffer;
+
+      if (syncIteration % 10 === 0 || wasActive !== preloaderStats.isActive) {
+        console.log(
+          `[Preloader] 📊 Sync #${syncIteration} | ` +
+            `Main: ${mainTime.toFixed(1)}s (buffer: ${mainBuffer.toFixed(1)}s, range: ${mainBuffered.start.toFixed(1)}–${mainBuffered.end.toFixed(1)}) | ` +
+            `Preloader: ${preloader.currentTime.toFixed(1)}s (range: ${preloaderBuffered.start.toFixed(1)}–${preloaderBuffered.end.toFixed(1)}) | ` +
+            `Active: ${preloaderStats.isActive} | Seeks: ${preloaderStats.seekCount}`,
+        );
+      }
+
+      // ─── Decision: Should preloader be active? ───
+      if (isMainPlaying && needsMoreBuffer) {
+        // Main is playing and buffer is below comfort → preloader works
+        const targetTime = Math.min(
+          mainTime + BOOST_CONFIG.PRELOADER_ADVANCE_SEEK,
+          Math.min(
+            mainTime + BOOST_CONFIG.PRELOADER_MAX_AHEAD,
+            mainDuration - 0.5,
+          ),
+        );
+
+        // Only seek if target is meaningfully different
+        if (Math.abs(preloader.currentTime - targetTime) > 1.0) {
+          console.log(
+            `[Preloader] 🎯 Seeking ahead: ${preloader.currentTime.toFixed(1)}s → ${targetTime.toFixed(1)}s (main at ${mainTime.toFixed(1)}s, buffer: ${mainBuffer.toFixed(1)}s)`,
+          );
+          preloader.currentTime = targetTime;
+        }
+
+        // Keep preloader "playing" to trigger download
+        if (preloader.paused) {
+          console.log(`[Preloader] ▶️ Starting preloader playback`);
+          preloader.play().catch((err) => {
+            console.warn(`[Preloader] ⚠️ Play failed:`, err.message);
+          });
+        }
+      } else if (!isMainPlaying) {
+        // Main is paused - pause preloader to save bandwidth
+        if (!preloader.paused && preloaderStats.isActive) {
+          console.log(`[Preloader] ⏸️ Main paused, pausing preloader`);
+          preloader.pause();
+        }
+      } else if (mainBuffer >= BOOST_CONFIG.PRELOADER_STOP_AT_BUFFER) {
+        // Buffer is sufficient
+        if (!preloader.paused) {
+          console.log(
+            `[Preloader] ✅ Buffer sufficient (${mainBuffer.toFixed(1)}s ≥ ${BOOST_CONFIG.PRELOADER_STOP_AT_BUFFER}s), pausing preloader`,
+          );
+          preloader.pause();
+        }
+      }
+    }, BOOST_CONFIG.PRELOADER_SYNC_INTERVAL);
+
+    console.log(
+      `[Preloader] ✅ Preloader initialized for ${videoId} | Sync interval: ${BOOST_CONFIG.PRELOADER_SYNC_INTERVAL}ms`,
+    );
+
+    return {
+      cleanup: () => {
+        console.log(
+          `[Preloader] 🧹 Cleaning up preloader for ${videoId} | Total seeks: ${preloaderStats.seekCount}`,
+        );
+        clearInterval(syncInterval);
+        preloader.pause();
+        preloader.removeAttribute("src");
+        preloader.load();
+        preloader.remove();
+      },
+      preloader,
+      getStats: () => ({ ...preloaderStats }),
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // BOOST STATE STORAGE
+  // ═══════════════════════════════════════════════════════════════
+  const boostTimers = new WeakMap();
+
   function createBoostState(video) {
     return {
       isBoosting: false,
@@ -109,9 +390,9 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       bufferWarningCount: 0,
       lastBufferZeroTime: 0,
       emergencyBoostActive: false,
-      // FIX: Track buffer state across pause/resume cycles
       lastBufferBeforePause: 0,
       pauseResumeCount: 0,
+      preloaderController: null, // ← NEW: Track preloader in state
     };
   }
 
@@ -126,17 +407,15 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ADAPTIVE RATE CALCULATION
+  // ADAPTIVE RATE CALCULATION (kept for logging/reference)
   // ═══════════════════════════════════════════════════════════════
   function calculateOptimalBoostRate(
     bufferAhead,
     isSeek = false,
     connectionQuality = 1.0,
   ) {
-    // CRITICAL ZONE: 0 to MIN_FORWARD_BUFFER
     if (bufferAhead < BOOST_CONFIG.MIN_FORWARD_BUFFER) {
       const criticalRatio = bufferAhead / BOOST_CONFIG.MIN_FORWARD_BUFFER;
-      // Scale: closer to 0 = faster
       const rate =
         BOOST_CONFIG.BOOST_RATE_AGGRESSIVE -
         (BOOST_CONFIG.BOOST_RATE_AGGRESSIVE - BOOST_CONFIG.BOOST_RATE_NORMAL) *
@@ -147,8 +426,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         emergency: bufferAhead < 2,
       };
     }
-
-    // LOW ZONE: MIN to BUFFER_LOW
     if (bufferAhead < BOOST_CONFIG.BUFFER_LOW) {
       const ratio =
         (bufferAhead - BOOST_CONFIG.MIN_FORWARD_BUFFER) /
@@ -162,8 +439,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         level: "normal",
       };
     }
-
-    // COMFORT ZONE: BUFFER_LOW to BUFFER_COMFORT
     if (bufferAhead < BOOST_CONFIG.BUFFER_COMFORT) {
       const ratio =
         (bufferAhead - BOOST_CONFIG.BUFFER_LOW) /
@@ -177,187 +452,94 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         level: "gentle",
       };
     }
-
-    // TARGET ZONE: BUFFER_COMFORT to BUFFER_TARGET
     if (bufferAhead < BOOST_CONFIG.BUFFER_TARGET) {
       return {
         rate: BOOST_CONFIG.BOOST_RATE_MAINTENANCE,
         level: "maintenance",
       };
     }
-
-    // Buffer sufficient
     return { rate: 1.0, level: "none" };
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // BOOST APPLICATION & CONTROL
+  // CONTINUOUS BUFFER MONITOR (now preloader-aware)
   // ═══════════════════════════════════════════════════════════════
-  function canBoost(state, isNewSession = true) {
-    const now = Date.now();
-
-    // EMERGENCY: Always allow if buffer is critical
-    if (
-      state.emergencyBoostActive ||
-      state.lastBufferAhead < BOOST_CONFIG.MIN_FORWARD_BUFFER
-    ) {
-      return true;
+  function startContinuousBufferMonitor(video) {
+    if (!video || video.dataset.continuousMonitorActive === "true") {
+      return () => {};
     }
-
-    if (isNewSession) {
-      if (state.boostSessionCount >= BOOST_CONFIG.MAX_BOOST_SESSIONS) {
-        if (state.lastBufferAhead < BOOST_CONFIG.MIN_FORWARD_BUFFER)
-          return true;
-        return false;
-      }
-      if (state.totalBoostTime >= BOOST_CONFIG.MAX_TOTAL_BOOST_MS) {
-        if (state.lastBufferAhead < BOOST_CONFIG.MIN_FORWARD_BUFFER)
-          return true;
-        return false;
-      }
-      if (state.lastBoostEndTime > 0) {
-        const timeSinceLastSession = now - state.lastBoostEndTime;
-        if (timeSinceLastSession < BOOST_CONFIG.BOOST_SESSION_GAP) {
-          if (state.lastBufferAhead >= BOOST_CONFIG.MIN_FORWARD_BUFFER)
-            return false;
-        }
-      }
-      if (
-        state.totalPlayTime < BOOST_CONFIG.MIN_PLAY_TIME_FOR_BOOST &&
-        !state.isRealPlay
-      ) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  function applyForwardBoost(video, targetRate, level, reason = "unknown") {
-    if (!video || video.paused) return false;
+    video.dataset.continuousMonitorActive = "true";
     const state = getBoostState(video);
-    if (!state) return false;
 
-    const currentRate = video.playbackRate;
-    const ahead = getBufferAhead(video);
-
-    // Update state tracking
-    state.lastBufferAhead = ahead;
-
-    // Determine if this is an emergency (buffer at or near 0)
-    const isEmergency = ahead < 2;
-    if (isEmergency) {
-      state.emergencyBoostActive = true;
-      state.bufferWarningCount++;
-      if (ahead <= 0.5) state.lastBufferZeroTime = Date.now();
-    }
-
-    // If already boosting, adjust rate if needed
-    if (state.isBoosting) {
-      if (Math.abs(currentRate - targetRate) < 0.02) return true;
-      // video.playbackRate = targetRate;
-      state.boostTargetRate = targetRate;
-      state.currentBoostLevel = level;
-      if (level === "maintenance") {
-        state.maintenanceMode = true;
-        state.maintenanceStartTime = Date.now();
-      }
-      if (BOOST_CONFIG.DEBUG_VERBOSE || isEmergency) {
-        console.log(
-          `[Boost] 🔄 Adjust: ${currentRate.toFixed(2)}x → ${targetRate.toFixed(2)}x (${level})${isEmergency ? " ⚠️" : ""} | Buffer: ${ahead.toFixed(1)}s`,
-        );
-      }
-      return true;
-    }
-
-    // Check if we can start a new boost session
-    if (!isEmergency && !canBoost(state, true)) return false;
-    if (!isEmergency && currentRate >= targetRate - 0.01) return false;
-
-    // APPLY THE BOOST
-    // video.playbackRate = targetRate;
-    state.isBoosting = true;
-    state.boostStartTime = Date.now();
-    state.boostTargetRate = targetRate;
-    state.currentBoostLevel = level;
-    state.boostSessionCount++;
-    state.maintenanceOffTime = 0;
-
-    if (level === "maintenance") {
-      state.maintenanceMode = true;
-      state.maintenanceStartTime = Date.now();
-    }
-
-    const logPrefix = isEmergency ? "🚨" : "⚡";
     console.log(
-      `[Boost] ${logPrefix} #${state.boostSessionCount}: ${currentRate.toFixed(2)}x → ${targetRate.toFixed(2)}x | ` +
-        `${level.toUpperCase()} | ${reason} | Buffer: ${ahead.toFixed(1)}s | ` +
-        `Play: ${(state.totalPlayTime / 1000).toFixed(0)}s`,
+      `[Boost] 🚀 Monitor attached | Min: ${BOOST_CONFIG.MIN_FORWARD_BUFFER}s | ` +
+        `Comfort: ${BOOST_CONFIG.BUFFER_COMFORT}s | Target: ${BOOST_CONFIG.BUFFER_TARGET}s | ` +
+        `Preloader: ${BOOST_CONFIG.PRELOADER_ENABLED ? "✅ ON" : "❌ OFF"}`,
     );
 
-    if (state.bufferWarningCount > 0 && state.bufferWarningCount % 5 === 0) {
-      console.warn(`[Boost] ⚠️ Buffer warnings: ${state.bufferWarningCount}`);
+    if (!video.__trueOriginalPlaybackRate) {
+      video.__trueOriginalPlaybackRate = video.playbackRate || 1.0;
+      state.originalRate = video.__trueOriginalPlaybackRate;
     }
 
-    return true;
-  }
+    const monitorInterval = setInterval(() => {
+      if (typeof tabIsVisible !== "undefined" && !tabIsVisible) return;
+      if (video.paused) return;
 
-  function stopForwardBoost(video, reason = "target reached") {
-    if (!video) return;
-    const state = getBoostState(video);
-    if (!state || !state.isBoosting) return;
+      const ahead = getBufferAhead(video);
+      const state = getBoostState(video);
+      if (!state) return;
 
-    const ahead = getBufferAhead(video);
-    state.lastBufferAhead = ahead;
-    state.lastBufferBeforePause = ahead;
+      updateConnectionQuality(video, state);
+      if (state.playStartTime > 0) {
+        state.totalPlayTime += BOOST_CONFIG.MONITOR_INTERVAL;
+      }
 
-    // FIX: NEVER stop boosting if buffer is below minimum, regardless of reason
-    // The only exception is "ended" (video finished)
-    if (reason !== "ended" && ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER) {
-      console.log(
-        `[Boost] ⛔ Prevented stop: Buffer ${ahead.toFixed(1)}s below minimum ${BOOST_CONFIG.MIN_FORWARD_BUFFER}s | Reason: ${reason}`,
-      );
+      const now = Date.now();
+      const isBelowMinimum = ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER;
 
-      // If paused, we can't boost, but mark that we need to resume boosting on play
-      if (reason === "paused" || reason === "seeking") {
-        state.emergencyBoostActive = true;
-        state.isBoosting = false; // Reset boost state but keep emergency flag
-        state.currentBoostLevel = "none";
-        // Don't change playback rate - let it stay at boosted rate
-        // The monitor will pick up on play and resume boosting
+      // Debug log (every 5s or when below minimum)
+      if (now - state.lastDebugTime > 5000 || isBelowMinimum) {
+        state.lastDebugTime = now;
+        const preloaderStatus = state.preloaderController?.getStats
+          ? `Preloader: ${state.preloaderController.getStats().isActive ? "🟢" : "🔴"}`
+          : "Preloader: N/A";
         console.log(
-          `[Boost] ⚠️ Paused while below minimum - emergency flag set for resume`,
+          `[Boost] 📊 Buffer: ${ahead.toFixed(1)}s${isBelowMinimum ? " ⚠️BELOW MIN" : ""} | ` +
+            `Rate: ${video.playbackRate.toFixed(2)}x | Level: ${state.currentBoostLevel} | ` +
+            `Sessions: ${state.boostSessionCount} | Play: ${(state.totalPlayTime / 1000).toFixed(0)}s | ` +
+            `${preloaderStatus}`,
         );
-        return;
-      }
-      return; // Don't stop for other reasons
-    }
-
-    const previousRate = video.playbackRate;
-    const normalRate = state.originalRate;
-
-    if (Math.abs(previousRate - normalRate) > 0.01) {
-      // video.playbackRate = normalRate;
-      const boostDuration = Date.now() - state.boostStartTime;
-      state.totalBoostTime += boostDuration;
-      state.lastBoostEndTime = Date.now();
-
-      if (state.maintenanceMode) {
-        state.maintenanceOffTime = Date.now();
       }
 
-      console.log(
-        `[Boost] ⏹️ Stopped: ${previousRate.toFixed(2)}x → ${normalRate.toFixed(2)}x | ` +
-          `${reason} | Duration: ${(boostDuration / 1000).toFixed(1)}s | ` +
-          `Total: ${(state.totalBoostTime / 1000).toFixed(1)}s | Buffer: ${ahead.toFixed(1)}s`,
-      );
-    }
+      // NOTE: We do NOT modify playbackRate anymore.
+      // The preloader handles buffer growth silently.
+      // We only log warnings when buffer is critically low.
 
-    state.isBoosting = false;
-    state.boostTargetRate = normalRate;
-    state.currentBoostLevel = "none";
-    state.maintenanceMode = false;
-    state.emergencyBoostActive = false;
-    state.consecutiveShrinks = 0;
+      if (isBelowMinimum && state.bufferWarningCount < 100) {
+        state.bufferWarningCount++;
+        if (state.bufferWarningCount % 5 === 0) {
+          console.warn(
+            `[Boost] ⚠️ Buffer critically low: ${ahead.toFixed(1)}s | ` +
+              `Warning #${state.bufferWarningCount} | ` +
+              `Preloader should be helping...`,
+          );
+        }
+      }
+
+      // Ensure rate stays at normal
+      if (video.playbackRate !== state.originalRate && !state.isBoosting) {
+        // video.playbackRate = state.originalRate;  // ← Still commented out
+      }
+    }, BOOST_CONFIG.MONITOR_INTERVAL);
+
+    state.monitorInterval = monitorInterval;
+
+    return () => {
+      clearInterval(monitorInterval);
+      state.monitorInterval = null;
+      delete video.dataset.continuousMonitorActive;
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -375,7 +557,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       timeSinceLastCheck > 0 ? bufferGrowth / (timeSinceLastCheck / 1000) : 0;
     state.lastBufferGrowth = growthRate;
 
-    // Track consecutive shrinks
     if (state.isBoosting && growthRate < -0.1) {
       state.consecutiveShrinks++;
     } else if (state.isBoosting && growthRate > 0.1) {
@@ -384,7 +565,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       state.consecutiveShrinks = 0;
     }
 
-    // Update connection quality
     const newQuality = Math.max(0.1, Math.min(2.0, Math.abs(growthRate) + 0.5));
     state.connectionQuality = state.connectionQuality * 0.7 + newQuality * 0.3;
     state.lastBufferCheck = now;
@@ -392,160 +572,29 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // CONTINUOUS BUFFER MONITOR
+  // BOOST APPLICATION (kept for compatibility, does NOT change rate)
   // ═══════════════════════════════════════════════════════════════
-  function startContinuousBufferMonitor(video) {
-    if (!video || video.dataset.continuousMonitorActive === "true") {
-      return () => {};
-    }
-    video.dataset.continuousMonitorActive = "true";
+  function applyForwardBoost(video, targetRate, level, reason = "unknown") {
+    // NOTE: playbackRate modification is intentionally disabled.
+    // The preloader handles buffer growth silently.
+    if (!video || video.paused) return false;
     const state = getBoostState(video);
+    if (!state) return false;
+    const ahead = getBufferAhead(video);
+    state.lastBufferAhead = ahead;
 
     console.log(
-      `[Boost] 🚀 Monitor attached | Min: ${BOOST_CONFIG.MIN_FORWARD_BUFFER}s | ` +
-        `Comfort: ${BOOST_CONFIG.BUFFER_COMFORT}s | Target: ${BOOST_CONFIG.BUFFER_TARGET}s`,
+      `[Boost] 💡 Would boost: 1.00x → ${targetRate.toFixed(2)}x | ` +
+        `${level.toUpperCase()} | ${reason} | Buffer: ${ahead.toFixed(1)}s | ` +
+        `(Boost disabled - preloader handles buffer instead)`,
     );
 
-    if (!video.__trueOriginalPlaybackRate) {
-      video.__trueOriginalPlaybackRate = video.playbackRate || 1.0;
-      state.originalRate = video.__trueOriginalPlaybackRate;
-    }
-
-    const monitorInterval = setInterval(() => {
-      // Skip if tab hidden or video paused
-      if (typeof tabIsVisible !== "undefined" && !tabIsVisible) return;
-      if (video.paused) return;
-
-      const ahead = getBufferAhead(video);
-      const state = getBoostState(video);
-      if (!state) return;
-
-      // Update connection quality and play time
-      updateConnectionQuality(video, state);
-      if (state.playStartTime > 0) {
-        state.totalPlayTime += BOOST_CONFIG.MONITOR_INTERVAL;
-      }
-
-      const now = Date.now();
-      const isBelowMinimum = ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER;
-
-      // Debug log (every 5s or when below minimum)
-      if (now - state.lastDebugTime > 5000 || isBelowMinimum) {
-        state.lastDebugTime = now;
-        console.log(
-          `[Boost] 📊 Buffer: ${ahead.toFixed(1)}s${isBelowMinimum ? " ⚠️BELOW MIN" : ""} | ` +
-            `Rate: ${video.playbackRate.toFixed(2)}x | Level: ${state.currentBoostLevel} | ` +
-            `Sessions: ${state.boostSessionCount} | Play: ${(state.totalPlayTime / 1000).toFixed(0)}s`,
-        );
-      }
-
-      // ═══════════════════════════════════════════════════════════
-      // BOOST DECISION
-      // ═══════════════════════════════════════════════════════════
-      const {
-        rate: optimalRate,
-        level,
-        emergency,
-      } = calculateOptimalBoostRate(ahead, false, state.connectionQuality);
-
-      if (optimalRate > 1.0) {
-        // Need to boost
-        if (!state.isBoosting) {
-          applyForwardBoost(video, optimalRate, level, `buffer ${level}`);
-        } else if (Math.abs(video.playbackRate - optimalRate) > 0.02) {
-          applyForwardBoost(video, optimalRate, level, `adjust to ${level}`);
-        }
-      } else if (state.isBoosting && ahead >= BOOST_CONFIG.MIN_FORWARD_BUFFER) {
-        // Buffer is sufficient - stop boosting
-        stopForwardBoost(video, "buffer sufficient");
-      }
-
-      // SAFETY CHECKS
-      if (state.isBoosting) {
-        const boostDuration = now - state.boostStartTime;
-
-        // Duration limit - don't stop if below minimum
-        if (boostDuration > BOOST_CONFIG.BOOST_DURATION) {
-          if (ahead >= BOOST_CONFIG.MIN_FORWARD_BUFFER) {
-            stopForwardBoost(video, "duration exceeded");
-          } else {
-            // Reset timer to allow continued protection
-            state.boostStartTime = now;
-            console.log(
-              `[Boost] ⚠️ Duration limit reached but buffer below minimum - continuing`,
-            );
-          }
-        }
-        // Buffer shrinking persistently
-        else if (state.consecutiveShrinks >= BOOST_CONFIG.SHRINK_TOLERANCE) {
-          if (ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER) {
-            // Increase rate instead of stopping
-            const newRate = Math.min(2.0, video.playbackRate * 1.1);
-            if (newRate > video.playbackRate) {
-              // video.playbackRate = newRate;
-              console.log(
-                `[Boost] ⚠️ Increasing rate to ${newRate.toFixed(2)}x (buffer shrinking)`,
-              );
-            }
-          } else {
-            stopForwardBoost(video, "buffer shrinking");
-          }
-        }
-        // Maintenance mode too long
-        else if (
-          state.maintenanceMode &&
-          now - state.maintenanceStartTime >
-            BOOST_CONFIG.MAINTENANCE_MAX_DURATION
-        ) {
-          if (ahead >= BOOST_CONFIG.MIN_FORWARD_BUFFER) {
-            stopForwardBoost(video, "maintenance cycle");
-          }
-        }
-      }
-
-      // Ensure rate never drops below 1.0
-      if (video.playbackRate < 0.99 && !state.isBoosting) {
-        // video.playbackRate = state.originalRate;
-      }
-    }, BOOST_CONFIG.MONITOR_INTERVAL);
-
-    state.monitorInterval = monitorInterval;
-
-    return () => {
-      clearInterval(monitorInterval);
-      state.monitorInterval = null;
-      delete video.dataset.continuousMonitorActive;
-    };
+    return false; // Don't actually boost
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // SEEK BOOST HANDLER
-  // ═══════════════════════════════════════════════════════════════
-  function boostBufferAfterSeek(video) {
-    if (!video || video.paused) return;
-    if (typeof tabIsVisible !== "undefined" && !tabIsVisible) return;
-
-    const state = getBoostState(video);
-    if (!state) return;
-
-    if (state.seekDebounceTimer) clearTimeout(state.seekDebounceTimer);
-
-    state.seekDebounceTimer = setTimeout(() => {
-      const ahead = getBufferAhead(video);
-      console.log(`[Boost] 🎯 Seek settled | Buffer: ${ahead.toFixed(1)}s`);
-
-      if (ahead < BOOST_CONFIG.BUFFER_COMFORT) {
-        const { rate, level } = calculateOptimalBoostRate(
-          ahead,
-          true,
-          state.connectionQuality,
-        );
-        if (rate > 1.0) {
-          applyForwardBoost(video, rate, level, "seek recovery");
-        }
-      }
-      state.seekDebounceTimer = null;
-    }, BOOST_CONFIG.SEEK_DEBOUNCE_MS);
+  function stopForwardBoost(video, reason = "target reached") {
+    // No-op since we don't boost
+    return;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -558,8 +607,9 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       if (state.monitorInterval) clearInterval(state.monitorInterval);
       if (state.boostTimeout) clearTimeout(state.boostTimeout);
       if (state.seekDebounceTimer) clearTimeout(state.seekDebounceTimer);
-      if (state.isBoosting) {
-        // video.playbackRate = state.originalRate;
+      if (state.preloaderController) {
+        state.preloaderController.cleanup();
+        state.preloaderController = null;
       }
       boostTimers.delete(video);
     }
@@ -592,15 +642,26 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // MAIN BOOST ATTACHMENT
+  // MAIN BOOST ATTACHMENT (with hidden preloader)
   // ═══════════════════════════════════════════════════════════════
   function attachBoostToVideo(video) {
     if (!video || video.dataset.boostAttached === "true") return () => {};
     video.dataset.boostAttached = "true";
     const videoId = video.dataset.videoObserverId || "unknown";
+
     console.log(
-      `[Boost] 🔗 Attached to ${videoId} | Min: ${BOOST_CONFIG.MIN_FORWARD_BUFFER}s`,
+      `[Boost] 🔗 Attached to ${videoId} | Min: ${BOOST_CONFIG.MIN_FORWARD_BUFFER}s | ` +
+        `Preloader: ${BOOST_CONFIG.PRELOADER_ENABLED ? "✅" : "❌"}`,
     );
+
+    // Start hidden preloader for silent buffer protection
+    const preloaderController = createHiddenPreloader(video);
+
+    // Store preloader in state for monitoring
+    const state = getBoostState(video);
+    if (state) {
+      state.preloaderController = preloaderController;
+    }
 
     const stopMonitor = startContinuousBufferMonitor(video);
 
@@ -617,65 +678,10 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       const ahead = getBufferAhead(video);
       state.lastBufferAhead = ahead;
 
-      // FIX: If we have an emergency flag from a previous pause-below-minimum,
-      // resume boosting immediately
-      if (
-        state.emergencyBoostActive &&
-        ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER
-      ) {
-        state.pauseResumeCount++;
+      if (state.isRealPlay) {
         console.log(
-          `[Boost] 🚨 Resume after pause - buffer still below minimum: ${ahead.toFixed(1)}s`,
+          `[Boost] ▶️ Real play started for ${videoId} | Buffer: ${ahead.toFixed(1)}s`,
         );
-        applyForwardBoost(
-          video,
-          BOOST_CONFIG.BOOST_RATE_AGGRESSIVE,
-          "aggressive",
-          "resume after pause (below min)",
-        );
-        return;
-      }
-
-      // Initial boost on first real play
-      if (
-        !state.hasInitialBoosted &&
-        state.isRealPlay &&
-        ahead < BOOST_CONFIG.BUFFER_COMFORT
-      ) {
-        state.hasInitialBoosted = true;
-        state.totalPlayTime = Math.max(
-          state.totalPlayTime,
-          BOOST_CONFIG.MIN_PLAY_TIME_FOR_BOOST,
-        );
-        console.log(`[Boost] 🆕 Initial boost | Buffer: ${ahead.toFixed(1)}s`);
-        applyForwardBoost(
-          video,
-          BOOST_CONFIG.BOOST_RATE_NORMAL,
-          "normal",
-          "initial play",
-        );
-        return;
-      }
-
-      // Boost if buffer is below minimum on play
-      if (ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER && !state.isBoosting) {
-        console.log(
-          `[Boost] ⚠️ Buffer below minimum on play: ${ahead.toFixed(1)}s`,
-        );
-        applyForwardBoost(
-          video,
-          BOOST_CONFIG.BOOST_RATE_AGGRESSIVE,
-          "aggressive",
-          "below minimum on play",
-        );
-      }
-
-      // Safety: ensure rate is normal if not boosting
-      if (!state.isBoosting) {
-        const trueOriginal = video.__trueOriginalPlaybackRate || 1.0;
-        if (Math.abs(video.playbackRate - trueOriginal) > 0.01) {
-          // video.playbackRate = trueOriginal;
-        }
       }
     };
 
@@ -692,41 +698,26 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       state.lastBufferBeforePause = ahead;
       state.lastBufferAhead = ahead;
 
-      // FIX: If buffer is below minimum when pausing, set emergency flag
-      // and DON'T stop the boost (just mark it for resume)
       if (ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER) {
         console.log(
-          `[Boost] ⚠️ Pausing with buffer below minimum: ${ahead.toFixed(1)}s`,
+          `[Boost] ⚠️ Pausing with buffer below minimum: ${ahead.toFixed(1)}s | ` +
+            `Preloader will continue downloading`,
         );
-        state.emergencyBoostActive = true;
-      }
-
-      if (state.isBoosting) {
-        // Let stopForwardBoost handle the minimum buffer check
-        stopForwardBoost(video, "paused");
       }
     };
 
     const onSeeking = () => {
       video.__lastSeekTime = Date.now();
-      const state = getBoostState(video);
-      if (state?.isBoosting) {
-        stopForwardBoost(video, "seeking");
-      }
     };
 
     const onSeeked = () => {
       video.__lastSeekTime = Date.now();
-      if (typeof tabIsVisible === "undefined" || tabIsVisible) {
-        boostBufferAfterSeek(video);
-      }
+      const ahead = getBufferAhead(video);
+      console.log(`[Boost] 🎯 Seeked | Buffer: ${ahead.toFixed(1)}s`);
     };
 
     const onEnded = () => {
-      const state = getBoostState(video);
-      if (state?.isBoosting) {
-        stopForwardBoost(video, "ended");
-      }
+      console.log(`[Boost] 🏁 Video ended for ${videoId}`);
     };
 
     video.addEventListener("play", onPlay);
@@ -738,6 +729,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     return () => {
       console.log(`[Boost] 🔌 Detached from ${videoId}`);
       stopMonitor();
+      if (preloaderController) preloaderController.cleanup();
       cleanupBoost(video);
       video.removeEventListener("play", onPlay);
       video.removeEventListener("pause", onPause);
@@ -765,16 +757,21 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     cleanupBoost,
     getBufferAhead,
     startContinuousBufferMonitor,
-    boostBufferAfterSeek,
     boostPreviewBuffer,
     cleanupPreviewBoost,
     config: BOOST_CONFIG,
     getBoostState,
+    createHiddenPreloader, // ← Exposed for debugging
   };
 
-  console.log("[Boost] ✅ v2.5 Ready - Persistent Buffer Protection");
+  console.log("[Boost] ✅ v2.6 Ready - Hidden Preloader Mode");
   console.log(
     `[Boost] Min: ${BOOST_CONFIG.MIN_FORWARD_BUFFER}s | Target: ${BOOST_CONFIG.BUFFER_TARGET}s`,
   );
-  console.log(`[Boost] Emergency resume on pause-below-minimum enabled`);
+  console.log(
+    `[Boost] Preloader: ${BOOST_CONFIG.PRELOADER_ENABLED ? "✅ Active (no fast-forward)" : "❌ Disabled"}`,
+  );
+  console.log(
+    `[Boost] Debug: ${BOOST_CONFIG.DEBUG_VERBOSE ? "✅ Verbose" : "❌ Silent"}`,
+  );
 }
