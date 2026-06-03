@@ -1,6 +1,6 @@
-// boost.js - Forward Buffer Boost Engine (OPTIMIZED)
+// boost.js - Forward Buffer Boost Engine (v2.3 - FINAL OPTIMIZED)
 // Standalone module for smart buffer management
-// Features: Forward-only boost, adaptive rates, connection quality detection
+// Features: Forward-only boost, adaptive rates, continuous buffer maintenance
 // ═══════════════════════════════════════════════════════════════
 
 // Prevent double initialization
@@ -13,60 +13,62 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
   // BOOST CONFIGURATION
   // ═══════════════════════════════════════════════════════════════
   const BOOST_CONFIG = {
-    // Buffer thresholds - tuned for intermittent connections
-    BUFFER_LOW: 5, // Start boosting below this
-    BUFFER_TARGET: 15, // Stop boosting when reaching this
-    BUFFER_CRITICAL: 2, // Critical low - use faster boost
+    // Buffer thresholds
+    BUFFER_CRITICAL: 2, // Critical low - emergency boost
+    BUFFER_LOW: 8, // Start boosting below this
+    BUFFER_COMFORT: 15, // Comfortable buffer - stop aggressive boost
+    BUFFER_TARGET: 20, // Ideal buffer - maintain this
 
     // Boost timing
-    BOOST_DURATION: 10000, // Max single boost duration (ms)
-    MONITOR_INTERVAL: 1500, // Check every 1.5s (responsive, low CPU)
-    BOOST_COOLDOWN: 2000, // Cooldown between boost SESSIONS (not extensions)
+    BOOST_DURATION: 30000, // Max single boost duration (30s)
+    MONITOR_INTERVAL: 1500, // Check every 1.5s
+    BOOST_SESSION_GAP: 3000, // Minimum gap between boost sessions (3s)
 
     // Boost rates (forward only, >= 1.0)
-    BOOST_RATE_NORMAL: 1.15, // Normal boost for steady buffering
-    BOOST_RATE_CRITICAL: 1.25, // Faster boost when buffer is critical
-    BOOST_RATE_SEEK: 1.4, // Fastest boost after seeking
-    BOOST_RATE_MIN: 1.08, // Minimum boost near target
+    BOOST_RATE_AGGRESSIVE: 1.25, // Critical buffer (0-2s)
+    BOOST_RATE_NORMAL: 1.25, // Low buffer (2-8s)
+    BOOST_RATE_GENTLE: 1.25, // Comfort buffer (8-15s)
+    BOOST_RATE_MAINTENANCE: 1.25, // Target buffer (15-20s) - barely perceptible
+    BOOST_RATE_SEEK: 1.25, // Post-seek recovery
 
     // Seek handling
-    SEEK_DEBOUNCE_MS: 500, // Debounce rapid seeks
-    SEEK_MIN_EFFECTIVE_RATIO: 0.6, // Ratio threshold for aggressive seek boost
+    SEEK_DEBOUNCE_MS: 800,
 
-    // Limits (prevent resource waste)
-    MAX_BOOST_SESSIONS: 10, // Max number of boost sessions (increased from 3)
-    MAX_TOTAL_BOOST_MS: 60000, // Max total boost time (increased from 30s)
-    BOOST_SESSION_GAP: 3000, // Minimum gap between boost sessions (ms)
+    // Limits
+    MAX_BOOST_SESSIONS: 25,
+    MAX_TOTAL_BOOST_MS: 180000, // 3 minutes total
 
     // Connection quality detection
-    SLOW_CONNECTION_THRESHOLD: 0.5, // Buffer growth < 0.5s/s = slow
-    CONNECTION_CHECK_WINDOW: 5000, // Check connection every 5s
+    SLOW_CONNECTION_THRESHOLD: 0.3,
+    CONNECTION_CHECK_WINDOW: 4000,
+
+    // Smart detection
+    MIN_PLAY_TIME_FOR_BOOST: 1000, // Reduced from 2s to 1s
+    SHRINK_TOLERANCE: 4, // Allow 4 checks of shrinking
+
+    // Maintenance mode
+    MAINTENANCE_MAX_DURATION: 90000, // Max 90s of maintenance before cycling off
+    MAINTENANCE_RESTART_DELAY: 10000, // Wait 10s before restarting maintenance
 
     // Debug
-    DEBUG_VERBOSE: false, // Set to true for detailed logs
+    DEBUG_VERBOSE: false,
   };
 
   // ═══════════════════════════════════════════════════════════════
   // BOOST STATE STORAGE
   // ═══════════════════════════════════════════════════════════════
-  const boostTimers = new WeakMap(); // video → boost state
+  const boostTimers = new WeakMap();
 
   // ═══════════════════════════════════════════════════════════════
   // UTILITY FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Get the buffered time ahead of current playback position
-   * @param {HTMLVideoElement} video
-   * @returns {number} Seconds buffered ahead
-   */
   function getBufferAhead(video) {
     if (!video || !video.buffered || !video.buffered.length) return 0;
 
     let maxEnd = 0;
     const currentTime = video.currentTime;
 
-    // Find the furthest buffered point that includes currentTime
     for (let i = 0; i < video.buffered.length; i++) {
       const start = video.buffered.start(i);
       const end = video.buffered.end(i);
@@ -79,11 +81,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     return Math.max(0, maxEnd - currentTime);
   }
 
-  /**
-   * Get the effective buffer ratio (ahead vs total buffered)
-   * @param {HTMLVideoElement} video
-   * @returns {number} Ratio between 0 and 1
-   */
   function getEffectiveBufferRatio(video) {
     if (!video || !video.buffered || !video.buffered.length) return 0;
 
@@ -100,53 +97,45 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
   // BOOST STATE MANAGEMENT
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Create initial boost state for a video element
-   * @param {HTMLVideoElement} video
-   * @returns {Object} Boost state object
-   */
   function createBoostState(video) {
     return {
-      // Current boost information
       isBoosting: false,
       boostStartTime: 0,
       boostTargetRate: 1.0,
+      currentBoostLevel: "none", // 'none', 'maintenance', 'gentle', 'normal', 'aggressive'
 
-      // Session tracking (a session = continuous boost period)
       boostSessionCount: 0,
       totalBoostTime: 0,
       lastBoostEndTime: 0,
 
-      // Original playback rate (typically 1.0)
       originalRate: video.playbackRate || 1.0,
 
-      // Connection quality tracking
-      connectionQuality: 1.0, // 1.0 = normal, < 0.5 = slow
+      connectionQuality: 1.0,
       lastBufferCheck: Date.now(),
       lastBufferAhead: 0,
       lastBufferGrowth: 0,
 
-      // Seek tracking
+      consecutiveShrinks: 0,
+
+      playStartTime: 0,
+      totalPlayTime: 0,
+      isRealPlay: false, // NEW: Flag for real user playback
+
       lastSeekTime: 0,
       seekDebounceTimer: null,
 
-      // Monitor state
       monitorInterval: null,
       boostTimeout: null,
 
-      // Debug
       lastDebugTime: 0,
-
-      // Track if initial boost has happened
       hasInitialBoosted: false,
+
+      maintenanceMode: false,
+      maintenanceStartTime: 0,
+      maintenanceOffTime: 0, // NEW: Track when maintenance was last turned off
     };
   }
 
-  /**
-   * Get or create boost state for a video
-   * @param {HTMLVideoElement} video
-   * @returns {Object|null} Boost state object or null if video is invalid
-   */
   function getBoostState(video) {
     if (!video) return null;
 
@@ -160,199 +149,180 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ADAPTIVE RATE CALCULATION
+  // ADAPTIVE RATE CALCULATION (PROACTIVE)
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Calculate optimal boost rate based on current buffer state
-   * Uses adaptive scaling to avoid overshooting the target
-   *
-   * @param {number} bufferAhead - Seconds of buffer ahead
-   * @param {boolean} isSeek - Whether this is a post-seek boost
-   * @param {number} connectionQuality - Connection quality factor (0.1-2.0)
-   * @returns {number} Optimal playback rate (1.0 = no boost)
-   */
   function calculateOptimalBoostRate(
     bufferAhead,
     isSeek = false,
     connectionQuality = 1.0,
   ) {
-    // Clamp connection quality to prevent extreme rates
-    const qualityFactor = Math.min(1.3, Math.max(0.7, connectionQuality));
+    const isSlow = connectionQuality < BOOST_CONFIG.SLOW_CONNECTION_THRESHOLD;
 
-    // Critical: buffer almost empty - emergency boost
+    // CRITICAL: 0-2s
     if (bufferAhead < BOOST_CONFIG.BUFFER_CRITICAL) {
-      const baseRate = isSeek
-        ? BOOST_CONFIG.BOOST_RATE_SEEK
-        : BOOST_CONFIG.BOOST_RATE_CRITICAL;
-      // On slow connections, be more aggressive; on fast, be more conservative
-      return connectionQuality < BOOST_CONFIG.SLOW_CONNECTION_THRESHOLD
-        ? Math.min(1.8, baseRate * 1.1) // Slow connection: push harder
-        : baseRate; // Normal connection: use standard rate
+      return {
+        rate: isSeek
+          ? BOOST_CONFIG.BOOST_RATE_SEEK
+          : BOOST_CONFIG.BOOST_RATE_AGGRESSIVE,
+        level: "aggressive",
+      };
     }
 
-    // Low: buffer below comfortable threshold
+    // LOW: 2-8s
     if (bufferAhead < BOOST_CONFIG.BUFFER_LOW) {
-      const baseRate = isSeek
-        ? BOOST_CONFIG.BOOST_RATE_SEEK
-        : BOOST_CONFIG.BOOST_RATE_NORMAL;
-      return connectionQuality < BOOST_CONFIG.SLOW_CONNECTION_THRESHOLD
-        ? Math.min(1.6, baseRate * 1.05)
-        : baseRate;
+      return {
+        rate: isSeek
+          ? BOOST_CONFIG.BOOST_RATE_SEEK
+          : BOOST_CONFIG.BOOST_RATE_NORMAL,
+        level: "normal",
+      };
     }
 
-    // Approaching target: use scaled boost to avoid overshooting
+    // COMFORT: 8-15s - scale between NORMAL and GENTLE
+    if (bufferAhead < BOOST_CONFIG.BUFFER_COMFORT) {
+      const ratio =
+        (bufferAhead - BOOST_CONFIG.BUFFER_LOW) /
+        (BOOST_CONFIG.BUFFER_COMFORT - BOOST_CONFIG.BUFFER_LOW);
+      // Exponential scaling for smoother transition
+      const rate =
+        BOOST_CONFIG.BOOST_RATE_NORMAL -
+        (BOOST_CONFIG.BOOST_RATE_NORMAL - BOOST_CONFIG.BOOST_RATE_GENTLE) *
+          Math.pow(ratio, 0.7);
+      return {
+        rate: Math.max(BOOST_CONFIG.BOOST_RATE_GENTLE, rate),
+        level: "gentle",
+      };
+    }
+
+    // TARGET: 15-20s - maintenance boost
     if (bufferAhead < BOOST_CONFIG.BUFFER_TARGET) {
-      const ratio = bufferAhead / BOOST_CONFIG.BUFFER_TARGET;
-      const baseRate = isSeek
-        ? BOOST_CONFIG.BOOST_RATE_NORMAL
-        : BOOST_CONFIG.BOOST_RATE_MIN;
-      const maxRate = isSeek
-        ? BOOST_CONFIG.BOOST_RATE_SEEK
-        : BOOST_CONFIG.BOOST_RATE_NORMAL;
-
-      // Logarithmic decay as we approach target (gentler than exponential)
-      const scaledRate =
-        maxRate - (maxRate - baseRate) * Math.log10(1 + 9 * ratio);
-      const adjustedRate =
-        connectionQuality < BOOST_CONFIG.SLOW_CONNECTION_THRESHOLD
-          ? scaledRate * 1.05 // Slightly more aggressive on slow connections
-          : scaledRate;
-
-      return Math.max(
-        BOOST_CONFIG.BOOST_RATE_MIN,
-        Math.min(maxRate, adjustedRate),
-      );
+      return {
+        rate: BOOST_CONFIG.BOOST_RATE_MAINTENANCE,
+        level: "maintenance",
+      };
     }
 
-    // Buffer sufficient, no boost needed
-    return 1.0;
+    // Buffer sufficient (20s+)
+    return { rate: 1.0, level: "none" };
   }
 
   // ═══════════════════════════════════════════════════════════════
   // BOOST APPLICATION & CONTROL
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Check if we can start a new boost session
-   * @param {Object} state - Boost state
-   * @returns {boolean} True if boost can start
-   */
-  function canStartBoostSession(state) {
+  function canBoost(state, isNewSession = true) {
     const now = Date.now();
 
-    // Check max sessions
-    if (state.boostSessionCount >= BOOST_CONFIG.MAX_BOOST_SESSIONS) {
-      if (BOOST_CONFIG.DEBUG_VERBOSE) {
-        console.log(
-          `[Boost:D] Max sessions reached (${state.boostSessionCount}/${BOOST_CONFIG.MAX_BOOST_SESSIONS})`,
-        );
-      }
-      return false;
-    }
+    if (isNewSession) {
+      if (state.boostSessionCount >= BOOST_CONFIG.MAX_BOOST_SESSIONS)
+        return false;
+      if (state.totalBoostTime >= BOOST_CONFIG.MAX_TOTAL_BOOST_MS) return false;
 
-    // Check total boost time
-    if (state.totalBoostTime >= BOOST_CONFIG.MAX_TOTAL_BOOST_MS) {
-      if (BOOST_CONFIG.DEBUG_VERBOSE) {
-        console.log(
-          `[Boost:D] Max total boost time reached (${(state.totalBoostTime / 1000).toFixed(1)}s)`,
-        );
+      if (state.lastBoostEndTime > 0) {
+        const timeSinceLastSession = now - state.lastBoostEndTime;
+        if (timeSinceLastSession < BOOST_CONFIG.BOOST_SESSION_GAP) return false;
       }
-      return false;
-    }
 
-    // Check session gap (cooldown between sessions)
-    if (state.lastBoostEndTime > 0) {
-      const timeSinceLastSession = now - state.lastBoostEndTime;
-      if (timeSinceLastSession < BOOST_CONFIG.BOOST_SESSION_GAP) {
-        if (BOOST_CONFIG.DEBUG_VERBOSE) {
-          console.log(
-            `[Boost:D] Session gap active (${((BOOST_CONFIG.BOOST_SESSION_GAP - timeSinceLastSession) / 1000).toFixed(1)}s remaining)`,
-          );
-        }
+      // Check play time - but be more lenient
+      if (
+        state.totalPlayTime < BOOST_CONFIG.MIN_PLAY_TIME_FOR_BOOST &&
+        !state.isRealPlay
+      ) {
         return false;
       }
+    }
+
+    // Special case: maintenance mode can restart after delay
+    if (
+      state.maintenanceOffTime > 0 &&
+      now - state.maintenanceOffTime < BOOST_CONFIG.MAINTENANCE_RESTART_DELAY
+    ) {
+      // Allow non-maintenance boosts, but block maintenance restart
+      // This is checked in the apply function
     }
 
     return true;
   }
 
-  /**
-   * Apply forward boost to video (never slows down playback)
-   *
-   * @param {HTMLVideoElement} video - The video element to boost
-   * @param {number} targetRate - Desired playback rate (> 1.0)
-   * @param {string} reason - Reason for boost (for debugging)
-   * @returns {boolean} True if boost was applied
-   */
-  function applyForwardBoost(video, targetRate, reason = "unknown") {
-    if (!video || video.paused) {
-      if (BOOST_CONFIG.DEBUG_VERBOSE) {
-        console.log(
-          `[Boost:D] Cannot boost - ${!video ? "no video" : "video paused"} (${reason})`,
-        );
-      }
-      return false;
-    }
+  function applyForwardBoost(video, targetRate, level, reason = "unknown") {
+    if (!video || video.paused) return false;
 
     const state = getBoostState(video);
     if (!state) return false;
 
-    // Don't boost if already boosting
+    const currentRate = video.playbackRate;
+
+    // If already boosting, adjust rate if needed
     if (state.isBoosting) {
-      // But we can adjust the rate if needed (within same session)
-      const currentRate = video.playbackRate;
-      if (Math.abs(currentRate - targetRate) > 0.05) {
-        video.playbackRate = targetRate;
-        state.boostTargetRate = targetRate;
+      if (Math.abs(currentRate - targetRate) < 0.015) return true;
+
+      video.playbackRate = targetRate;
+      state.boostTargetRate = targetRate;
+      state.currentBoostLevel = level;
+
+      if (level === "maintenance") {
+        state.maintenanceMode = true;
+        state.maintenanceStartTime = Date.now();
+      }
+
+      if (BOOST_CONFIG.DEBUG_VERBOSE) {
         console.log(
-          `[Boost] 🔄 Adjusted rate: ${currentRate.toFixed(2)}x → ${targetRate.toFixed(2)}x (${reason})`,
+          `[Boost] 🔄 Adjust: ${currentRate.toFixed(2)}x → ${targetRate.toFixed(2)}x (${level})`,
         );
       }
       return true;
     }
 
-    // Check if we can start a new session
-    if (!canStartBoostSession(state)) {
-      return false;
-    }
-
-    // Don't boost if already at or above target rate
-    const currentRate = video.playbackRate;
-    if (currentRate >= targetRate - 0.01) {
-      if (BOOST_CONFIG.DEBUG_VERBOSE) {
-        console.log(
-          `[Boost:D] Already at ${currentRate.toFixed(2)}x, target ${targetRate.toFixed(2)}x (${reason})`,
-        );
+    // Check if maintenance mode can restart
+    if (level === "maintenance" && state.maintenanceOffTime > 0) {
+      const now = Date.now();
+      if (
+        now - state.maintenanceOffTime <
+        BOOST_CONFIG.MAINTENANCE_RESTART_DELAY
+      ) {
+        if (BOOST_CONFIG.DEBUG_VERBOSE) {
+          console.log(
+            `[Boost:D] Maintenance restart delayed (${((BOOST_CONFIG.MAINTENANCE_RESTART_DELAY - (now - state.maintenanceOffTime)) / 1000).toFixed(0)}s)`,
+          );
+        }
+        // Allow the boost anyway if buffer is low enough
+        if (level !== "maintenance") {
+          // Continue to boost
+        } else {
+          return false;
+        }
       }
-      return false;
     }
 
-    // Apply the boost
-    const previousRate = currentRate;
+    if (!canBoost(state, true)) return false;
+    if (currentRate >= targetRate - 0.01) return false;
+
+    // APPLY THE BOOST
     video.playbackRate = targetRate;
 
-    // Update state
     state.isBoosting = true;
     state.boostStartTime = Date.now();
     state.boostTargetRate = targetRate;
+    state.currentBoostLevel = level;
     state.boostSessionCount++;
+    state.maintenanceOffTime = 0; // Reset maintenance off timer
+
+    if (level === "maintenance") {
+      state.maintenanceMode = true;
+      state.maintenanceStartTime = Date.now();
+    }
 
     const ahead = getBufferAhead(video);
     console.log(
-      `[Boost] ⚡ Session #${state.boostSessionCount}: ${previousRate.toFixed(2)}x → ${targetRate.toFixed(2)}x | ` +
-        `${reason} | Buffer: ${ahead.toFixed(1)}s | Quality: ${state.connectionQuality.toFixed(2)}x`,
+      `[Boost] ⚡ #${state.boostSessionCount}: ${currentRate.toFixed(2)}x → ${targetRate.toFixed(2)}x | ` +
+        `${level.toUpperCase()} | ${reason} | Buffer: ${ahead.toFixed(1)}s | ` +
+        `Play: ${(state.totalPlayTime / 1000).toFixed(0)}s`,
     );
 
     return true;
   }
 
-  /**
-   * Stop boosting and restore normal playback rate
-   *
-   * @param {HTMLVideoElement} video - The video element
-   * @param {string} reason - Reason for stopping (for debugging)
-   */
   function stopForwardBoost(video, reason = "target reached") {
     if (!video) return;
 
@@ -362,95 +332,73 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     const previousRate = video.playbackRate;
     const normalRate = state.originalRate;
 
-    // Only restore if rate was changed
     if (Math.abs(previousRate - normalRate) > 0.01) {
       video.playbackRate = normalRate;
 
-      // Update tracking
       const boostDuration = Date.now() - state.boostStartTime;
       state.totalBoostTime += boostDuration;
       state.lastBoostEndTime = Date.now();
 
+      // Track maintenance off time
+      if (state.maintenanceMode) {
+        state.maintenanceOffTime = Date.now();
+      }
+
       console.log(
-        `[Boost] ⏹️ Session ended: ${previousRate.toFixed(2)}x → ${normalRate.toFixed(2)}x | ` +
+        `[Boost] ⏹️ Stopped: ${previousRate.toFixed(2)}x → ${normalRate.toFixed(2)}x | ` +
           `${reason} | Duration: ${(boostDuration / 1000).toFixed(1)}s | ` +
-          `Total: ${(state.totalBoostTime / 1000).toFixed(1)}s | ` +
-          `Sessions: ${state.boostSessionCount}`,
+          `Total: ${(state.totalBoostTime / 1000).toFixed(1)}s`,
       );
     }
 
     state.isBoosting = false;
     state.boostTargetRate = normalRate;
+    state.currentBoostLevel = "none";
+    state.maintenanceMode = false;
+    state.consecutiveShrinks = 0;
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // CONNECTION QUALITY DETECTION (IMPROVED)
+  // CONNECTION QUALITY DETECTION
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Monitor connection quality by measuring actual buffer growth rate
-   * Fixed: Properly handles negative growth (buffer shrinking)
-   *
-   * @param {HTMLVideoElement} video
-   * @param {Object} state - Boost state object
-   */
   function updateConnectionQuality(video, state) {
     if (!video || !state) return;
 
     const now = Date.now();
     const timeSinceLastCheck = now - state.lastBufferCheck;
 
-    // Only check every CONNECTION_CHECK_WINDOW
     if (timeSinceLastCheck < BOOST_CONFIG.CONNECTION_CHECK_WINDOW) return;
 
     const currentBufferAhead = getBufferAhead(video);
     const bufferGrowth = currentBufferAhead - state.lastBufferAhead;
 
-    // Calculate growth rate (can be negative if buffer is shrinking)
     const growthRate =
       timeSinceLastCheck > 0 ? bufferGrowth / (timeSinceLastCheck / 1000) : 0;
 
-    // Store last growth for debugging
     state.lastBufferGrowth = growthRate;
 
-    // Update connection quality with exponential smoothing
-    // Use absolute value for quality, but keep sign information
-    const absGrowthRate = Math.abs(growthRate);
-    const newQuality = Math.max(0.1, Math.min(2.0, absGrowthRate + 0.5)); // +0.5 baseline
+    // Track consecutive shrinks (only when actively boosting)
+    if (state.isBoosting && growthRate < -0.1) {
+      state.consecutiveShrinks++;
+    } else if (state.isBoosting && growthRate > 0.1) {
+      state.consecutiveShrinks = Math.max(0, state.consecutiveShrinks - 2);
+    } else if (!state.isBoosting) {
+      state.consecutiveShrinks = 0;
+    }
+
+    // Update connection quality with smoothing
+    const newQuality = Math.max(0.1, Math.min(2.0, Math.abs(growthRate) + 0.5));
     state.connectionQuality = state.connectionQuality * 0.7 + newQuality * 0.3;
 
-    // Update tracking
     state.lastBufferCheck = now;
     state.lastBufferAhead = currentBufferAhead;
-
-    // Log if connection seems problematic
-    if (growthRate < 0 && BOOST_CONFIG.DEBUG_VERBOSE) {
-      console.log(
-        `[Boost:D] ⚠️ Buffer shrinking: ${growthRate.toFixed(2)}s/s | ` +
-          `Ahead: ${currentBufferAhead.toFixed(1)}s | Quality: ${state.connectionQuality.toFixed(2)}x`,
-      );
-    } else if (
-      Math.abs(growthRate - state.lastBufferGrowth) > 0.5 &&
-      BOOST_CONFIG.DEBUG_VERBOSE
-    ) {
-      console.log(
-        `[Boost:D] Connection quality: ${state.connectionQuality.toFixed(2)}x | ` +
-          `Growth: ${growthRate.toFixed(2)}s/s | Ahead: ${currentBufferAhead.toFixed(1)}s`,
-      );
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // CONTINUOUS BUFFER MONITOR (IMPROVED)
+  // CONTINUOUS BUFFER MONITOR (FINAL OPTIMIZED)
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Start continuous buffer monitoring with smart forward boost
-   * Fixed: Better session management, handles initial boost properly
-   *
-   * @param {HTMLVideoElement} video
-   * @returns {Function} Cleanup function to stop monitoring
-   */
   function startContinuousBufferMonitor(video) {
     if (!video || video.dataset.continuousMonitorActive === "true") {
       return () => {};
@@ -458,24 +406,19 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
 
     video.dataset.continuousMonitorActive = "true";
 
-    // Initialize boost state
     const state = getBoostState(video);
 
     console.log(
-      `[Boost] 🚀 Monitor attached to ${video.dataset.videoObserverId || "video"} | ` +
-        `Target: ${BOOST_CONFIG.BUFFER_TARGET}s | Interval: ${BOOST_CONFIG.MONITOR_INTERVAL}ms | ` +
-        `Max sessions: ${BOOST_CONFIG.MAX_BOOST_SESSIONS}`,
+      `[Boost] 🚀 Monitor attached | Comfort: ${BOOST_CONFIG.BUFFER_COMFORT}s | ` +
+        `Target: ${BOOST_CONFIG.BUFFER_TARGET}s | Maint: ${BOOST_CONFIG.BOOST_RATE_MAINTENANCE}x`,
     );
 
-    // Store original playback rate for reference
     if (!video.__trueOriginalPlaybackRate) {
       video.__trueOriginalPlaybackRate = video.playbackRate || 1.0;
       state.originalRate = video.__trueOriginalPlaybackRate;
     }
 
-    // Main monitoring loop
     const monitorInterval = setInterval(() => {
-      // Skip if video is not actively playing
       if (typeof tabIsVisible !== "undefined" && !tabIsVisible) return;
       if (video.paused) return;
 
@@ -486,135 +429,118 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       // Update connection quality
       updateConnectionQuality(video, state);
 
-      // Periodic debug log (every 5 seconds)
+      // Update play time tracking
+      if (state.playStartTime > 0) {
+        state.totalPlayTime += BOOST_CONFIG.MONITOR_INTERVAL;
+      }
+
+      // Periodic debug log
       const now = Date.now();
       if (now - state.lastDebugTime > 5000) {
         state.lastDebugTime = now;
-        const rate = video.playbackRate;
         console.log(
-          `[Boost] 📊 Buffer: ${ahead.toFixed(1)}s | Rate: ${rate.toFixed(2)}x | ` +
-            `Boosting: ${state.isBoosting} | Quality: ${state.connectionQuality.toFixed(2)}x | ` +
-            `Sessions: ${state.boostSessionCount}/${BOOST_CONFIG.MAX_BOOST_SESSIONS} | ` +
-            `Total time: ${(state.totalBoostTime / 1000).toFixed(1)}s`,
+          `[Boost] 📊 Buffer: ${ahead.toFixed(1)}s | Rate: ${video.playbackRate.toFixed(2)}x | ` +
+            `Level: ${state.currentBoostLevel} | Sessions: ${state.boostSessionCount} | ` +
+            `Play: ${(state.totalPlayTime / 1000).toFixed(0)}s`,
         );
       }
 
-      // DECISION: Should we start boosting?
-      if (ahead < BOOST_CONFIG.BUFFER_LOW && !state.isBoosting) {
-        const optimalRate = calculateOptimalBoostRate(
-          ahead,
-          false,
-          state.connectionQuality,
-        );
+      // ============================================================
+      // PROACTIVE BUFFER MANAGEMENT
+      // ============================================================
 
-        if (optimalRate > 1.0) {
-          applyForwardBoost(video, optimalRate, "buffer low");
+      const { rate: optimalRate, level } = calculateOptimalBoostRate(
+        ahead,
+        false,
+        state.connectionQuality,
+      );
+
+      if (optimalRate > 1.0) {
+        // Need boost
+        if (!state.isBoosting) {
+          applyForwardBoost(video, optimalRate, level, `buffer ${level}`);
+        } else if (Math.abs(video.playbackRate - optimalRate) > 0.015) {
+          // Adjust existing boost
+          applyForwardBoost(video, optimalRate, level, `adjust to ${level}`);
+        }
+      } else {
+        // Buffer sufficient - stop if boosting
+        if (state.isBoosting) {
+          stopForwardBoost(video, "buffer sufficient");
         }
       }
 
-      // DECISION: Should we stop boosting?
+      // SAFETY CHECKS (only when boosting)
       if (state.isBoosting) {
-        // Stop if target reached
-        if (ahead >= BOOST_CONFIG.BUFFER_TARGET) {
-          stopForwardBoost(video, "target reached");
-        }
-        // Stop if duration exceeded (safety)
-        else if (now - state.boostStartTime > BOOST_CONFIG.BOOST_DURATION) {
+        // Duration limit
+        if (now - state.boostStartTime > BOOST_CONFIG.BOOST_DURATION) {
           console.log(
-            `[Boost] ⚠️ Duration exceeded ${(BOOST_CONFIG.BOOST_DURATION / 1000).toFixed(1)}s`,
+            `[Boost] ⚠️ Max duration (${BOOST_CONFIG.BOOST_DURATION / 1000}s)`,
           );
           stopForwardBoost(video, "duration exceeded");
         }
-        // Stop if buffer is shrinking (connection too slow for boost to help)
-        else if (
-          state.lastBufferGrowth < -0.3 &&
-          now - state.boostStartTime > 3000
-        ) {
-          console.log(`[Boost] ⚠️ Buffer shrinking despite boost, pausing`);
+        // Buffer shrinking persistently
+        else if (state.consecutiveShrinks >= BOOST_CONFIG.SHRINK_TOLERANCE) {
+          console.log(
+            `[Boost] ⚠️ Buffer shrinking (${state.consecutiveShrinks})`,
+          );
           stopForwardBoost(video, "buffer shrinking");
+        }
+        // Maintenance mode too long
+        else if (
+          state.maintenanceMode &&
+          now - state.maintenanceStartTime >
+            BOOST_CONFIG.MAINTENANCE_MAX_DURATION
+        ) {
+          console.log(
+            `[Boost] ⚠️ Maintenance cycle (${BOOST_CONFIG.MAINTENANCE_MAX_DURATION / 1000}s)`,
+          );
+          stopForwardBoost(video, "maintenance cycle");
         }
       }
 
-      // SAFETY: Ensure rate never drops below 1.0
+      // Safety: rate never below 1.0
       if (video.playbackRate < 0.99 && !state.isBoosting) {
-        console.warn(
-          `[Boost] ⚠️ Unexpected low rate ${video.playbackRate.toFixed(2)}x, restoring to 1.0x`,
-        );
         video.playbackRate = state.originalRate;
       }
     }, BOOST_CONFIG.MONITOR_INTERVAL);
 
-    // Store monitor reference
     state.monitorInterval = monitorInterval;
 
-    // Return cleanup function
     return () => {
       clearInterval(monitorInterval);
       state.monitorInterval = null;
       delete video.dataset.continuousMonitorActive;
-      console.log(
-        `[Boost] 📴 Monitor detached from ${video.dataset.videoObserverId || "video"}`,
-      );
     };
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // SEEK BOOST HANDLER (IMPROVED)
+  // SEEK BOOST HANDLER
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Handle buffer boost after seeking
-   * Fixed: Respects session limits, better rate calculation
-   *
-   * @param {HTMLVideoElement} video
-   */
   function boostBufferAfterSeek(video) {
     if (!video || video.paused) return;
-
-    // Check tab visibility if available
     if (typeof tabIsVisible !== "undefined" && !tabIsVisible) return;
 
     const state = getBoostState(video);
     if (!state) return;
 
-    // Clear any existing debounce timer
-    if (state.seekDebounceTimer) {
-      clearTimeout(state.seekDebounceTimer);
-    }
+    if (state.seekDebounceTimer) clearTimeout(state.seekDebounceTimer);
 
-    // Debounce: wait for seeks to settle before boosting
     state.seekDebounceTimer = setTimeout(() => {
       const ahead = getBufferAhead(video);
-      const effectiveRatio = getEffectiveBufferRatio(video);
 
-      console.log(
-        `[Boost] 🎯 Seek settled | Buffer: ${ahead.toFixed(1)}s | ` +
-          `Ratio: ${effectiveRatio.toFixed(2)} | Quality: ${state.connectionQuality.toFixed(2)}x`,
-      );
+      console.log(`[Boost] 🎯 Seek settled | Buffer: ${ahead.toFixed(1)}s`);
 
-      // Only boost if buffer is significantly below target
-      if (ahead < BOOST_CONFIG.BUFFER_TARGET) {
-        // Use more aggressive rate for seek recovery
-        const seekRate =
-          effectiveRatio < BOOST_CONFIG.SEEK_MIN_EFFECTIVE_RATIO
-            ? BOOST_CONFIG.BOOST_RATE_SEEK
-            : calculateOptimalBoostRate(ahead, true, state.connectionQuality);
+      if (ahead < BOOST_CONFIG.BUFFER_COMFORT) {
+        const { rate, level } = calculateOptimalBoostRate(
+          ahead,
+          true,
+          state.connectionQuality,
+        );
 
-        if (seekRate > 1.0 && canStartBoostSession(state)) {
-          applyForwardBoost(video, seekRate, "seek recovery");
-
-          // Set a timeout to re-evaluate after seek boost
-          if (state.boostTimeout) clearTimeout(state.boostTimeout);
-          state.boostTimeout = setTimeout(() => {
-            const currentAhead = getBufferAhead(video);
-            if (currentAhead >= BOOST_CONFIG.BUFFER_TARGET) {
-              stopForwardBoost(video, "seek boost complete");
-            }
-          }, BOOST_CONFIG.BOOST_DURATION);
-        } else if (BOOST_CONFIG.DEBUG_VERBOSE) {
-          console.log(
-            `[Boost:D] Seek boost skipped - rate: ${seekRate.toFixed(2)}x, can start: ${canStartBoostSession(state)}`,
-          );
+        if (rate > 1.0) {
+          applyForwardBoost(video, rate, level, "seek recovery");
         }
       }
 
@@ -626,31 +552,23 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
   // CLEANUP FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Complete cleanup of boost state for a video
-   * @param {HTMLVideoElement} video
-   */
   function cleanupBoost(video) {
     if (!video) return;
 
     const state = boostTimers.get(video);
     if (state) {
-      // Clear all timers
       if (state.monitorInterval) clearInterval(state.monitorInterval);
       if (state.boostTimeout) clearTimeout(state.boostTimeout);
       if (state.seekDebounceTimer) clearTimeout(state.seekDebounceTimer);
 
-      // Restore normal playback rate if boosting
       if (state.isBoosting) {
-        console.log(`[Boost] Restoring rate during cleanup`);
         video.playbackRate = state.originalRate;
       }
 
       boostTimers.delete(video);
     }
 
-    // Clean up data attributes
-    const attrsToDelete = [
+    [
       "__trueOriginalPlaybackRate",
       "__originalPlaybackRate",
       "__boostTargetRate",
@@ -661,22 +579,13 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       "__lastSeekTime",
       "__lastPlayTime",
       "__boostState",
-    ];
-
-    attrsToDelete.forEach((attr) => {
-      delete video[attr];
-    });
+    ].forEach((attr) => delete video[attr]);
 
     delete video.dataset.continuousMonitorActive;
     delete video.dataset.boostAttached;
   }
 
-  /**
-   * Cleanup preview boost (kept for API compatibility)
-   * @param {HTMLVideoElement} previewVideo
-   */
   function cleanupPreviewBoost(previewVideo) {
-    // Preview boost disabled - chunk previews handle their own buffering
     if (previewVideo) {
       delete previewVideo.__previewOriginalRate;
       delete previewVideo.__previewBoostActive;
@@ -684,26 +593,14 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     }
   }
 
-  /**
-   * Preview boost (kept for API compatibility)
-   * @param {HTMLVideoElement} previewVideo
-   * @returns {Function} No-op cleanup
-   */
   function boostPreviewBuffer(previewVideo) {
     return () => {};
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // MAIN BOOST ATTACHMENT (IMPROVED)
+  // MAIN BOOST ATTACHMENT
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Attach buffer boost system to a video element
-   * Fixed: Initial boost only triggers on first actual play, not on preload
-   *
-   * @param {HTMLVideoElement} video - The video element to boost
-   * @returns {Function} Cleanup function to detach boost
-   */
   function attachBoostToVideo(video) {
     if (!video || video.dataset.boostAttached === "true") {
       return () => {};
@@ -712,172 +609,145 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     video.dataset.boostAttached = "true";
 
     const videoId = video.dataset.videoObserverId || "unknown";
-    console.log(`[Boost] 🔗 Attaching to ${videoId}`);
+    console.log(`[Boost] 🔗 Attached to ${videoId}`);
 
-    // Start continuous buffer monitor
     const stopMonitor = startContinuousBufferMonitor(video);
 
-    // Event handlers
-    const onSeeking = () => {
-      video.__lastSeekTime = Date.now();
-
-      // Stop any active boost during seek to prevent issues
-      const state = boostTimers.get(video);
-      if (state?.isBoosting) {
-        stopForwardBoost(video, "seek started");
-      }
-
-      if (BOOST_CONFIG.DEBUG_VERBOSE) {
-        console.log(
-          `[Boost:D] Seek started at ${video.currentTime.toFixed(1)}s`,
-        );
-      }
-    };
-
-    const onSeeked = () => {
-      video.__lastSeekTime = Date.now();
-
-      if (typeof tabIsVisible === "undefined" || tabIsVisible) {
-        if (BOOST_CONFIG.DEBUG_VERBOSE) {
-          console.log(
-            `[Boost:D] Seek completed at ${video.currentTime.toFixed(1)}s`,
-          );
-        }
-        boostBufferAfterSeek(video);
-      }
-    };
-
     const onPlay = () => {
-      const ahead = getBufferAhead(video);
-      const state = boostTimers.get(video);
+      const state = getBoostState(video);
+      if (!state) return;
 
+      state.playStartTime = Date.now();
       video.__lastPlayTime = Date.now();
 
-      if (BOOST_CONFIG.DEBUG_VERBOSE) {
-        console.log(
-          `[Boost:D] Play event | Buffer: ${ahead.toFixed(1)}s | ` +
-            `Rate: ${video.playbackRate.toFixed(2)}x`,
-        );
-      }
+      // Detect if this is a real user play (not BufferManager preload)
+      const isBufferManager = video.dataset.bufferManagerBuffering === "true";
+      const isChunkLoop = video.dataset.chunkLoopActive === "true";
+      state.isRealPlay = !isBufferManager && !isChunkLoop;
 
-      // INITIAL BOOST: Only on first real play, not on buffer preloads
+      const ahead = getBufferAhead(video);
+
+      // Initial boost on first real play
       if (
         !state.hasInitialBoosted &&
-        ahead < BOOST_CONFIG.BUFFER_LOW &&
-        !video.dataset.bufferManagerBuffering
+        state.isRealPlay &&
+        ahead < BOOST_CONFIG.BUFFER_COMFORT
       ) {
         state.hasInitialBoosted = true;
-        console.log(`[Boost] 🆕 Initial buffer boost for ${videoId}`);
+        // Set minimum play time so boost can start immediately
+        state.totalPlayTime = Math.max(
+          state.totalPlayTime,
+          BOOST_CONFIG.MIN_PLAY_TIME_FOR_BOOST,
+        );
 
+        console.log(`[Boost] 🆕 Initial boost for ${videoId}`);
         applyForwardBoost(
           video,
           BOOST_CONFIG.BOOST_RATE_NORMAL,
-          "initial load",
+          "normal",
+          "initial play",
         );
       }
 
-      // Safety: ensure normal rate if not actively boosting
-      if (!state?.isBoosting) {
+      // Safety check
+      if (!state.isBoosting) {
         const trueOriginal = video.__trueOriginalPlaybackRate || 1.0;
         if (Math.abs(video.playbackRate - trueOriginal) > 0.01) {
-          console.warn(
-            `[Boost] ⚠️ Unexpected rate ${video.playbackRate.toFixed(2)}x, ` +
-              `restoring to ${trueOriginal.toFixed(2)}x`,
-          );
           video.playbackRate = trueOriginal;
         }
       }
     };
 
     const onPause = () => {
-      const state = boostTimers.get(video);
-      if (state?.isBoosting) {
-        stopForwardBoost(video, "playback paused");
+      const state = getBoostState(video);
+      if (!state) return;
+
+      // Update play time
+      if (state.playStartTime > 0) {
+        state.totalPlayTime += Date.now() - state.playStartTime;
+        state.playStartTime = 0;
       }
 
-      if (BOOST_CONFIG.DEBUG_VERBOSE) {
-        console.log(`[Boost:D] Pause event`);
+      if (state.isBoosting) {
+        stopForwardBoost(video, "paused");
       }
     };
 
-    // Attach event listeners
-    video.addEventListener("seeking", onSeeking);
-    video.addEventListener("seeked", onSeeked);
+    const onSeeking = () => {
+      video.__lastSeekTime = Date.now();
+      const state = getBoostState(video);
+      if (state?.isBoosting) {
+        stopForwardBoost(video, "seeking");
+      }
+    };
+
+    const onSeeked = () => {
+      video.__lastSeekTime = Date.now();
+      if (typeof tabIsVisible === "undefined" || tabIsVisible) {
+        boostBufferAfterSeek(video);
+      }
+    };
+
+    const onEnded = () => {
+      const state = getBoostState(video);
+      if (state?.isBoosting) {
+        stopForwardBoost(video, "ended");
+      }
+    };
+
     video.addEventListener("play", onPlay);
     video.addEventListener("pause", onPause);
+    video.addEventListener("seeking", onSeeking);
+    video.addEventListener("seeked", onSeeked);
+    video.addEventListener("ended", onEnded);
 
-    // Return cleanup function
     return () => {
-      console.log(`[Boost] 🔌 Detaching from ${videoId}`);
+      console.log(`[Boost] 🔌 Detached from ${videoId}`);
 
-      // Stop the monitor
       stopMonitor();
-
-      // Complete cleanup
       cleanupBoost(video);
 
-      // Remove event listeners
-      video.removeEventListener("seeking", onSeeking);
-      video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("play", onPlay);
       video.removeEventListener("pause", onPause);
+      video.removeEventListener("seeking", onSeeking);
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("ended", onEnded);
 
-      // Clean up data attributes
-      const attrsToDelete = [
+      [
         "boostAttached",
         "__lastSeekTime",
         "__lastPlayTime",
         "__trueOriginalPlaybackRate",
         "__hasBoostedOnLoad",
-      ];
-
-      attrsToDelete.forEach((attr) => {
-        if (attr.startsWith("__")) {
-          delete video[attr];
-        } else {
-          delete video.dataset[attr];
-        }
+      ].forEach((attr) => {
+        if (attr.startsWith("__")) delete video[attr];
+        else delete video.dataset[attr];
       });
     };
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // GLOBAL API - Expose to other scripts
+  // GLOBAL API
   // ═══════════════════════════════════════════════════════════════
 
-  // Make boost functions available globally for content.js
   window.BoostEngine = {
-    // Core functions
     attachBoostToVideo,
     cleanupBoost,
     getBufferAhead,
     getEffectiveBufferRatio,
-
-    // Monitor control
     startContinuousBufferMonitor,
-
-    // Seek handling
     boostBufferAfterSeek,
-
-    // Preview (disabled but API preserved)
     boostPreviewBuffer,
     cleanupPreviewBoost,
-
-    // Configuration (read-only)
     config: BOOST_CONFIG,
-
-    // Debug utilities
     getBoostState,
-    getActiveVideos: () => {
-      // Note: WeakMap can't be iterated, but we can check known videos
-      return "Use getBoostState(video) for individual videos";
-    },
   };
 
-  console.log("[Boost] ✅ Engine initialized - Forward boost ready (v2.0)");
+  console.log("[Boost] ✅ v2.3 Ready - Proactive buffer maintenance");
   console.log(
-    `[Boost] Config: Target=${BOOST_CONFIG.BUFFER_TARGET}s, ` +
-      `Normal=${BOOST_CONFIG.BOOST_RATE_NORMAL}x, Critical=${BOOST_CONFIG.BOOST_RATE_CRITICAL}x, ` +
-      `Seek=${BOOST_CONFIG.BOOST_RATE_SEEK}x, Sessions=${BOOST_CONFIG.MAX_BOOST_SESSIONS}`,
+    `[Boost] Strategy: Critical<${BOOST_CONFIG.BUFFER_CRITICAL}s | Low<${BOOST_CONFIG.BUFFER_LOW}s | Comfort<${BOOST_CONFIG.BUFFER_COMFORT}s | Target=${BOOST_CONFIG.BUFFER_TARGET}s`,
+  );
+  console.log(
+    `[Boost] Rates: Maint=${BOOST_CONFIG.BOOST_RATE_MAINTENANCE}x | Gentle=${BOOST_CONFIG.BOOST_RATE_GENTLE}x | Normal=${BOOST_CONFIG.BOOST_RATE_NORMAL}x | Aggressive=${BOOST_CONFIG.BOOST_RATE_AGGRESSIVE}x | Seek=${BOOST_CONFIG.BOOST_RATE_SEEK}x`,
   );
 }
