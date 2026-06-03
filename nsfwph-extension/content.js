@@ -1789,7 +1789,6 @@ function createFloatingPanel() {
 
 function createVideoOverlay() {
   if (document.getElementById("vo-overlay")) return;
-
   const overlay = document.createElement("div");
   overlay.id = "vo-overlay";
   overlay.innerHTML = `
@@ -1808,6 +1807,7 @@ function createVideoOverlay() {
         </div>
         <div id="vo-scrubber-wrap">
           <div id="vo-scrubber-track">
+            <div id="vo-scrubber-buffered"></div>
             <div id="vo-scrubber-fill"></div>
             <div id="vo-scrubber-thumb"></div>
           </div>
@@ -1823,14 +1823,12 @@ function createVideoOverlay() {
       </div>
     </div>
   `;
-
   document.body.appendChild(overlay);
 
   // Close on scrim click
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) closeVideoOverlay();
   });
-
   document
     .getElementById("vo-close")
     .addEventListener("click", closeVideoOverlay);
@@ -1850,7 +1848,6 @@ function createVideoOverlay() {
     const size = btn.dataset.size;
     const player = document.getElementById("vo-player");
     player.dataset.size = size;
-    // Update active state
     document.querySelectorAll(".vo-size-btn").forEach((b) => {
       b.classList.toggle("active", b.dataset.size === size);
     });
@@ -1907,7 +1904,7 @@ function createVideoOverlay() {
     }
   });
 
-  console.log("[Overlay] Overlay DOM created");
+  console.log("[Overlay] Overlay DOM created (with buffered scrubber)");
 }
 
 function showVideoOverlay(videoEl, entry) {
@@ -2038,20 +2035,27 @@ function _attachOverlayVideoListeners(videoEl, overlay) {
     timeEl.textContent = `${fmtTime(videoEl.currentTime)} / ${fmtTime(videoEl.duration)}`;
   };
 
+  // ─── NEW: Update buffered regions on progress events ───
+  const onProgress = () => {
+    updateBufferedScrubber(videoEl);
+  };
+
   const onPlayPause = () => {
     playPauseBtn.textContent = videoEl.paused ? "▶ Play" : "⏸ Pause";
     playPauseBtn.classList.toggle("active", !videoEl.paused);
   };
 
   videoEl.addEventListener("timeupdate", onTimeUpdate);
+  videoEl.addEventListener("progress", onProgress); // ← NEW
   videoEl.addEventListener("play", onPlayPause);
   videoEl.addEventListener("pause", onPlayPause);
 
   // Store refs for cleanup
-  overlay._listenerRefs = { onTimeUpdate, onPlayPause, videoEl };
+  overlay._listenerRefs = { onTimeUpdate, onProgress, onPlayPause, videoEl };
 
   // Fire once to set initial state
   onTimeUpdate();
+  updateBufferedScrubber(videoEl); // ← NEW: initial buffer draw
   onPlayPause();
 }
 
@@ -2059,15 +2063,94 @@ function _detachOverlayVideoListeners(videoEl, overlay) {
   if (!overlay._listenerRefs) return;
   const {
     onTimeUpdate,
+    onProgress,
     onPlayPause,
     videoEl: boundVid,
   } = overlay._listenerRefs;
   if (boundVid) {
     boundVid.removeEventListener("timeupdate", onTimeUpdate);
+    boundVid.removeEventListener("progress", onProgress); // ← NEW
     boundVid.removeEventListener("play", onPlayPause);
     boundVid.removeEventListener("pause", onPlayPause);
   }
   delete overlay._listenerRefs;
+
+  // Clear buffered display
+  const bufferedContainer = document.getElementById("vo-scrubber-buffered");
+  if (bufferedContainer) {
+    bufferedContainer.innerHTML = "";
+  }
+}
+
+/**
+ * Updates the buffered-regions visualization on the scrubber track.
+ *
+ * Reads video.buffered (TimeRanges) and creates positioned segments
+ * showing which portions of the video have been downloaded.
+ *
+ * Called from the timeupdate handler and on 'progress' events.
+ */
+function updateBufferedScrubber(videoEl) {
+  const bufferedContainer = document.getElementById("vo-scrubber-buffered");
+  if (!bufferedContainer) return;
+
+  // Clear previous segments
+  bufferedContainer.innerHTML = "";
+
+  if (
+    !videoEl ||
+    !videoEl.duration ||
+    !videoEl.buffered ||
+    !videoEl.buffered.length
+  ) {
+    // No buffer data available yet — leave empty
+    return;
+  }
+
+  const duration = videoEl.duration;
+  if (!isFinite(duration) || duration <= 0) return;
+
+  // Build a fragment with all buffer segments
+  const fragment = document.createDocumentFragment();
+
+  for (let i = 0; i < videoEl.buffered.length; i++) {
+    const start = videoEl.buffered.start(i);
+    const end = videoEl.buffered.end(i);
+
+    // Skip ranges that are effectively empty
+    if (end - start < 0.1) continue;
+
+    const leftPercent = (start / duration) * 100;
+    const widthPercent = ((end - start) / duration) * 100;
+
+    // Clamp to valid range
+    const clampedLeft = Math.max(0, Math.min(100, leftPercent));
+    const clampedWidth = Math.max(0, Math.min(100 - clampedLeft, widthPercent));
+
+    if (clampedWidth <= 0) continue;
+
+    const segment = document.createElement("div");
+    segment.className = "vo-buffer-segment";
+    segment.style.left = clampedLeft + "%";
+    segment.style.width = clampedWidth + "%";
+
+    // Add tooltip showing the buffered time range
+    segment.title = `Buffered: ${fmtTimeBuffer(start)} – ${fmtTimeBuffer(end)}`;
+
+    fragment.appendChild(segment);
+  }
+
+  bufferedContainer.appendChild(fragment);
+}
+
+/**
+ * Formats seconds into m:ss for buffer tooltips.
+ */
+function fmtTimeBuffer(s) {
+  if (!isFinite(s) || s < 0) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
 // ═══════════════════════════════════════════════════════════════
