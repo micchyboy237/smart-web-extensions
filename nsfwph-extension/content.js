@@ -157,16 +157,12 @@ const ChunkCacheDB = {
         request.onsuccess = () => {
           const entry = request.result;
           if (!entry) {
-            console.log(
-              `[ChunkCacheDB] Cache miss for ${videoSrc.substring(0, 60)}...`,
-            );
+            console.log(`[ChunkCacheDB] Cache miss for ${videoSrc}`);
             resolve(null);
             return;
           }
           if (Date.now() - entry.timestamp > this.MAX_AGE_MS) {
-            console.log(
-              `[ChunkCacheDB] Cache expired for ${videoSrc.substring(0, 60)}...`,
-            );
+            console.log(`[ChunkCacheDB] Cache expired for ${videoSrc}`);
             try {
               store.delete(videoSrc);
             } catch (err) {
@@ -183,7 +179,7 @@ const ChunkCacheDB = {
             /* silent */
           }
           console.log(
-            `[ChunkCacheDB] Cache hit for ${videoSrc.substring(0, 60)}... (accessed ${entry.accessCount} times)`,
+            `[ChunkCacheDB] Cache hit for ${videoSrc} (accessed ${entry.accessCount} times)`,
           );
           resolve({ chunks: entry.chunks, duration: entry.duration });
         };
@@ -237,7 +233,7 @@ const ChunkCacheDB = {
         const request = store.put(entry);
         request.onsuccess = () => {
           console.log(
-            `[ChunkCacheDB] Cached ${chunks.length} chunks for ${videoSrc.substring(0, 60)}...`,
+            `[ChunkCacheDB] Cached ${chunks.length} chunks for ${videoSrc}`,
           );
           resolve();
         };
@@ -291,7 +287,7 @@ const ChunkCacheDB = {
           const cursor = event.target.result;
           if (cursor && evicted < count) {
             console.log(
-              `[ChunkCacheDB] Evicting cached entry for ${cursor.value.videoSrc.substring(0, 60)}...`,
+              `[ChunkCacheDB] Evicting cached entry for ${cursor.value.videoSrc}`,
             );
             cursor.delete();
             evicted++;
@@ -329,7 +325,7 @@ const ChunkCacheDB = {
           if (cursor) {
             if (now - cursor.value.timestamp > this.MAX_AGE_MS) {
               console.log(
-                `[ChunkCacheDB] Removing expired cache for ${cursor.value.videoSrc.substring(0, 60)}...`,
+                `[ChunkCacheDB] Removing expired cache for ${cursor.value.videoSrc}`,
               );
               cursor.delete();
               cleaned++;
@@ -432,23 +428,17 @@ const ChunkCache = {
     }
     if (this.memoryCache.has(videoSrc)) {
       const entry = this.memoryCache.get(videoSrc);
-      console.log(
-        `[ChunkCache] L1 memory cache hit for ${videoSrc.substring(0, 60)}...`,
-      );
+      console.log(`[ChunkCache] L1 memory cache hit for ${videoSrc}`);
       return entry;
     }
-    console.log(
-      `[ChunkCache] L1 miss, checking L2 IndexedDB for ${videoSrc.substring(0, 60)}...`,
-    );
+    console.log(`[ChunkCache] L1 miss, checking L2 IndexedDB for ${videoSrc}`);
     const dbEntry = await ChunkCacheDB.get(videoSrc);
     if (dbEntry) {
       this.promoteToMemory(videoSrc, dbEntry);
       console.log(`[ChunkCache] Promoted to L1 cache from IndexedDB`);
       return dbEntry;
     }
-    console.log(
-      `[ChunkCache] Cache miss (both L1 and L2) for ${videoSrc.substring(0, 60)}...`,
-    );
+    console.log(`[ChunkCache] Cache miss (both L1 and L2) for ${videoSrc}`);
     return null;
   },
 
@@ -1815,7 +1805,7 @@ function trackVideo(video) {
   }
   log(`New video detected`, {
     id,
-    srcShort: (video.currentSrc || "").substring(0, 80) + "...",
+    srcShort: video.currentSrc || "",
   });
   entry.boostCleanup = attachBoostToVideo(video);
   const startPreview = () => {
@@ -1970,12 +1960,6 @@ function createVideoOverlay() {
             <button class="vo-size-btn" data-size="l">L</button>
           </div>
         </div>
-        <div id="vo-scrubber-wrap">
-          <div id="vo-scrubber-track">
-            <div id="vo-scrubber-fill"></div>
-            <div id="vo-scrubber-thumb"></div>
-          </div>
-        </div>
         <div id="vo-bottom-row">
           <span id="vo-time">0:00 / 0:00</span>
           <div id="vo-btn-row">
@@ -2021,19 +2005,6 @@ function createVideoOverlay() {
     console.log(`[Overlay] Size mode → ${size}`);
   });
 
-  // Scrubber seek
-  const scrubberWrap = document.getElementById("vo-scrubber-wrap");
-  scrubberWrap.addEventListener("click", (e) => {
-    const video = overlay._currentVideo;
-    if (!video || !video.duration) return;
-    const rect = scrubberWrap.getBoundingClientRect();
-    const ratio = Math.max(
-      0,
-      Math.min(1, (e.clientX - rect.left) / rect.width),
-    );
-    video.currentTime = ratio * video.duration;
-  });
-
   // Play/pause toggle
   document.getElementById("vo-playpause").addEventListener("click", () => {
     const video = overlay._currentVideo;
@@ -2075,8 +2046,7 @@ function createVideoOverlay() {
 }
 
 function showVideoOverlay(videoEl, entry) {
-  createVideoOverlay(); // no-op if already exists
-
+  createVideoOverlay();
   const overlay = document.getElementById("vo-overlay");
   const videoWrap = document.getElementById("vo-video-wrap");
   const title = document.getElementById("vo-title");
@@ -2084,7 +2054,6 @@ function showVideoOverlay(videoEl, entry) {
   // Detach any previous video from overlay first
   const existing = videoWrap.querySelector("video");
   if (existing && existing !== videoEl) {
-    // Return it to its original spot (we stored the original parent)
     _returnVideoToOriginalParent(existing);
   }
 
@@ -2109,7 +2078,70 @@ function showVideoOverlay(videoEl, entry) {
   overlay._currentVideo = videoEl;
   overlay._currentEntry = entry;
 
-  // Show with transition
+  // ═══════════════════════════════════════════════════════════════
+  // TIMELINE PREVIEWS — FIXED CACHE KEY
+  // ═══════════════════════════════════════════════════════════════
+  const timelineContainer = document.getElementById("vo-timeline-previews");
+  const timelineRow = timelineContainer?.querySelector(
+    ".timeline-previews-row",
+  );
+
+  // 🔧 FIX: Use validatedCacheKey from entry if available, otherwise clean the src
+  // The validatedCacheKey is already stripped of query params and consistent
+  let cacheKey;
+  if (entry.validatedCacheKey) {
+    // Use the pre-computed validated key (matches what chunk cache uses)
+    cacheKey = entry.validatedCacheKey;
+    console.log(`[Overlay:D] Using entry.validatedCacheKey: ${cacheKey}`);
+  } else {
+    // Fallback: clean the currentSrc/src manually
+    const rawSrc = videoEl.currentSrc || videoEl.src || "";
+    cacheKey = rawSrc
+      .replace(/([?&])preview=1(&|$)/, "$1")
+      .replace(/[?&]$/, "");
+    console.log(`[Overlay:D] Fallback cacheKey from src: ${cacheKey}`);
+  }
+
+  if (window.TimelinePreviews) {
+    console.log(
+      `[Overlay] Attaching timeline previews for ${entry.id} (key: ${cacheKey})`,
+    );
+
+    // Create safe reference object
+    const safeVideoRef = {
+      sourceUrl: videoEl.currentSrc || videoEl.src || "",
+      duration: videoEl.duration || 0,
+      cacheKey: cacheKey,
+      seekTo: (timestamp) => {
+        if (overlay._currentVideo === videoEl) {
+          videoEl.currentTime = timestamp;
+        }
+      },
+      isActive: () =>
+        overlay._currentVideo === videoEl &&
+        overlay.classList.contains("visible"),
+    };
+
+    window.TimelinePreviews.softAttach(safeVideoRef, {
+      numPreviews: 6,
+      thumbWidth: 120,
+      thumbHeight: 68,
+      existingContainer: timelineContainer,
+      existingRow: timelineRow,
+    })
+      .then((control) => {
+        overlay._timelineCleanup = control.cleanup;
+        overlay._timelineCacheKey = cacheKey;
+        console.log(`[Overlay] Timeline previews ready for ${entry.id}`);
+      })
+      .catch((err) => {
+        console.warn("[Overlay] Failed to generate timeline previews:", err);
+      });
+  } else {
+    console.warn("[Overlay] TimelinePreviews module not loaded");
+  }
+
+  // Show overlay with transition
   requestAnimationFrame(() => {
     overlay.classList.add("visible");
   });
@@ -2122,12 +2154,33 @@ function closeVideoOverlay() {
   if (!overlay) return;
 
   const video = overlay._currentVideo;
+
+  // ═══════════════════════════════════════════════════════════════
+  // TIMELINE PREVIEWS — Soft detach (preserves cache for reuse)
+  // ═══════════════════════════════════════════════════════════════
+  if (overlay._timelineCleanup) {
+    // SOFT cleanup: removes DOM elements but KEEPS thumbnails in memory
+    overlay._timelineCleanup(false); // ← FALSE = soft, preserve cache
+    overlay._timelineCleanup = null;
+  }
+
+  // Reset container visibility (don't destroy — it'll be reused)
+  const timelineContainer = document.getElementById("vo-timeline-previews");
+  if (timelineContainer) {
+    timelineContainer.style.display = "none";
+    const timelineRow = timelineContainer.querySelector(
+      ".timeline-previews-row",
+    );
+    if (timelineRow) {
+      timelineRow.innerHTML = "";
+    }
+  }
+
   overlay.classList.remove("visible");
 
-  // Wait for transition to finish before moving the video back
+  // Wait for transition
   const onTransitionEnd = () => {
     overlay.removeEventListener("transitionend", onTransitionEnd);
-
     if (video) {
       _detachOverlayVideoListeners(video, overlay);
       _returnVideoToOriginalParent(video);
@@ -2135,17 +2188,15 @@ function closeVideoOverlay() {
       overlay._currentEntry = null;
     }
   };
-
   overlay.addEventListener("transitionend", onTransitionEnd, { once: true });
 
-  // Fallback in case transition doesn't fire (e.g. overlay hidden)
   setTimeout(() => {
     if (overlay._currentVideo === video) {
       onTransitionEnd();
     }
   }, 400);
 
-  console.log("[Overlay] Closed");
+  console.log("[Overlay] Closed (timeline cache preserved)");
 }
 
 function isOverlayShowingVideo(videoEl) {
@@ -2181,8 +2232,6 @@ function _attachOverlayVideoListeners(videoEl, overlay) {
   // Clean up any existing listeners first
   _detachOverlayVideoListeners(videoEl, overlay);
 
-  const fill = document.getElementById("vo-scrubber-fill");
-  const thumb = document.getElementById("vo-scrubber-thumb");
   const timeEl = document.getElementById("vo-time");
   const playPauseBtn = document.getElementById("vo-playpause");
 
@@ -2190,15 +2239,10 @@ function _attachOverlayVideoListeners(videoEl, overlay) {
     if (!isFinite(s)) return "0:00";
     const m = Math.floor(s / 60);
     const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, "0")}`;
+    return `${m}:${String(sec).padStart(2, "0")}`;
   }
 
   const onTimeUpdate = () => {
-    const pct = videoEl.duration
-      ? (videoEl.currentTime / videoEl.duration) * 100
-      : 0;
-    fill.style.width = `${pct}%`;
-    thumb.style.left = `${pct}%`;
     timeEl.textContent = `${fmtTime(videoEl.currentTime)} / ${fmtTime(videoEl.duration)}`;
   };
 
@@ -2294,9 +2338,14 @@ function onTabHidden() {
   log("Tab hidden — pausing everything");
   stopAllPreviewLoops();
   stopAllBoosts();
-
-  // 🔧 NEW: Release ALL video buffers to free RAM
   BufferManager.onTabHidden();
+
+  // ═══════════════════════════════════════════════════════════
+  // HARD cleanup of timeline previews when tab loses focus
+  // ═══════════════════════════════════════════════════════════
+  if (window.TimelinePreviews) {
+    window.TimelinePreviews.hardDetachAll();
+  }
 
   if (currentlyPlaying) {
     currentlyPlaying.pause();
@@ -2316,8 +2365,6 @@ function onTabVisible() {
   log("Tab visible — resuming everything");
   restartAllPreviewLoops();
   restartAllBoosts();
-
-  // 🔧 NEW: Restore buffers only for visible previews
   BufferManager.onTabVisible();
 
   if (pollingInterval === null) {
