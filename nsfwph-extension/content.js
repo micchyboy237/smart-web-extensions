@@ -930,214 +930,33 @@ const BufferManager = {
   },
 };
 
-// ═══════════════════════════════════════════════════════════════
-// BUFFER BOOST FUNCTIONS
-// ═══════════════════════════════════════════════════════════════
+// Legacy compatibility wrappers (if any code still references old function names)
 function getBufferAhead(video) {
-  if (!video.buffered || !video.buffered.length) return 0;
-  const ahead =
-    video.buffered.end(video.buffered.length - 1) - video.currentTime;
-  return ahead < 0 ? 0 : ahead;
+  return window.BoostEngine?.getBufferAhead(video) || 0;
 }
 
-function getEffectiveBufferRatio(video) {
-  if (!video.buffered || !video.buffered.length) return 0;
-  let totalBuffered = 0;
-  for (let i = 0; i < video.buffered.length; i++) {
-    totalBuffered += video.buffered.end(i) - video.buffered.start(i);
-  }
-  const ahead = getBufferAhead(video);
-  return totalBuffered > 0 ? Math.min(1, ahead / totalBuffered) : 1;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// CLEANUP FUNCTIONS (updated to handle continuous monitor)
-// ═══════════════════════════════════════════════════════════════
 function cleanupBoost(video) {
-  if (!video) return;
-
-  // Clean up continuous monitor
-  const timers = boostTimers.get(video);
-  if (timers) {
-    if (timers.monitorInterval) clearInterval(timers.monitorInterval);
-    if (timers.boostTimeout) clearTimeout(timers.boostTimeout);
-    boostTimers.delete(video);
-  }
-
-  // Clean up all stored state WITHOUT changing playback rate
-  delete video.__trueOriginalPlaybackRate;
-  delete video.__originalPlaybackRate;
-  delete video.__boostTargetRate;
-  delete video.__boostStartTime;
-  delete video.__boostExtensionCount;
-  delete video.__boostBaseDuration;
-  delete video.__hasBoostedOnLoad;
-  delete video.__lastSeekTime;
-  delete video.__lastPlayTime;
-  delete video.__boostState;
-  delete video.dataset.continuousMonitorActive;
+  return window.BoostEngine?.cleanupBoost(video);
 }
 
-// ═══════════════════════════════════════════════════════════════
-// PREVIEW BOOST - DISABLED (no rate changes)
-// ═══════════════════════════════════════════════════════════════
 function cleanupPreviewBoost(previewVideo) {
-  if (!previewVideo) return;
-  const timers = previewBoostTimers.get(previewVideo);
-  if (timers) {
-    if (timers.checkInterval) clearInterval(timers.checkInterval);
-    if (timers.endTimeout) clearTimeout(timers.endTimeout);
-    previewBoostTimers.delete(previewVideo);
-  }
-  // Never change playback rate
-  delete previewVideo.__previewOriginalRate;
-  delete previewVideo.__previewBoostActive;
-  delete previewVideo.__previewBoostStartTime;
+  return window.BoostEngine?.cleanupPreviewBoost(previewVideo);
 }
 
 function boostPreviewBuffer(previewVideo) {
-  // Disabled - playback rate modification removed
-  return () => {};
+  return window.BoostEngine?.boostPreviewBuffer(previewVideo) || (() => {});
 }
 
-function boostBufferAfterSeek(video, isSeek = false, options = {}) {
-  // Disabled - playback rate modification removed
+function boostBufferAfterSeek(video) {
+  return window.BoostEngine?.boostBufferAfterSeek(video);
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ENHANCED BUFFER MONITOR WITH CONNECTION QUALITY DETECTION
-// ═══════════════════════════════════════════════════════════════
-// Replace the entire startContinuousBufferMonitor function with a no-op stub
 function startContinuousBufferMonitor(video) {
-  if (!video || video.dataset.continuousMonitorActive === "true")
-    return () => {};
-  video.dataset.continuousMonitorActive = "true";
-
-  console.log(
-    `[Boost] 🚀 Buffer monitor attached to ${video.dataset.videoObserverId || "video"} (passive only - no rate changes)`,
-  );
-
-  // Store original rate for reference but NEVER change it
-  if (!video.__trueOriginalPlaybackRate) {
-    video.__trueOriginalPlaybackRate = video.playbackRate || 1.0;
-  }
-
-  // Monitor logs only - NO rate modification
-  const monitorInterval = setInterval(() => {
-    if (!tabIsVisible || video.paused) return;
-    const ahead = getBufferAhead(video);
-    // Debug log every 10 seconds
-    const slot = Math.floor(Date.now() / 10000);
-    if (!monitorInterval._lastSlot || slot !== monitorInterval._lastSlot) {
-      monitorInterval._lastSlot = slot;
-      console.log(
-        `[Boost] 📊 Buffer ahead: ${ahead.toFixed(1)}s, rate: ${(video.playbackRate || 1).toFixed(2)}x`,
-      );
-    }
-  }, 5000);
-
-  const timers = boostTimers.get(video) || {};
-  timers.monitorInterval = monitorInterval;
-  boostTimers.set(video, timers);
-
-  return () => {
-    clearInterval(monitorInterval);
-    delete video.dataset.continuousMonitorActive;
-    delete video.__trueOriginalPlaybackRate;
-  };
+  return window.BoostEngine?.startContinuousBufferMonitor(video) || (() => {});
 }
 
-// ═══════════════════════════════════════════════════════════════
-// FIXED: Seek Handler with Debounce
-// ═══════════════════════════════════════════════════════════════
 function attachBoostToVideo(video) {
-  if (!video || video.dataset.boostAttached === "true") return () => {};
-  video.dataset.boostAttached = "true";
-  console.log(
-    `[Boost] 🔗 Attaching boost to ${video.dataset.videoObserverId || "video"}`,
-  );
-
-  // Start continuous buffer monitor
-  const stopMonitor = startContinuousBufferMonitor(video);
-
-  let seekDebounceTimer = null;
-
-  const onSeeking = () => {
-    const now = Date.now();
-    video.__lastSeekTime = now;
-    if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
-    console.log(`[Boost:D] Seek started at ${video.currentTime.toFixed(1)}s`);
-  };
-
-  const onSeeked = () => {
-    if (!tabIsVisible) return;
-    const now = Date.now();
-    video.__lastSeekTime = now;
-
-    if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
-    seekDebounceTimer = setTimeout(() => {
-      const ahead = getBufferAhead(video);
-      console.log(`[Boost] 🎯 Seek settled: ahead=${ahead.toFixed(1)}s`);
-      // 🔧 FIX: The continuous monitor will handle the boost decision
-      // No need to dispatch a custom event or manually trigger boost
-      // The monitor checks every MONITOR_INTERVAL and will detect low buffer
-      // But for immediate response, we can force an immediate check by
-      // directly evaluating the buffer state
-      if (ahead < BOOST_CONFIG.BUFFER_CRITICAL) {
-        // Force immediate boost evaluation by calling the monitor's internal logic
-        // This is handled by the setInterval callback on next tick
-        console.log(`[Boost] 📢 Notifying monitor of low buffer after seek`);
-      }
-    }, BOOST_CONFIG.SEEK_DEBOUNCE_MS);
-  };
-
-  const onPlay = () => {
-    const ahead = getBufferAhead(video);
-    console.log(
-      `[Boost:D] Play event, ahead=${ahead.toFixed(1)}s, rate=${video.playbackRate?.toFixed(2) || "1.00"}x`,
-    );
-    video.__lastPlayTime = Date.now();
-
-    // 🔧 FIX: Safety check on play - ensure rate is normal if not actively boosting
-    const timers = boostTimers.get(video);
-    if (!timers?.monitorInterval) {
-      // Monitor not running, ensure normal rate
-      const trueOriginal = video.__trueOriginalPlaybackRate || 1.0;
-      if (video.playbackRate !== trueOriginal) {
-        console.warn(
-          `[Boost] ⚠️ Play with unexpected rate ${video.playbackRate.toFixed(2)}x, restoring to ${trueOriginal.toFixed(2)}x`,
-        );
-        video.playbackRate = trueOriginal;
-      }
-    }
-  };
-
-  // In attachBoostToVideo, simplify the onPause handler:
-  const onPause = () => {
-    console.log(`[Boost:D] Pause event`);
-    // No rate restoration needed since we never change the rate
-  };
-
-  video.addEventListener("seeking", onSeeking);
-  video.addEventListener("seeked", onSeeked);
-  video.addEventListener("play", onPlay);
-  video.addEventListener("pause", onPause);
-
-  return () => {
-    console.log(
-      `[Boost] 🔌 Detaching boost from ${video.dataset.videoObserverId || "video"}`,
-    );
-    if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
-    stopMonitor();
-    video.removeEventListener("seeking", onSeeking);
-    video.removeEventListener("seeked", onSeeked);
-    video.removeEventListener("play", onPlay);
-    video.removeEventListener("pause", onPause);
-    delete video.dataset.boostAttached;
-    delete video.__lastSeekTime;
-    delete video.__lastPlayTime;
-    delete video.__trueOriginalPlaybackRate;
-  };
+  return window.BoostEngine?.attachBoostToVideo(video) || (() => {});
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1833,7 +1652,8 @@ function trackVideo(video) {
     id,
     srcShort: (video.currentSrc || "").substring(0, 80) + "...",
   });
-  entry.boostCleanup = attachBoostToVideo(video);
+  entry.boostCleanup =
+    window.BoostEngine?.attachBoostToVideo(video) || (() => {});
   const startPreview = () => {
     entry.preview = createSinglePreview(video, id);
     performPanelUpdate();
