@@ -1,0 +1,108 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        width: 500px;
+        padding: 10px;
+        font-family: monospace;
+      }
+      .controls {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 10px;
+        align-items: center;
+      }
+      .log-entry {
+        border-bottom: 1px solid #ccc;
+        padding: 5px;
+        margin: 5px 0;
+        font-size: 12px;
+      }
+      .request {
+        background-color: #e3f2fd;
+      }
+      .response {
+        background-color: #f3e5f5;
+      }
+      .video-response {
+        background-color: #c8e6c9;
+        border-left: 3px solid #4caf50;
+      }
+      .timestamp {
+        color: #666;
+        font-size: 10px;
+      }
+      .url {
+        color: #1976d2;
+        word-break: break-all;
+      }
+      #logs {
+        max-height: 400px;
+        overflow-y: auto;
+      }
+      button {
+        padding: 5px 10px;
+        cursor: pointer;
+      }
+      button#downloadBtn {
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        border-radius: 3px;
+      }
+      button#downloadBtn:hover {
+        background-color: #45a049;
+      }
+      button#clearBtn {
+        background-color: #f44336;
+        color: white;
+        border: none;
+        border-radius: 3px;
+      }
+      button#clearBtn:hover {
+        background-color: #da190b;
+      }
+      .status {
+        font-weight: bold;
+      }
+      .status-2xx {
+        color: green;
+      }
+      .status-3xx {
+        color: orange;
+      }
+      .status-4xx {
+        color: red;
+      }
+      .status-5xx {
+        color: darkred;
+      }
+      .checkbox-label {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        cursor: pointer;
+      }
+      .video-count {
+        font-size: 12px;
+        color: #4caf50;
+        margin-left: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>Network Request Monitor</h3>
+    <div class="controls">
+      <button id="clearBtn">Clear Logs</button>
+      <label class="checkbox-label">
+        <input type="checkbox" id="filterVideosCheckbox" />
+        <span>🎬 Show only progressive MP4 videos (206 responses)</span>
+      </label>
+      <button id="downloadBtn" style="display: none">📥 Download Videos</button>
+    </div>
+    <div id="logs"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
