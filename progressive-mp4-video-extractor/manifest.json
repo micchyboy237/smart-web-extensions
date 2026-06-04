@@ -1,17 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Progressive MP4 Extractor",
-  "version": "2.0",
-  "description": "Detects and reconstructs progressive MP4 video chunks from range requests",
-  "permissions": [
-    "webRequest",
-    "webRequestBlocking",
-    "storage",
-    "downloads",
-    "debugger",
-    "tabs",
-    "activeTab"
-  ],
+  "version": "3.3",
+  "description": "Automatically captures MP4 videos using Chrome Debugger API - Bypasses CORS",
+  "permissions": ["debugger", "storage", "downloads", "tabs", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

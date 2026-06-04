@@ -2,59 +2,376 @@
 <html>
   <head>
     <style>
-      body {
-        width: 450px;
-        padding: 10px;
-        font-family: sans-serif;
+      * {
+        box-sizing: border-box;
       }
+
+      body {
+        width: 550px;
+        padding: 15px;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #f5f5f5;
+        margin: 0;
+      }
+
+      h2 {
+        margin: 0 0 10px 0;
+        color: #333;
+        font-size: 18px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .badge {
+        background: #4caf50;
+        color: white;
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 12px;
+      }
+
+      /* Live Monitor Section */
+      .monitor-section {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 12px;
+        padding: 15px;
+        margin-bottom: 15px;
+        color: white;
+      }
+
+      .monitor-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .live-badge {
+        background: #ff4757;
+        color: white;
+        font-size: 10px;
+        padding: 3px 8px;
+        border-radius: 20px;
+        animation: pulse 1.5s infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .stat-card {
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 8px;
+        padding: 8px;
+        text-align: center;
+        backdrop-filter: blur(10px);
+      }
+
+      .stat-label {
+        font-size: 10px;
+        opacity: 0.9;
+        margin-bottom: 4px;
+      }
+
+      .stat-value {
+        font-size: 20px;
+        font-weight: bold;
+      }
+
+      .stat-unit {
+        font-size: 10px;
+        margin-left: 2px;
+      }
+
+      .video-list {
+        max-height: 250px;
+        overflow-y: auto;
+        margin-top: 10px;
+      }
+
+      .video-item {
+        background: rgba(255, 255, 255, 0.15);
+        border-radius: 6px;
+        padding: 8px;
+        margin-bottom: 6px;
+        font-size: 10px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+
+      .video-item:hover {
+        background: rgba(255, 255, 255, 0.25);
+        transform: translateX(2px);
+      }
+
+      .video-url {
+        font-family: monospace;
+        font-size: 9px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-bottom: 4px;
+      }
+
+      .video-progress {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 4px;
+      }
+
+      .progress-bar {
+        flex: 1;
+        height: 3px;
+        background: rgba(255, 255, 255, 0.3);
+        border-radius: 2px;
+        overflow: hidden;
+        margin-right: 8px;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: #ffd700;
+        transition: width 0.3s ease;
+      }
+
+      .chunk-badge {
+        background: rgba(255, 255, 255, 0.3);
+        padding: 1px 5px;
+        border-radius: 10px;
+        font-size: 8px;
+      }
+
+      /* Toolbar */
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 15px;
+      }
+
       button {
-        margin: 5px;
         padding: 8px 12px;
         cursor: pointer;
-      }
-      .video-entry {
-        margin: 10px 0;
+        border: none;
+        border-radius: 6px;
         font-size: 12px;
-        border-left: 3px solid #4caf50;
-        padding-left: 8px;
+        font-weight: 500;
+        transition: all 0.2s;
       }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .primary-btn {
+        background: #4caf50;
+        color: white;
+      }
+
+      .secondary-btn {
+        background: #2196f3;
+        color: white;
+      }
+
+      .warning-btn {
+        background: #ff9800;
+        color: white;
+      }
+
+      .danger-btn {
+        background: #f44336;
+        color: white;
+      }
+
+      /* Video entries */
+      .video-entry {
+        background: white;
+        margin: 10px 0;
+        padding: 12px;
+        border-radius: 8px;
+        border-left: 4px solid #4caf50;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        font-size: 11px;
+      }
+
+      .video-url-full {
+        font-family: monospace;
+        font-size: 10px;
+        color: #666;
+        word-break: break-all;
+        margin-bottom: 8px;
+      }
+
+      .video-stats {
+        display: flex;
+        gap: 15px;
+        margin-bottom: 10px;
+        font-size: 11px;
+        flex-wrap: wrap;
+      }
+
+      .btn-group {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 8px;
+      }
+
       .save-btn {
         background: #4caf50;
         color: white;
-        border: none;
-        border-radius: 4px;
+        font-size: 11px;
       }
-      #stats {
-        margin-top: 15px;
-        max-height: 400px;
+
+      .status {
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 6px;
+        font-size: 12px;
+        display: none;
+      }
+
+      .status.success {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+
+      .status.error {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+
+      .status.info {
+        background: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+      }
+
+      hr {
+        margin: 15px 0;
+        border: none;
+        border-top: 1px solid #ddd;
+      }
+
+      .captured-section {
+        max-height: 350px;
         overflow-y: auto;
       }
-      hr {
-        margin: 10px 0;
+
+      .empty-state {
+        text-align: center;
+        padding: 20px;
+        color: #999;
+        font-style: italic;
       }
-      .toolbar {
+
+      .auto-refresh-toggle {
         display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+        font-size: 11px;
       }
-      .debug-btn {
-        background: #ff9800;
-        color: white;
-        border: none;
-        border-radius: 4px;
+
+      .auto-refresh-toggle input {
+        width: auto;
+        margin: 0;
       }
     </style>
   </head>
   <body>
-    <h2>Progressive MP4 Extractor v2.0</h2>
+    <h2>
+      🎥 Progressive MP4 Extractor
+      <span class="badge">v3.0</span>
+    </h2>
+
+    <!-- LIVE MONITOR SECTION -->
+    <div class="monitor-section">
+      <div class="monitor-header">
+        <span>📡 LIVE VIDEO MONITOR</span>
+        <span class="live-badge" id="liveBadge">● LIVE</span>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Active Videos</div>
+          <div class="stat-value" id="activeVideosCount">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Chunks</div>
+          <div class="stat-value" id="totalChunksCount">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Data</div>
+          <div class="stat-value" id="totalDataSize">
+            0<span class="stat-unit">MB</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="video-list" id="liveVideoList">
+        <div class="empty-state">
+          🎬 No videos detected yet<br /><small
+            >Play a video to start capturing</small
+          >
+        </div>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
     <div class="toolbar">
-      <button id="getStats">📊 Show Captured Videos</button>
-      <button id="clear">🗑️ Clear All</button>
-      <button id="attachDebugger" class="debug-btn">🐛 Attach Debugger</button>
+      <button id="refreshMonitorBtn" class="secondary-btn">
+        🔄 Refresh Monitor
+      </button>
+      <button id="showVideosBtn" class="primary-btn">📊 Show All Videos</button>
+      <button id="clearAllBtn" class="danger-btn">🗑️ Clear All</button>
     </div>
-    <div id="stats">
-      <em>Click "Show Captured Videos" after playing a video</em>
+
+    <!-- Auto-refresh Toggle -->
+    <div class="auto-refresh-toggle">
+      <input type="checkbox" id="autoRefreshToggle" checked />
+      <label for="autoRefreshToggle"
+        >Auto-refresh monitor (every 2 seconds)</label
+      >
     </div>
+
+    <div id="status" class="status"></div>
+
+    <hr />
+
+    <!-- Captured Videos Section -->
+    <div id="capturedVideos" class="captured-section">
+      <div class="empty-state">
+        Click "Show All Videos" to see captured videos
+      </div>
+    </div>
+
     <script src="popup.js"></script>
   </body>
 </html>
