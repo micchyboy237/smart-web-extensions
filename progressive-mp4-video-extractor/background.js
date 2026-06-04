@@ -135,7 +135,7 @@ class ProgressiveMP4Extractor {
       entry.lastSeen = Date.now();
       entry.detectionCount++;
       console.log(
-        `[Tracker] Video re-detected: ${url.substring(0, 60)}... (${entry.detectionCount}x, source: ${source})`,
+        `[Tracker] Video re-detected: ${url} (${entry.detectionCount}x, source: ${source})`,
       );
     } else {
       let filename = "unknown.mp4";
@@ -171,7 +171,7 @@ class ProgressiveMP4Extractor {
     if (!this.bufferPrimer.primedUrls.has(url)) {
       const shouldPrimeResult = this.bufferPrimer.shouldPrime(url);
       console.log(
-        `[Tracker] 🔍 shouldPrime result: ${shouldPrimeResult} for ${url.substring(0, 80)}...`,
+        `[Tracker] 🔍 shouldPrime result: ${shouldPrimeResult} for ${url}`,
       );
 
       if (shouldPrimeResult) {
@@ -235,7 +235,7 @@ class ProgressiveMP4Extractor {
     }
 
     if (isVideo) {
-      console.log(`[Debugger] 🎬 Video detected: ${url.substring(0, 80)}...`);
+      console.log(`[Debugger] 🎬 Video detected: ${url}`);
       console.log(`[Debugger] MIME: ${mimeType || "unknown"}`);
       this.trackDetectedVideo(url, "debugger");
 
@@ -265,9 +265,7 @@ class ProgressiveMP4Extractor {
     const capture = this.capturedResponses.get(params.requestId);
     if (!capture) return;
 
-    console.log(
-      `[Debugger] Loading finished for ${capture.url.substring(0, 60)}...`,
-    );
+    console.log(`[Debugger] Loading finished for ${capture.url}`);
 
     const totalSize = capture.chunks.reduce(
       (sum, c) => sum + (c.dataLength || 0),
@@ -304,13 +302,11 @@ class ProgressiveMP4Extractor {
           type: capture.contentType || "video/mp4",
         });
         console.log(
-          `[Debugger] ✅ Captured ${blob.size} bytes from ${capture.url.substring(0, 60)}...`,
+          `[Debugger] ✅ Captured ${blob.size} bytes from ${capture.url}`,
         );
         await this.addChunk(capture.url, blob);
       } else {
-        console.log(
-          `[Debugger] No body content for ${capture.url.substring(0, 60)}`,
-        );
+        console.log(`[Debugger] No body content for ${capture.url}`);
       }
     } catch (error) {
       console.error(`[Debugger] Failed to get response body:`, error);
@@ -330,7 +326,7 @@ class ProgressiveMP4Extractor {
         url: url,
         lastUpdate: Date.now(),
       });
-      console.log(`[Storage] New video tracked: ${url.substring(0, 60)}...`);
+      console.log(`[Storage] New video tracked: ${url}`);
     }
 
     const entry = this.videoChunks.get(url);
@@ -496,7 +492,7 @@ class ProgressiveMP4Extractor {
       }
       this.videoChunks.delete(url);
       this.detectedVideos.delete(url);
-      console.log(`[Clear] Cleared: ${url.substring(0, 60)}...`);
+      console.log(`[Clear] Cleared: ${url}`);
     } else {
       for (const [url, entry] of this.videoChunks.entries()) {
         entry.chunks.forEach((chunk) => {
@@ -514,15 +510,11 @@ class ProgressiveMP4Extractor {
   }
 
   async downloadVideoDirectly(url) {
-    console.log(
-      `[Download] Starting direct download: ${url.substring(0, 60)}...`,
-    );
+    console.log(`[Download] Starting direct download: ${url}`);
     try {
       const response = await fetch(url);
       if (!response.ok) {
-        console.error(
-          `[Download] HTTP ${response.status} for ${url.substring(0, 60)}`,
-        );
+        console.error(`[Download] HTTP ${response.status} for ${url}`);
         return false;
       }
 
@@ -571,7 +563,7 @@ class ProgressiveMP4Extractor {
       await this.addChunk(url, blob);
       return true;
     } catch (error) {
-      console.error(`[Download] Failed for ${url.substring(0, 60)}:`, error);
+      console.error(`[Download] Failed for ${url}:`, error);
       return false;
     }
   }
@@ -586,5 +578,5 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 console.log(
-  "🎥 MP4 Extractor v3.4 - Active! Debugger auto-attaches + Buffer priming for initial 2000 bytes per video",
+  "🎥 MP4 Extractor v3.4 - Active! Debugger auto-attaches + Buffer priming for initial 0 - n bytes per video",
 );

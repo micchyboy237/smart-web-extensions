@@ -9,7 +9,7 @@ function reportVideos() {
   videos.forEach((video, i) => {
     const src = video.src || video.currentSrc;
     if (src && (src.includes(".mp4") || src.includes(".webm"))) {
-      console.log(`[Content] Video ${i}: ${src.substring(0, 80)}...`);
+      console.log(`[Content] Video ${i}: ${src}`);
 
       chrome.runtime
         .sendMessage({

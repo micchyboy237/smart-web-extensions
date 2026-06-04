@@ -196,7 +196,7 @@ async function renderCapturedVideos() {
 
     html += `
       <div class="video-entry">
-        <div class="video-url-full">🔗 ${escapeHtml(url.substring(0, 120))}${url.length > 120 ? "..." : ""}</div>
+        <div class="video-url-full">🔗 ${escapeHtml(url)}</div>
         <div class="video-stats">
           <span>📦 Chunks: ${videoStats.chunksCount}</span>
           <span>💾 Size: ${sizeMB} MB</span>
@@ -222,7 +222,7 @@ async function renderCapturedVideos() {
       if (btn.disabled) return;
 
       const url = btn.getAttribute("data-url");
-      console.log(`[Popup] Saving: ${url.substring(0, 80)}...`);
+      console.log(`[Popup] Saving: ${url}`);
 
       btn.textContent = "⏳ Saving...";
       btn.disabled = true;
