@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+  <head>
+    <style>
+      body {
+        width: 450px;
+        padding: 10px;
+        font-family: sans-serif;
+      }
+      button {
+        margin: 5px;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      .video-entry {
+        margin: 10px 0;
+        font-size: 12px;
+        border-left: 3px solid #4caf50;
+        padding-left: 8px;
+      }
+      .save-btn {
+        background: #4caf50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+      }
+      #stats {
+        margin-top: 15px;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+      hr {
+        margin: 10px 0;
+      }
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .debug-btn {
+        background: #ff9800;
+        color: white;
+        border: none;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Progressive MP4 Extractor v2.0</h2>
+    <div class="toolbar">
+      <button id="getStats">📊 Show Captured Videos</button>
+      <button id="clear">🗑️ Clear All</button>
+      <button id="attachDebugger" class="debug-btn">🐛 Attach Debugger</button>
+    </div>
+    <div id="stats">
+      <em>Click "Show Captured Videos" after playing a video</em>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
