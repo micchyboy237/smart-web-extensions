@@ -1,23 +1,34 @@
-// background.js - Automatic Debugger Mode (Fixed v3.3 - Improved video tracking)
+// background.js - Automatic Debugger Mode (v3.4 - With Buffer Priming)
+// First, include the buffer primer class
+// Note: In a real service worker, you'd use importScripts('video-buffer-primer.js')
+// For simplicity, we include the class directly
+
+importScripts("video-buffer-primer.js");
+
+// ============================================
+// ProgressiveMP4Extractor Class
+// ============================================
 class ProgressiveMP4Extractor {
   constructor() {
-    this.videoChunks = new Map(); // Videos with captured data
-    this.activeDebuggers = new Map(); // Active debugger connections
-    this.capturedResponses = new Map(); // In-progress captures
-    this.detectedVideos = new Map(); // NEW: Track all detected videos (even without chunks)
+    this.videoChunks = new Map();
+    this.activeDebuggers = new Map();
+    this.capturedResponses = new Map();
+    this.detectedVideos = new Map();
+
+    // NEW: Initialize buffer primer
+    this.bufferPrimer = new VideoBufferPrimer();
+
     this.setupAutoAttach();
-    console.log("[Extractor] Initialized v3.3 - Fixed video tracking");
+    console.log("[Extractor] Initialized v3.4 - With buffer priming");
   }
 
   setupAutoAttach() {
-    // Auto-attach debugger to EVERY tab when it loads
     chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       if (changeInfo.status === "loading" && tab.url?.startsWith("http")) {
         await this.autoAttachDebugger(tabId);
       }
     });
 
-    // Also attach when tab becomes active
     chrome.tabs.onActivated.addListener(async (activeInfo) => {
       const tab = await chrome.tabs.get(activeInfo.tabId);
       if (tab.url?.startsWith("http")) {
@@ -25,24 +36,20 @@ class ProgressiveMP4Extractor {
       }
     });
 
-    // New tabs
     chrome.tabs.onCreated.addListener(async (tab) => {
       if (tab.url?.startsWith("http")) {
         setTimeout(() => this.autoAttachDebugger(tab.id), 1000);
       }
     });
 
-    // Listen for debugger events globally
     chrome.debugger.onEvent.addListener(this.handleDebuggerEvent.bind(this));
     chrome.debugger.onDetach.addListener((source, reason) => {
       console.log(`[Debugger] Detached from tab ${source.tabId}: ${reason}`);
       this.activeDebuggers.delete(source.tabId);
     });
 
-    // Listen for messages from content script and popup
     chrome.runtime.onMessage.addListener(this.handleMessage.bind(this));
-
-    console.log("[Auto] Debugger auto-attach enabled");
+    console.log("[Auto] Debugger auto-attach enabled with buffer priming");
   }
 
   async autoAttachDebugger(tabId) {
@@ -68,7 +75,6 @@ class ProgressiveMP4Extractor {
 
   async detachDebugger(tabId) {
     if (!this.activeDebuggers.has(tabId)) return;
-
     try {
       await chrome.debugger.detach({ tabId });
       this.activeDebuggers.delete(tabId);
@@ -80,7 +86,6 @@ class ProgressiveMP4Extractor {
 
   handleDebuggerEvent(source, method, params) {
     const tabId = source.tabId;
-
     if (method === "Network.responseReceived") {
       this.handleResponseReceived(tabId, params);
     } else if (method === "Network.dataReceived") {
@@ -90,80 +95,105 @@ class ProgressiveMP4Extractor {
     }
   }
 
-  /**
-   * Handle incoming messages from popup and content script
-   */
   handleMessage(request, sender, sendResponse) {
     console.log(`[Background] Message: ${request.action}`);
-
     switch (request.action) {
       case "getStats":
         sendResponse(this.getStats());
         break;
-
       case "saveVideo":
         this.saveVideo(request.url, request.filename).then(sendResponse);
-        return true; // Keep channel open for async response
-
+        return true;
       case "clear":
         this.clear(request.url);
         sendResponse({ success: true });
         break;
-
       case "videoDetected":
-        // NEW: Track detected videos from content script
         this.trackDetectedVideo(request.url, request.type || "contentScript");
         sendResponse({ success: true });
         break;
-
+      // NEW: Buffer primer actions
+      case "getPrimerStats":
+        sendResponse(this.bufferPrimer.getStats());
+        break;
+      case "clearPrimerCache":
+        this.bufferPrimer.clear();
+        sendResponse({ success: true });
+        break;
       default:
         console.log(`[Background] Unknown action: ${request.action}`);
         sendResponse({ error: "Unknown action" });
     }
-
     return true;
   }
 
-  /**
-   * NEW: Track a detected video (even without captured chunks)
-   */
   trackDetectedVideo(url, source) {
+    const isFirstDetection = !this.detectedVideos.has(url);
+
     if (this.detectedVideos.has(url)) {
-      // Update last seen time
       const entry = this.detectedVideos.get(url);
       entry.lastSeen = Date.now();
       entry.detectionCount++;
       console.log(
         `[Tracker] Video re-detected: ${url.substring(0, 60)}... (${entry.detectionCount}x, source: ${source})`,
       );
-      return;
+    } else {
+      let filename = "unknown.mp4";
+      try {
+        const urlObj = new URL(url);
+        const pathParts = urlObj.pathname.split("/");
+        filename = pathParts[pathParts.length - 1] || "video.mp4";
+        if (!filename.includes(".")) filename += ".mp4";
+      } catch (e) {
+        console.warn("[Tracker] URL parse error:", e.message);
+      }
+
+      this.detectedVideos.set(url, {
+        url: url,
+        filename: filename,
+        source: source,
+        detectedAt: Date.now(),
+        lastSeen: Date.now(),
+        detectionCount: 1,
+        hasChunks: this.videoChunks.has(url),
+      });
+
+      console.log(
+        `[Tracker] 🎥 New video tracked: ${filename} (source: ${source})`,
+      );
+      console.log(
+        `[Tracker] Total tracked videos: ${this.detectedVideos.size}`,
+      );
     }
 
-    // Extract filename from URL
-    let filename = "unknown.mp4";
-    try {
-      const urlObj = new URL(url);
-      const pathParts = urlObj.pathname.split("/");
-      filename = pathParts[pathParts.length - 1] || "video.mp4";
-      if (!filename.includes(".")) filename += ".mp4";
-    } catch (e) {
-      // Use full URL as fallback
+    // IMPORTANT FIX: Check shouldPrime for ALL detections, not just first
+    // But skip if already primed to avoid duplicate work
+    if (!this.bufferPrimer.primedUrls.has(url)) {
+      const shouldPrimeResult = this.bufferPrimer.shouldPrime(url);
+      console.log(
+        `[Tracker] 🔍 shouldPrime result: ${shouldPrimeResult} for ${url.substring(0, 80)}...`,
+      );
+
+      if (shouldPrimeResult) {
+        console.log(`[Tracker] 🎯 Triggering buffer prime`);
+        this.bufferPrimer
+          .primeVideoBuffer(url, source)
+          .then((result) => {
+            if (result.success) {
+              console.log(`[Tracker] ✅ Buffer primed successfully`);
+            } else {
+              console.log(
+                `[Tracker] ⚠️ Buffer priming issue: ${result.message}`,
+              );
+            }
+          })
+          .catch((error) => {
+            console.error(`[Tracker] ❌ Buffer priming error:`, error);
+          });
+      }
+    } else {
+      console.log(`[Tracker] ⏭️ Already primed, skipping`);
     }
-
-    this.detectedVideos.set(url, {
-      url: url,
-      filename: filename,
-      source: source,
-      detectedAt: Date.now(),
-      lastSeen: Date.now(),
-      detectionCount: 1,
-      hasChunks: this.videoChunks.has(url),
-    });
-
-    console.log(
-      `[Tracker] 🎥 New video tracked: ${filename} (source: ${source})`,
-    );
-    console.log(`[Tracker] Total tracked videos: ${this.detectedVideos.size}`);
   }
 
   handleResponseReceived(tabId, params) {
@@ -171,34 +201,24 @@ class ProgressiveMP4Extractor {
     const url = response.url;
     const mimeType = response.mimeType;
 
-    // FIXED: Safely check headers
     let isVideo = false;
-
-    // Check MIME type
     if (mimeType && mimeType.includes("video/")) {
       isVideo = true;
     }
-
-    // Check URL
     if (
       url &&
       (url.includes(".mp4") || url.includes(".webm") || url.includes(".avi"))
     ) {
       isVideo = true;
     }
-
-    // Check headers safely (headers might be undefined or not an array)
     if (response.headers) {
       try {
-        // Convert headers to array if needed
         const headersArray = Array.isArray(response.headers)
           ? response.headers
           : Object.entries(response.headers);
-
         for (const header of headersArray) {
           const headerName = Array.isArray(header) ? header[0] : header.name;
           const headerValue = Array.isArray(header) ? header[1] : header.value;
-
           if (
             headerName &&
             headerName.toLowerCase() === "content-type" &&
@@ -217,11 +237,8 @@ class ProgressiveMP4Extractor {
     if (isVideo) {
       console.log(`[Debugger] 🎬 Video detected: ${url.substring(0, 80)}...`);
       console.log(`[Debugger] MIME: ${mimeType || "unknown"}`);
-
-      // NEW: Track this video immediately
       this.trackDetectedVideo(url, "debugger");
 
-      // Store response info for potential body capture
       this.capturedResponses.set(params.requestId, {
         url: url,
         tabId: tabId,
@@ -252,7 +269,6 @@ class ProgressiveMP4Extractor {
       `[Debugger] Loading finished for ${capture.url.substring(0, 60)}...`,
     );
 
-    // Calculate total size from chunks
     const totalSize = capture.chunks.reduce(
       (sum, c) => sum + (c.dataLength || 0),
       0,
@@ -262,7 +278,6 @@ class ProgressiveMP4Extractor {
     );
 
     try {
-      // Get the actual response body via debugger (bypasses CORS!)
       const body = await chrome.debugger.sendCommand(
         { tabId },
         "Network.getResponseBody",
@@ -276,21 +291,18 @@ class ProgressiveMP4Extractor {
 
         let bytes;
         if (body.base64Encoded) {
-          // Convert base64 to binary
           const binaryString = atob(body.body);
           bytes = new Uint8Array(binaryString.length);
           for (let i = 0; i < binaryString.length; i++) {
             bytes[i] = binaryString.charCodeAt(i);
           }
         } else {
-          // Convert text to binary
           bytes = new TextEncoder().encode(body.body);
         }
 
         const blob = new Blob([bytes], {
           type: capture.contentType || "video/mp4",
         });
-
         console.log(
           `[Debugger] ✅ Captured ${blob.size} bytes from ${capture.url.substring(0, 60)}...`,
         );
@@ -305,10 +317,7 @@ class ProgressiveMP4Extractor {
       if (error.message) {
         console.error(`[Debugger] Error details: ${error.message}`);
       }
-      // NEW: Even if body capture fails, we still have the video tracked
-      console.log(`[Debugger] Video still tracked despite capture failure`);
     }
-
     this.capturedResponses.delete(params.requestId);
   }
 
@@ -326,7 +335,6 @@ class ProgressiveMP4Extractor {
 
     const entry = this.videoChunks.get(url);
     const chunkIndex = entry.chunks.length + 1;
-
     entry.chunks.push({
       index: chunkIndex,
       blob: blob,
@@ -340,12 +348,10 @@ class ProgressiveMP4Extractor {
       `[Storage] 📦 Chunk ${chunkIndex}: ${(blob.size / 1024 / 1024).toFixed(2)} MB | Total: ${(totalSize / 1024 / 1024).toFixed(2)} MB`,
     );
 
-    // Update the detected video entry to reflect that chunks are available
     if (this.detectedVideos.has(url)) {
       this.detectedVideos.get(url).hasChunks = true;
     }
 
-    // Try to reconstruct after each chunk
     await this.tryReconstruct(url);
   }
 
@@ -357,8 +363,6 @@ class ProgressiveMP4Extractor {
     console.log(
       `[Reconstruct] ${entry.chunks.length} chunks, ${(totalSize / 1024 / 1024).toFixed(2)} MB`,
     );
-
-    // Auto-save notification for live monitor
     return { size: totalSize, chunks: entry.chunks.length };
   }
 
@@ -366,7 +370,6 @@ class ProgressiveMP4Extractor {
     const entry = this.videoChunks.get(url);
     if (!entry || entry.chunks.length === 0) return null;
 
-    // Sort chunks by index
     const sortedChunks = [...entry.chunks].sort((a, b) => a.index - b.index);
     const blobs = sortedChunks.map((c) => c.blob);
     const mergedBlob = new Blob(blobs, {
@@ -420,21 +423,16 @@ class ProgressiveMP4Extractor {
         setTimeout(() => URL.revokeObjectURL(result.url), 2000);
       },
     );
+
     return true;
   }
 
-  /**
-   * UPDATED: Returns both detected videos AND videos with chunks
-   */
   getStats() {
     const stats = {};
 
-    // First, include all detected videos (even without chunks)
     for (const [url, detectedInfo] of this.detectedVideos.entries()) {
       const chunkEntry = this.videoChunks.get(url);
-
       if (chunkEntry) {
-        // Has captured chunks
         const totalSize = chunkEntry.chunks.reduce((sum, c) => sum + c.size, 0);
         stats[url] = {
           chunksCount: chunkEntry.chunks.length,
@@ -445,9 +443,9 @@ class ProgressiveMP4Extractor {
           filename: detectedInfo.filename,
           source: detectedInfo.source,
           hasChunks: true,
+          primed: this.bufferPrimer.primedUrls.has(url), // NEW
         };
       } else {
-        // Detected but no chunks captured yet
         stats[url] = {
           chunksCount: 0,
           totalBytesCaptured: 0,
@@ -457,11 +455,11 @@ class ProgressiveMP4Extractor {
           filename: detectedInfo.filename,
           source: detectedInfo.source,
           hasChunks: false,
+          primed: this.bufferPrimer.primedUrls.has(url), // NEW
         };
       }
     }
 
-    // Also check for videos in videoChunks that might not be in detectedVideos (backward compat)
     for (const [url, entry] of this.videoChunks.entries()) {
       if (!stats[url]) {
         const totalSize = entry.chunks.reduce((sum, c) => sum + c.size, 0);
@@ -474,13 +472,17 @@ class ProgressiveMP4Extractor {
           filename: "unknown.mp4",
           source: "legacy",
           hasChunks: true,
+          primed: this.bufferPrimer.primedUrls.has(url), // NEW
         };
       }
     }
 
+    // NEW: Log primer stats
+    const primerStats = this.bufferPrimer.getStats();
     console.log(
-      `[Stats] Returning ${Object.keys(stats).length} videos (${this.detectedVideos.size} tracked, ${this.videoChunks.size} with chunks)`,
+      `[Stats] ${Object.keys(stats).length} videos | ${primerStats.totalPrimed} primed | ${primerStats.activeRequests} active | ${primerStats.queueLength} queued`,
     );
+
     return stats;
   }
 
@@ -488,7 +490,6 @@ class ProgressiveMP4Extractor {
     if (url) {
       const entry = this.videoChunks.get(url);
       if (entry) {
-        // Revoke object URLs if any
         entry.chunks.forEach((chunk) => {
           if (chunk.blobUrl) URL.revokeObjectURL(chunk.blobUrl);
         });
@@ -497,7 +498,6 @@ class ProgressiveMP4Extractor {
       this.detectedVideos.delete(url);
       console.log(`[Clear] Cleared: ${url.substring(0, 60)}...`);
     } else {
-      // Revoke all object URLs
       for (const [url, entry] of this.videoChunks.entries()) {
         entry.chunks.forEach((chunk) => {
           if (chunk.blobUrl) URL.revokeObjectURL(chunk.blobUrl);
@@ -505,7 +505,74 @@ class ProgressiveMP4Extractor {
       }
       this.videoChunks.clear();
       this.detectedVideos.clear();
-      console.log("[Clear] Cleared all videos");
+
+      // NEW: Clear primer cache
+      this.bufferPrimer.clear();
+
+      console.log("[Clear] Cleared all videos and primer cache");
+    }
+  }
+
+  async downloadVideoDirectly(url) {
+    console.log(
+      `[Download] Starting direct download: ${url.substring(0, 60)}...`,
+    );
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.error(
+          `[Download] HTTP ${response.status} for ${url.substring(0, 60)}`,
+        );
+        return false;
+      }
+
+      const reader = response.body.getReader();
+      const contentLength = parseInt(
+        response.headers.get("content-length") || "0",
+      );
+      const contentType = response.headers.get("content-type") || "video/mp4";
+      console.log(
+        `[Download] Content-Length: ${(contentLength / 1024 / 1024).toFixed(2)} MB, Type: ${contentType}`,
+      );
+
+      let receivedLength = 0;
+      const chunks = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          console.log(
+            `[Download] ✅ Complete: ${(receivedLength / 1024 / 1024).toFixed(2)} MB`,
+          );
+          break;
+        }
+        chunks.push(value);
+        receivedLength += value.length;
+
+        if (receivedLength % (1024 * 1024) < value.length) {
+          console.log(
+            `[Download] Progress: ${(receivedLength / 1024 / 1024).toFixed(2)} MB`,
+          );
+        }
+      }
+
+      const allChunks = new Uint8Array(receivedLength);
+      let position = 0;
+      for (const chunk of chunks) {
+        allChunks.set(chunk, position);
+        position += chunk.length;
+      }
+
+      const blob = new Blob([allChunks], { type: contentType });
+      console.log(
+        `[Download] Created blob: ${(blob.size / 1024 / 1024).toFixed(2)} MB`,
+      );
+
+      await this.addChunk(url, blob);
+      return true;
+    } catch (error) {
+      console.error(`[Download] Failed for ${url.substring(0, 60)}:`, error);
+      return false;
     }
   }
 }
@@ -519,5 +586,5 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 console.log(
-  "🎥 MP4 Extractor v3.3 - Active! Debugger auto-attaches to all tabs. Videos tracked immediately upon detection.",
+  "🎥 MP4 Extractor v3.4 - Active! Debugger auto-attaches + Buffer priming for initial 2000 bytes per video",
 );

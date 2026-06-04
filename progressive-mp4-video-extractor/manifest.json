@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Progressive MP4 Extractor",
-  "version": "3.3",
-  "description": "Automatically captures MP4 videos using Chrome Debugger API - Bypasses CORS",
+  "version": "3.5",
+  "description": "Automatically captures MP4 videos using Chrome Debugger API - Bypasses CORS - Now with buffer priming",
   "permissions": ["debugger", "storage", "downloads", "tabs", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "background": {
