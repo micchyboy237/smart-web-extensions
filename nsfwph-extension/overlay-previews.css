@@ -33,19 +33,29 @@
 
 /* ───── Side Previews Container ───── */
 #vo-previews-wrap {
-  width: 120px;
+  /* 🔧 DOUBLED WIDTH to fit 2 columns */
+  width: 240px;
   flex-shrink: 0;
   background: #13131f;
   border-left: 1px solid #333;
-  display: flex;
-  flex-direction: column;
+
+  /* 🔧 NEW: Grid Layout Configuration */
+  display: grid;
+  grid-template-columns: repeat(2, 1fr); /* Exactly 2 equal columns */
+  grid-auto-rows: 120px; /* Fixed height for each row */
+  gap: 4px; /* Space between grid items */
+  padding: 4px; /* Inner padding so items don't touch edges */
+  box-sizing: border-box; /* Ensures padding is included in the 240px width */
+
   overflow-y: auto;
   overflow-x: hidden;
   max-height: 100%;
+
   /* Custom scrollbar for Webkit */
   scrollbar-width: thin;
   scrollbar-color: #444 #13131f;
 }
+
 #vo-previews-wrap::-webkit-scrollbar {
   width: 6px;
 }
@@ -61,19 +71,15 @@
 .vo-preview-thumb-wrapper {
   position: relative;
   width: 100%;
-
-  /* 🔧 REDUCED HEIGHT: Use fixed height instead of aspect-ratio for compact UI */
-  height: 120px; /* Adjust this value (e.g., 40px, 60px) to your liking */
-  aspect-ratio: unset; /* Removes the default 16/9 constraint */
-  overflow: hidden; /* Ensures the cropped video doesn't bleed out */
+  height: 100%; /* Fills the grid cell defined by grid-auto-rows */
 
   background: #000;
   cursor: pointer;
-  border-bottom: 1px solid #222;
+  overflow: hidden;
+  border-radius: 4px; /* Optional: rounded corners for a cleaner grid look */
   transition:
     background 0.2s,
     outline 0.2s;
-  flex-shrink: 0;
 }
 
 .vo-preview-thumb-wrapper:hover {
@@ -90,7 +96,7 @@
 .vo-preview-thumb-video {
   width: 100%;
   height: 100%;
-  object-fit: cover; /* This ensures the video fills the 50px height without stretching */
+  object-fit: cover; /* Ensures video fills the cell without stretching */
   display: block;
   pointer-events: none; /* Clicks pass through to wrapper */
 }
