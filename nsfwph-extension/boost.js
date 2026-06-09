@@ -1390,8 +1390,88 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       delete previewVideo.__previewBoostStartTime;
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // SMART PREVIEW BOOST (Replaces no-op)
+  // ═══════════════════════════════════════════════════════════════
   function boostPreviewBuffer(previewVideo) {
-    return () => {};
+    if (!previewVideo) return () => {};
+
+    const videoId =
+      previewVideo.dataset.videoObserverId ||
+      previewVideo.dataset.cacheKeySrc?.substring(0, 20) ||
+      "preview-unknown";
+    console.log(`[Boost] 🚀 Applying smart preview boost for ${videoId}`);
+
+    let isBoosting = true;
+    let monitorInterval = null;
+    let timeoutId = null;
+
+    const TARGET_BUFFER = 3; // seconds
+    const BOOST_RATE = 1.25; // Smart boost rate for previews
+    const originalRate = previewVideo.playbackRate || 1.0;
+
+    const monitor = () => {
+      if (!isBoosting || !document.body.contains(previewVideo)) {
+        cleanup();
+        return;
+      }
+
+      const ahead = getBufferAhead(previewVideo);
+
+      // Target reached, stop boosting
+      if (ahead >= TARGET_BUFFER) {
+        console.log(
+          `[Boost] ✅ Preview buffer target reached (${ahead.toFixed(1)}s) for ${videoId}`,
+        );
+        cleanup();
+        return;
+      }
+
+      // Apply boost rate if buffer is low and video is playing
+      if (ahead < 1.5 && !previewVideo.paused) {
+        if (previewVideo.playbackRate !== BOOST_RATE) {
+          previewVideo.playbackRate = BOOST_RATE;
+          console.log(
+            `[Boost] ⬆️ Boosting preview rate to ${BOOST_RATE}x for ${videoId} (buffer: ${ahead.toFixed(1)}s)`,
+          );
+        }
+      } else {
+        if (previewVideo.playbackRate !== originalRate) {
+          previewVideo.playbackRate = originalRate;
+          console.log(
+            `[Boost] ⬇️ Restoring preview rate to ${originalRate}x for ${videoId} (buffer: ${ahead.toFixed(1)}s)`,
+          );
+        }
+      }
+    };
+
+    // Monitor every 300ms
+    monitorInterval = setInterval(monitor, 300);
+
+    // Safety timeout to prevent infinite boosting
+    timeoutId = setTimeout(() => {
+      if (isBoosting) {
+        console.log(`[Boost] ⏱️ Preview boost timeout reached for ${videoId}`);
+        cleanup();
+      }
+    }, 4000);
+
+    const cleanup = () => {
+      if (!isBoosting) return;
+      isBoosting = false;
+
+      if (monitorInterval) clearInterval(monitorInterval);
+      if (timeoutId) clearTimeout(timeoutId);
+
+      if (previewVideo.playbackRate !== originalRate) {
+        previewVideo.playbackRate = originalRate;
+      }
+
+      console.log(`[Boost] 🧹 Preview boost cleaned up for ${videoId}`);
+    };
+
+    return cleanup;
   }
 
   // ═══════════════════════════════════════════════════════════════

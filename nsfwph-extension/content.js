@@ -662,7 +662,6 @@ const BufferManager = {
       previewVideo.dataset.bufferReleased = "false";
       previewVideo.load();
     }
-
     previewVideo.preload = "auto";
 
     // Wait for metadata
@@ -673,7 +672,6 @@ const BufferManager = {
             previewVideo.removeEventListener("loadedmetadata", onMeta);
             reject(new Error("Metadata timeout"));
           }, 3000);
-
           const onMeta = () => {
             clearTimeout(timeout);
             resolve();
@@ -691,7 +689,6 @@ const BufferManager = {
       }
     }
 
-    // Don't buffer if video is too short
     if (previewVideo.duration < 1) {
       console.log(
         `[BufferMgr] Video too short for ${info.entryId}, skipping buffer`,
@@ -699,7 +696,6 @@ const BufferManager = {
       return;
     }
 
-    // 🔧 FIX: Check if something else is controlling playback
     if (previewVideo.dataset.chunkLoopActive === "true") {
       console.log(
         `[BufferMgr] Chunk loop active for ${info.entryId}, skipping initial buffer`,
@@ -707,32 +703,64 @@ const BufferManager = {
       return;
     }
 
-    // Seek to start to trigger buffering of the beginning
-    previewVideo.currentTime = 0;
+    // 🔧 NEW: Reuse the first chunk start time from cache if available
+    let targetTime = 0;
+    const cacheKeySrc = previewVideo.dataset.cacheKeySrc;
+    if (cacheKeySrc) {
+      try {
+        console.log(
+          `[BufferMgr] 🔍 Checking cache for first chunk start time...`,
+        );
+        const cached = await ChunkCache.get(cacheKeySrc);
+        if (cached && cached.chunks && cached.chunks.length > 0) {
+          targetTime = cached.chunks[0];
+          console.log(
+            `[BufferMgr] ✅ Reusing first chunk start time from cache: ${targetTime.toFixed(2)}s for ${info.entryId}`,
+          );
+        } else {
+          console.log(
+            `[BufferMgr] ℹ️ No chunks in cache for ${info.entryId}, defaulting to 0s`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[BufferMgr] ⚠️ Cache lookup failed for ${info.entryId}:`,
+          err.message,
+        );
+      }
+    } else {
+      console.warn(
+        `[BufferMgr] ⚠️ No cacheKeySrc found on preview video for ${info.entryId}`,
+      );
+    }
 
-    // 🔧 FIX: Use a flag to prevent conflicts
+    previewVideo.currentTime = targetTime;
+
     previewVideo.dataset.bufferManagerBuffering = "true";
-
     try {
-      // Brief play to start buffering
       await previewVideo.play();
 
-      // Wait for ~2 seconds of buffer or 800ms max (reduced from 500ms to allow more time)
+      // 🔧 NEW: Apply smart boost for the preview video
+      const cleanupBoost = boostPreviewBuffer(previewVideo);
+
+      // Wait for buffer or timeout
       await this.waitForBuffer(previewVideo, 2, 800);
 
-      // Only pause if we're still the ones controlling playback
       if (previewVideo.dataset.bufferManagerBuffering === "true") {
         previewVideo.pause();
       }
 
+      if (typeof cleanupBoost === "function") cleanupBoost();
+
       this.activeBufferCount++;
       this.totalEstimatedRAM += 500000;
-      console.log(`[BufferMgr] Initial buffer complete for ${info.entryId}`);
+      console.log(
+        `[BufferMgr] Initial buffer complete for ${info.entryId} at ${targetTime.toFixed(2)}s`,
+      );
     } catch (err) {
-      // 🔧 FIX: Don't log as error if it's just an interruption
       if (err.name === "AbortError") {
         console.log(
-          `[BufferMgr] Initial buffer interrupted for ${info.entryId} (chunk loop took over)`,
+          `[BufferMgr] Initial buffer interrupted for ${info.entryId}`,
         );
       } else {
         console.warn(
@@ -1418,17 +1446,14 @@ function createSinglePreview(originalVideo, entryId) {
   console.log(`[Preview] Creating preview video element for ${entryId}`);
   const rawSrc = originalVideo.currentSrc || originalVideo.src || "";
   const cleanSrc = rawSrc.split("?")[0];
-
   const entry = videos.get(originalVideo);
   if (entry) {
     entry.cacheKeySrc = cleanSrc;
   }
-
   let videoUrl = rawSrc;
   if (videoUrl) {
     videoUrl += (videoUrl.includes("?") ? "&" : "?") + "preview=1";
   }
-
   const preview = document.createElement("video");
   preview.src = videoUrl;
   preview.muted = true;
@@ -1443,20 +1468,22 @@ function createSinglePreview(originalVideo, entryId) {
   preview.style.display = "block";
   preview.style.cursor = "pointer";
 
+  // 🔧 NEW: Store cache key on the element so BufferManager can access it
+  preview.dataset.cacheKeySrc = cleanSrc;
+  console.log(
+    `[Preview] 🏷️ Stored cacheKeySrc on preview element: ${cleanSrc.substring(0, 40)}...`,
+  );
+
   BufferManager.register(preview, entryId);
 
   let isInitialized = false;
-
   function initializePreview() {
     if (isInitialized) return;
     console.log(`[Preview] Initializing preview for ${entryId}`);
     isInitialized = true;
-
     const stopLoop = setupLightChunkPreview(preview, entryId, cleanSrc);
     preview._stopPreviewLoop = stopLoop;
-
     scheduleSmartBuffering(preview, entryId);
-
     console.log(
       `[Preview] Preview ready for ${entryId} - hover to play chunks`,
     );
