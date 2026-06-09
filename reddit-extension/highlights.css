@@ -1,0 +1,61 @@
+/* highlights.css - Visual Effects & Overlay Highlights
+   Paired with: overlay.js, chunk-preview.js */
+
+/* ═══════════════════════════════════════════════════════════════
+   MAIN VIDEO PLAYING HIGHLIGHT
+   Applied to .message-inner video when it's the active playback
+   ═══════════════════════════════════════════════════════════════ */
+.message-inner video {
+  transition:
+    transform 0.35s cubic-bezier(0.34, 1.4, 0.64, 1),
+    box-shadow 0.35s ease,
+    outline 0.35s ease;
+}
+
+.message-inner video.video-observer-playing {
+  transform: scale(1.22) translateX(11%);
+  box-shadow: 0 0 36px 14px rgba(0, 212, 255, 0.6);
+  outline: 3px solid rgba(0, 212, 255, 0.3);
+  z-index: 9999;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+     GALLERY BUTTON (on video cards)
+     ═══════════════════════════════════════════════════════════════ */
+.gallery-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: rgba(0, 212, 255, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  z-index: 10;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(4px);
+}
+
+.gallery-btn svg {
+  width: 100%;
+  height: 100%;
+  fill: none !important;
+  stroke: currentColor;
+  stroke-width: 2px;
+}
+
+.gallery-btn:hover {
+  background: rgba(0, 180, 220, 0.95);
+  transform: scale(1.1);
+  box-shadow: 0 2px 8px rgba(0, 212, 255, 0.4);
+}
+
+.gallery-btn:active {
+  transform: scale(0.95);
+}
