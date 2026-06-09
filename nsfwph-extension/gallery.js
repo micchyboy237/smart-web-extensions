@@ -230,7 +230,8 @@ function openGallery(entry) {
     return;
   }
 
-  const MAX = 6;
+  const MAX = calcFrameCount(duration);
+
   // Calculate evenly spaced time points throughout the video
   const times = Array.from(
     { length: MAX },
@@ -256,4 +257,37 @@ function openGallery(entry) {
       `[Gallery] ✅ Gallery complete: ${successCount}/${MAX} frames extracted`,
     );
   })();
+}
+
+/**
+ * Calculate the number of frames to extract for a video based on its duration.
+ * Uses a logarithmic scale so short videos get fewer frames and long videos
+ * get more, with diminishing returns to stay performant.
+ *
+ * @param {number} duration - Video duration in seconds
+ * @returns {number} - Frame count between 3 and 12
+ *
+ * | Duration  | Frames |
+ * |-----------|--------|
+ * | < 30s     | 3      |
+ * | 30s–2min  | 4–5    |
+ * | 2–10min   | 6–7    |
+ * | 10–60min  | 8–10   |
+ * | 60min+    | 11–12  |
+ */
+function calcFrameCount(duration) {
+  if (!duration || !isFinite(duration) || duration < 1) {
+    console.warn(
+      `[Gallery] calcFrameCount: invalid duration (${duration}), defaulting to 3`,
+    );
+    return 3;
+  }
+  const count = Math.min(
+    12,
+    Math.max(3, Math.round(Math.log2(duration / 10 + 1) * 3)),
+  );
+  console.log(
+    `[Gallery] calcFrameCount: ${formatMMSS(duration)} → ${count} frames`,
+  );
+  return count;
 }
