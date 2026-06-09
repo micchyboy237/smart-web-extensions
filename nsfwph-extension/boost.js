@@ -1,15 +1,14 @@
-// boost.js - Forward Buffer Boost Engine (v2.7 - SILENT PRELOAD SEEK)
+// boost.js - Forward Buffer Boost Engine (v2.9 - ACTIVE VIDEO PRIORITY)
 // Standalone module for smart buffer management
-// Features: Silent preload seeks for buffer protection (no fast-forward UX impact)
+// Features: Silent preload seeks + Active video priority for bandwidth optimization
 // ═══════════════════════════════════════════════════════════════
 // Prevent double initialization
 if (window.__BOOST_ENGINE_INITIALIZED__) {
   console.warn("[Boost] Engine already initialized, skipping");
 } else {
   window.__BOOST_ENGINE_INITIALIZED__ = true;
-
   // ═══════════════════════════════════════════════════════════════
-  // BOOST CONFIGURATION - SILENT PRELOAD SEEK
+  // BOOST CONFIGURATION - SILENT PRELOAD SEEK + PRIORITY
   // ═══════════════════════════════════════════════════════════════
   const BOOST_CONFIG = {
     // BUFFER ZONES (forward buffer in seconds)
@@ -18,53 +17,50 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     BUFFER_LOW: 8,
     BUFFER_COMFORT: 15,
     BUFFER_TARGET: 20,
-
     // Silent Preload Seek settings
     PRELOAD_ENABLED: true,
-    PRELOAD_SYNC_INTERVAL: 2000, // Check every 2 seconds
-    PRELOAD_ADVANCE_SEEK: 20, // Seek 20s ahead to trigger download
-    PRELOAD_MAX_AHEAD: 60, // Never seek more than 60s ahead
-    PRELOAD_STOP_AT_BUFFER: 20, // Stop preloading when buffer >= this
-    PRELOAD_SNAP_BACK_MS: 50, // Snap back after 50ms (imperceptible)
-    PRELOAD_MIN_INTERVAL: 3000, // Min 3s between preload seeks
-    PRELOAD_MIN_ADVANCE: 5, // Only preload if target is 5s+ ahead
-
-    // Boost rates (kept for logging/reference, NOT applied to playbackRate)
+    PRELOAD_SYNC_INTERVAL: 2000,
+    PRELOAD_ADVANCE_SEEK: 20,
+    PRELOAD_MAX_AHEAD: 60,
+    PRELOAD_STOP_AT_BUFFER: 20,
+    PRELOAD_SNAP_BACK_MS: 50,
+    PRELOAD_MIN_INTERVAL: 3000,
+    PRELOAD_MIN_ADVANCE: 5,
+    PRELOAD_GRACE_PERIOD_MS: 3000,
+    PRELOAD_FIRST_BUFFER_GRACE: 8,
+    // 🔧 NEW: Active Video Priority
+    PRIORITY_ENABLED: true,
+    PRIORITY_CHECK_INTERVAL: 1000, // Check active video status every 1s
+    PRIORITY_BACKGROUND_PRELOAD: "none", // "none", "metadata", or "auto" for non-active videos
+    // Boost rates (kept for logging, NOT applied to playbackRate)
     BOOST_RATE_AGGRESSIVE: 1.3,
     BOOST_RATE_NORMAL: 1.2,
     BOOST_RATE_GENTLE: 1.12,
     BOOST_RATE_MAINTENANCE: 1.08,
     BOOST_RATE_SEEK: 1.35,
-
     // Boost timing
     BOOST_DURATION: 30000,
     MONITOR_INTERVAL: 1500,
     BOOST_SESSION_GAP: 3000,
-
     // Safety limits
     MAX_BOOST_SESSIONS: 25,
     MAX_TOTAL_BOOST_MS: 180000,
-
     // Connection quality detection
     SLOW_CONNECTION_THRESHOLD: 0.3,
     CONNECTION_CHECK_WINDOW: 4000,
-
     // Smart detection
     MIN_PLAY_TIME_FOR_BOOST: 1000,
     SHRINK_TOLERANCE: 4,
-
     // Maintenance mode
     MAINTENANCE_MAX_DURATION: 90000,
     MAINTENANCE_RESTART_DELAY: 10000,
-
     // Seek handling
     SEEK_DEBOUNCE_MS: 800,
-
     // DEBUG
     DEBUG_VERBOSE: true,
     DEBUG_PRELOAD: true,
+    DEBUG_PRIORITY: true, // 🔧 NEW: Priority debug logging
   };
-
   // ═══════════════════════════════════════════════════════════════
   // UTILITY FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
@@ -81,7 +77,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     }
     return Math.max(0, maxEnd - currentTime);
   }
-
   function getTotalBufferedRange(video) {
     if (!video || !video.buffered || !video.buffered.length)
       return { start: 0, end: 0 };
@@ -93,51 +88,376 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     }
     return { start: minStart === Infinity ? 0 : minStart, end: maxEnd };
   }
-
   // ═══════════════════════════════════════════════════════════════
-  // SILENT PRELOAD SEEK MANAGER
+  // ACTIVE VIDEO PRIORITY MANAGER (NEW)
   // ═══════════════════════════════════════════════════════════════
   /**
-   * Silently triggers buffer download by briefly seeking ahead and snapping back.
+   * Priority Manager ensures the actively-playing video gets all the bandwidth.
    *
-   * HOW IT WORKS:
-   * ┌─────────────────────────────────────────────────────────────────┐
-   * │                                                                  │
-   * │  Step 1: User watching at 10.0s, buffer only 3s ahead           │
-   * │  Video: ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │
-   * │         10s  13s                                                 │
-   * │                                                                  │
-   * │  Step 2: currentTime = 30s (seek 20s ahead, 50ms duration)      │
-   * │  Video: ░░░░░░░░░░░░░░░░░░░░░░████████░░░░░░░░░░░░░░░░░░░░░░░░░ │
-   * │                              30s (browser starts downloading)    │
-   * │                                                                  │
-   * │  Step 3: After 50ms, currentTime = 10s (snap back)              │
-   * │  Video: ████░░░░░░░░░░░░░░░░░░░░████████░░░░░░░░░░░░░░░░░░░░░░░ │
-   * │         10s  13s                30s (browser CONTINUES download) │
-   * │                                                                  │
-   * │  Step 4: Browser now downloads both regions → buffer grows      │
-   * │  Video: ████████████████████████████████████░░░░░░░░░░░░░░░░░░░░ │
-   * │         10s                             40s                      │
-   * │                                                                  │
-   * │  ⚡ The browser remembers the seek to 30s and continues          │
-   * │  downloading that region. User only sees ~3 frames flicker.      │
-   * │                                                                  │
-   * └─────────────────────────────────────────────────────────────────┘
+   * STRATEGY:
+   * ┌─────────────────────────────────────────────────────────────┐
+   * │                                                              │
+   * │  Active Video (overlay open + playing):                      │
+   * │    ✅ preload="auto"                                         │
+   * │    ✅ Silent preload seeks enabled                           │
+   │    ✅ Full buffer target: 20s                                 │
+   │    ✅ Monitor running                                         │
+   │                                                              │
+   │  Background Videos (not active):                              │
+   │    ❌ preload="none" (stops all downloading)                  │
+   │    ❌ Silent preload seeks disabled                           │
+   │    ❌ Monitor paused                                          │
+   │    💾 Metadata only (saves bandwidth)                         │
+   │                                                              │
+   │  When active video ends/is closed:                            │
+   │    🔄 Restore all background videos to "metadata"             │
+   │    (They'll get preload="auto" when they become active)       │
+   │                                                              │
+   └─────────────────────────────────────────────────────────────┘
    */
+  const PriorityManager = {
+    /** @type {HTMLVideoElement|null} */
+    _activeVideo: null,
+    /** @type {Set<Object>} All registered preload managers */
+    _registeredManagers: new Set(),
+    /** @type {number|null} Priority check interval */
+    _checkInterval: null,
+    /** @type {boolean} Is the priority system active */
+    _isActive: false,
+    /**
+     * Register a preload manager so the priority system can control it.
+     * @param {Object} manager - The preload manager object
+     * @param {HTMLVideoElement} video - The video element
+     */
+    register(manager, video) {
+      const entry = { manager, video, originalPreload: video.preload };
+      this._registeredManagers.add(entry);
+
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        const id = video.dataset.videoObserverId || "unknown";
+        console.log(
+          `[Priority] 📋 Registered ${id} (preload="${video.preload}")`,
+        );
+      }
+
+      // If there's already an active video, immediately deprioritize this one
+      if (this._activeVideo && video !== this._activeVideo) {
+        this._deprioritizeVideo(entry);
+      }
+
+      return entry;
+    },
+    /**
+     * Unregister a preload manager when a video is cleaned up.
+     * @param {Object} manager - The preload manager to unregister
+     */
+    unregister(manager) {
+      for (const entry of this._registeredManagers) {
+        if (entry.manager === manager) {
+          const id = entry.video.dataset.videoObserverId || "unknown";
+
+          // Restore original preload before removing
+          entry.video.preload = entry.originalPreload || "metadata";
+
+          this._registeredManagers.delete(entry);
+
+          if (BOOST_CONFIG.DEBUG_PRIORITY) {
+            console.log(`[Priority] 🗑️ Unregistered ${id}`);
+          }
+          break;
+        }
+      }
+    },
+    /**
+     * Set the active video that should get priority bandwidth.
+     * Call this when:
+     *   - User opens overlay and starts playing
+     *   - User clicks play on a video in the panel
+     *
+     * @param {HTMLVideoElement} video - The video to prioritize
+     */
+    setActiveVideo(video) {
+      if (!BOOST_CONFIG.PRIORITY_ENABLED) return;
+
+      // If same video, nothing to do
+      if (this._activeVideo === video) return;
+
+      const newId = video?.dataset.videoObserverId || "unknown";
+      const oldId = this._activeVideo?.dataset.videoObserverId || "none";
+
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        console.log(`[Priority] 🎯 Setting active video: ${oldId} → ${newId}`);
+      }
+
+      // Deprioritize old active video
+      if (this._activeVideo) {
+        this._deprioritizeVideoForElement(this._activeVideo);
+      }
+
+      // Set new active video
+      this._activeVideo = video;
+
+      // Prioritize new active video
+      if (video) {
+        this._prioritizeVideoForElement(video);
+      }
+
+      // Deprioritize all other registered videos
+      this._deprioritizeAllOthers();
+
+      // Start priority check loop if not running
+      this._startCheckLoop();
+    },
+    /**
+     * Clear the active video (called when overlay closes or video ends).
+     * Restores all videos to normal metadata preloading.
+     */
+    clearActiveVideo() {
+      if (!this._activeVideo) return;
+
+      const oldId = this._activeVideo.dataset.videoObserverId || "unknown";
+
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        console.log(`[Priority] 🏁 Clearing active video: ${oldId}`);
+      }
+
+      // Restore previous active to metadata
+      this._deprioritizeVideoForElement(this._activeVideo);
+      this._activeVideo = null;
+
+      // Restore all background videos to metadata (so previews can load on hover)
+      this._restoreAllToMetadata();
+
+      // Stop priority check loop
+      this._stopCheckLoop();
+    },
+    /**
+     * Check if a video is the active priority video.
+     * @param {HTMLVideoElement} video
+     * @returns {boolean}
+     */
+    isActiveVideo(video) {
+      return this._activeVideo === video;
+    },
+    /**
+     * Get the current active video.
+     * @returns {HTMLVideoElement|null}
+     */
+    getActiveVideo() {
+      return this._activeVideo;
+    },
+    /**
+     * Prioritize a specific video element (preload="auto", enable seeks).
+     * @private
+     */
+    _prioritizeVideoForElement(video) {
+      const entry = this._findEntry(video);
+      if (!entry) return;
+
+      const id = video.dataset.videoObserverId || "unknown";
+      const wasPreload = video.preload;
+
+      // Set aggressive preloading
+      video.preload = "auto";
+
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        console.log(
+          `[Priority] ⬆️ PRIORITIZED ${id} | preload: "${wasPreload}" → "auto"`,
+        );
+      }
+    },
+    /**
+     * Deprioritize a specific video element (preload="none", pause seeks).
+     * @private
+     */
+    _deprioritizeVideoForElement(video) {
+      const entry = this._findEntry(video);
+      if (!entry) return;
+
+      this._deprioritizeVideo(entry);
+    },
+    /**
+     * Deprioritize a registered entry.
+     * @private
+     */
+    _deprioritizeVideo(entry) {
+      const id = entry.video.dataset.videoObserverId || "unknown";
+      const wasPreload = entry.video.preload;
+
+      // Stop all downloading for non-active videos
+      entry.video.preload = BOOST_CONFIG.PRIORITY_BACKGROUND_PRELOAD;
+
+      if (
+        BOOST_CONFIG.DEBUG_PRIORITY &&
+        wasPreload !== BOOST_CONFIG.PRIORITY_BACKGROUND_PRELOAD
+      ) {
+        console.log(
+          `[Priority] ⬇️ DEPRIORITIZED ${id} | preload: "${wasPreload}" → "${BOOST_CONFIG.PRIORITY_BACKGROUND_PRELOAD}"`,
+        );
+      }
+    },
+    /**
+     * Deprioritize all registered videos except the active one.
+     * @private
+     */
+    _deprioritizeAllOthers() {
+      let count = 0;
+      for (const entry of this._registeredManagers) {
+        if (entry.video !== this._activeVideo) {
+          this._deprioritizeVideo(entry);
+          count++;
+        }
+      }
+      if (count > 0 && BOOST_CONFIG.DEBUG_PRIORITY) {
+        console.log(`[Priority] 🔇 Deprioritized ${count} background video(s)`);
+      }
+    },
+    /**
+     * Restore all registered videos to "metadata" preload.
+     * Called when active video is cleared.
+     * @private
+     */
+    _restoreAllToMetadata() {
+      let count = 0;
+      for (const entry of this._registeredManagers) {
+        if (entry.video.preload === BOOST_CONFIG.PRIORITY_BACKGROUND_PRELOAD) {
+          entry.video.preload = "metadata";
+          count++;
+        }
+      }
+      if (count > 0 && BOOST_CONFIG.DEBUG_PRIORITY) {
+        console.log(
+          `[Priority] 🔄 Restored ${count} video(s) to "metadata" preload`,
+        );
+      }
+    },
+    /**
+     * Find the registered entry for a video element.
+     * @private
+     */
+    _findEntry(video) {
+      for (const entry of this._registeredManagers) {
+        if (entry.video === video) return entry;
+      }
+      return null;
+    },
+    /**
+     * Start the periodic check loop to ensure priority is maintained.
+     * This handles edge cases where videos change preload on their own.
+     * @private
+     */
+    _startCheckLoop() {
+      if (this._checkInterval) return;
+
+      this._checkInterval = setInterval(() => {
+        if (!this._activeVideo) {
+          this._stopCheckLoop();
+          return;
+        }
+
+        // Verify active video still has preload="auto"
+        if (this._activeVideo.preload !== "auto") {
+          if (BOOST_CONFIG.DEBUG_PRIORITY) {
+            console.warn(
+              `[Priority] ⚠️ Active video preload changed to "${this._activeVideo.preload}", restoring "auto"`,
+            );
+          }
+          this._activeVideo.preload = "auto";
+        }
+
+        // Check if active video has been removed from DOM
+        if (!document.body.contains(this._activeVideo)) {
+          if (BOOST_CONFIG.DEBUG_PRIORITY) {
+            console.log(
+              `[Priority] 🗑️ Active video removed from DOM, clearing`,
+            );
+          }
+          this.clearActiveVideo();
+          return;
+        }
+
+        // Check if active video ended
+        if (this._activeVideo.ended) {
+          if (BOOST_CONFIG.DEBUG_PRIORITY) {
+            console.log(`[Priority] 🏁 Active video ended, clearing`);
+          }
+          this.clearActiveVideo();
+          return;
+        }
+
+        // Verify no other video is trying to preload
+        for (const entry of this._registeredManagers) {
+          if (
+            entry.video !== this._activeVideo &&
+            entry.video.preload === "auto" &&
+            document.body.contains(entry.video)
+          ) {
+            if (BOOST_CONFIG.DEBUG_PRIORITY) {
+              const id = entry.video.dataset.videoObserverId || "unknown";
+              console.warn(
+                `[Priority] ⚠️ Background video ${id} has preload="auto", fixing`,
+              );
+            }
+            this._deprioritizeVideo(entry);
+          }
+        }
+      }, BOOST_CONFIG.PRIORITY_CHECK_INTERVAL);
+
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        console.log(
+          `[Priority] 🔍 Check loop started (every ${BOOST_CONFIG.PRIORITY_CHECK_INTERVAL}ms)`,
+        );
+      }
+    },
+    /**
+     * Stop the periodic check loop.
+     * @private
+     */
+    _stopCheckLoop() {
+      if (this._checkInterval) {
+        clearInterval(this._checkInterval);
+        this._checkInterval = null;
+        if (BOOST_CONFIG.DEBUG_PRIORITY) {
+          console.log(`[Priority] 🔍 Check loop stopped`);
+        }
+      }
+    },
+    /**
+     * Get priority stats for debugging.
+     */
+    getStats() {
+      return {
+        activeVideo: this._activeVideo?.dataset.videoObserverId || null,
+        registeredCount: this._registeredManagers.size,
+        priorityEnabled: BOOST_CONFIG.PRIORITY_ENABLED,
+        backgroundPreload: BOOST_CONFIG.PRIORITY_BACKGROUND_PRELOAD,
+      };
+    },
+    /**
+     * Cleanup everything.
+     */
+    cleanup() {
+      this._stopCheckLoop();
+      this._restoreAllToMetadata();
+      this._registeredManagers.clear();
+      this._activeVideo = null;
+    },
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // SILENT PRELOAD SEEK MANAGER (v2.9 - Priority aware)
+  // ═══════════════════════════════════════════════════════════════
   function createSilentPreloadManager(originalVideo) {
     if (!BOOST_CONFIG.PRELOAD_ENABLED) {
       console.log("[Preload] ⏭️ Disabled in config, skipping");
       return { cleanup: () => {}, getStats: () => ({}) };
     }
-
     const videoId = originalVideo.dataset.videoObserverId || "unknown";
     const videoSrc = originalVideo.currentSrc || originalVideo.src;
-
     if (!videoSrc) {
       console.warn(`[Preload] ❌ No source for ${videoId}`);
       return { cleanup: () => {}, getStats: () => ({}) };
     }
-
     console.log(`[Preload] 🎬 Silent preload manager for ${videoId}`);
     console.log(`[Preload:D] Source: ${videoSrc.substring(0, 80)}...`);
 
@@ -154,26 +474,132 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       isSnappingBack: false,
       userCurrentTime: 0,
       seekTargetTime: 0,
+      playStartTime: 0,
+      gracePeriodActive: false,
+      maxBufferSeen: 0,
+      wasPlayingBeforePreload: false,
+      isPrioritized: false, // 🔧 NEW: Track priority status
     };
-
     let seekSnapBackTimer = null;
     let seekTimeoutTimer = null;
+    let gracePeriodTimer = null;
 
     // Store original preload value to restore on cleanup
     const originalPreload = originalVideo.preload;
 
-    // Force aggressive preload on main video
-    originalVideo.preload = "auto";
-    console.log(`[Preload] 📋 Set preload="auto" (was "${originalPreload}")`);
+    // 🔧 NEW: Register with Priority Manager (but don't set preload="auto" yet)
+    const priorityEntry = PriorityManager.register(
+      {
+        cleanup: () => {},
+        getStats: () => stats,
+        triggerSilentPreload: () => {},
+      },
+      originalVideo,
+    );
+    // Update the entry with the real manager reference after we create it
+
+    // ═══════════════════════════════════════════════════════════
+    // GRACE PERIOD - Prevent preload right after play
+    // ═══════════════════════════════════════════════════════════
+    const onPlayHandler = () => {
+      stats.playStartTime = Date.now();
+      stats.gracePeriodActive = true;
+      stats.maxBufferSeen = 0;
+
+      if (gracePeriodTimer) clearTimeout(gracePeriodTimer);
+
+      gracePeriodTimer = setTimeout(() => {
+        stats.gracePeriodActive = false;
+        const buffer = getBufferAhead(originalVideo);
+        stats.maxBufferSeen = Math.max(stats.maxBufferSeen, buffer);
+
+        if (BOOST_CONFIG.DEBUG_PRELOAD) {
+          console.log(
+            `[Preload] 🟢 Grace period ended for ${videoId} | ` +
+              `Buffer: ${buffer.toFixed(1)}s | Max seen: ${stats.maxBufferSeen.toFixed(1)}s | ` +
+              `Play time: ${((Date.now() - stats.playStartTime) / 1000).toFixed(1)}s`,
+          );
+        }
+        gracePeriodTimer = null;
+      }, BOOST_CONFIG.PRELOAD_GRACE_PERIOD_MS);
+
+      if (BOOST_CONFIG.DEBUG_PRELOAD) {
+        console.log(
+          `[Preload] 🛡️ Grace period started for ${videoId} ` +
+            `(${BOOST_CONFIG.PRELOAD_GRACE_PERIOD_MS / 1000}s) - ` +
+            `no preload seeks during this time`,
+        );
+      }
+
+      // 🔧 NEW: Notify Priority Manager this video is now playing
+      // Only set as active if the overlay is showing this video
+      if (originalVideo.closest("#vo-overlay")) {
+        PriorityManager.setActiveVideo(originalVideo);
+        stats.isPrioritized = true;
+      }
+    };
+
+    const onPauseHandler = () => {
+      // Don't end grace period on pause
+    };
+
+    // 🔧 NEW: Listen for overlay open/close to manage priority
+    const onOverlayOpen = () => {
+      // This video was moved to the overlay - it should get priority
+      if (!originalVideo.paused) {
+        PriorityManager.setActiveVideo(originalVideo);
+        stats.isPrioritized = true;
+      }
+    };
+
+    const onOverlayClose = () => {
+      // Video was removed from overlay - clear priority
+      if (PriorityManager.isActiveVideo(originalVideo)) {
+        PriorityManager.clearActiveVideo();
+        stats.isPrioritized = false;
+      }
+    };
+
+    originalVideo.addEventListener("play", onPlayHandler);
+    originalVideo.addEventListener("pause", onPauseHandler);
+
+    // 🔧 NEW: Use MutationObserver to detect when video enters/leaves overlay
+    const overlayObserver = new MutationObserver(() => {
+      const isInOverlay = !!originalVideo.closest("#vo-overlay");
+      if (isInOverlay && !stats.isPrioritized && !originalVideo.paused) {
+        onOverlayOpen();
+      } else if (!isInOverlay && stats.isPrioritized) {
+        onOverlayClose();
+      }
+    });
+
+    // Observe the video's parent changes
+    const observeParent = () => {
+      if (originalVideo.parentElement) {
+        overlayObserver.observe(originalVideo.parentElement, {
+          childList: true,
+        });
+      }
+    };
+    observeParent();
+    // Re-observe when parent changes (video moved to overlay)
+    const parentObserver = new MutationObserver(() => {
+      overlayObserver.disconnect();
+      observeParent();
+    });
+    if (originalVideo.parentElement) {
+      parentObserver.observe(
+        originalVideo.parentElement.parentElement || document.body,
+        { childList: true, subtree: true },
+      );
+    }
 
     // ═══════════════════════════════════════════════════════════
     // SAFETY: Intercept user-initiated seeks
     // ═══════════════════════════════════════════════════════════
     let userInitiatedSeek = false;
     let userSeekTimeout = null;
-
     const onUserSeeking = () => {
-      // If we're in the middle of a preload snap-back, don't flag as user seek
       if (stats.isSnappingBack) return;
       userInitiatedSeek = true;
       clearTimeout(userSeekTimeout);
@@ -181,7 +607,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         userInitiatedSeek = false;
       }, 1000);
     };
-
     const onUserSeeked = () => {
       if (stats.isSnappingBack) return;
       if (BOOST_CONFIG.DEBUG_PRELOAD) {
@@ -189,15 +614,40 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
           `[Preload] 👤 User seeked to ${originalVideo.currentTime.toFixed(1)}s`,
         );
       }
+      stats.gracePeriodActive = true;
+      stats.playStartTime = Date.now();
+      stats.maxBufferSeen = 0;
+      if (gracePeriodTimer) clearTimeout(gracePeriodTimer);
+      gracePeriodTimer = setTimeout(() => {
+        stats.gracePeriodActive = false;
+        if (BOOST_CONFIG.DEBUG_PRELOAD) {
+          console.log(
+            `[Preload] 🟢 Post-seek grace period ended for ${videoId}`,
+          );
+        }
+        gracePeriodTimer = null;
+      }, BOOST_CONFIG.PRELOAD_GRACE_PERIOD_MS);
     };
-
     originalVideo.addEventListener("seeking", onUserSeeking);
     originalVideo.addEventListener("seeked", onUserSeeked);
 
     // ═══════════════════════════════════════════════════════════
-    // CORE: Silent preload seek
+    // CORE: Silent preload seek (v2.8 logic, unchanged)
     // ═══════════════════════════════════════════════════════════
     function triggerSilentPreload(targetTime) {
+      // 🔧 NEW: Check if this video has priority
+      if (
+        !PriorityManager.isActiveVideo(originalVideo) &&
+        BOOST_CONFIG.PRIORITY_ENABLED
+      ) {
+        if (BOOST_CONFIG.DEBUG_PRELOAD) {
+          console.log(
+            `[Preload] 🔇 Skipping preload for ${videoId} - not the active video`,
+          );
+        }
+        return false;
+      }
+
       // Guard conditions
       if (stats.isSnappingBack) {
         if (BOOST_CONFIG.DEBUG_PRELOAD) {
@@ -226,13 +676,35 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         return false;
       }
 
+      if (stats.gracePeriodActive) {
+        if (BOOST_CONFIG.DEBUG_PRELOAD) {
+          const elapsed = ((Date.now() - stats.playStartTime) / 1000).toFixed(
+            1,
+          );
+          console.log(
+            `[Preload] 🛡️ Grace period active (${elapsed}s elapsed), skipping preload`,
+          );
+        }
+        return false;
+      }
+
+      const currentBuffer = getBufferAhead(originalVideo);
+      stats.maxBufferSeen = Math.max(stats.maxBufferSeen, currentBuffer);
+
+      if (stats.maxBufferSeen < BOOST_CONFIG.PRELOAD_FIRST_BUFFER_GRACE) {
+        if (BOOST_CONFIG.DEBUG_PRELOAD && stats.preloadSeeks === 0) {
+          console.log(
+            `[Preload] 🐌 Buffer hasn't reached ${BOOST_CONFIG.PRELOAD_FIRST_BUFFER_GRACE}s yet ` +
+              `(max seen: ${stats.maxBufferSeen.toFixed(1)}s), waiting for natural buffer growth`,
+          );
+        }
+        return false;
+      }
+
       const currentTime = originalVideo.currentTime;
       const duration = originalVideo.duration || Infinity;
-
-      // Calculate safe target
       const safeTarget = Math.min(targetTime, duration - 5);
       const advance = safeTarget - currentTime;
-
       if (advance < BOOST_CONFIG.PRELOAD_MIN_ADVANCE) {
         if (BOOST_CONFIG.DEBUG_PRELOAD) {
           console.log(
@@ -242,7 +714,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         return false;
       }
 
-      // Rate limit
       const timeSinceLastSeek = Date.now() - stats.lastPreloadSeek;
       if (timeSinceLastSeek < BOOST_CONFIG.PRELOAD_MIN_INTERVAL) {
         if (BOOST_CONFIG.DEBUG_PRELOAD) {
@@ -259,17 +730,16 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       stats.isSnappingBack = true;
       stats.userCurrentTime = currentTime;
       stats.seekTargetTime = safeTarget;
+      stats.wasPlayingBeforePreload = !originalVideo.paused;
 
       console.log(
         `[Preload] 🔄 #${stats.preloadSeeks}: Silent seek ${currentTime.toFixed(1)}s → ${safeTarget.toFixed(1)}s ` +
           `(advance: ${advance.toFixed(1)}s, snapping back in ${BOOST_CONFIG.PRELOAD_SNAP_BACK_MS}ms)`,
       );
 
-      // Record buffer state before seek
       const bufferBefore = getBufferAhead(originalVideo);
       const rangeBefore = getTotalBufferedRange(originalVideo);
 
-      // ─── SEEK AHEAD ───
       try {
         originalVideo.currentTime = safeTarget;
       } catch (err) {
@@ -279,44 +749,48 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         return false;
       }
 
-      // ─── SNAP BACK AFTER BRIEF DELAY ───
       seekSnapBackTimer = setTimeout(() => {
         seekSnapBackTimer = null;
-
         if (!document.body.contains(originalVideo)) {
           stats.isSnappingBack = false;
           return;
         }
-
-        // Check if we're still at the target (seeking might have been slow)
         const currentPos = originalVideo.currentTime;
         const snapBackTarget = stats.userCurrentTime;
-
         console.log(
           `[Preload] ↩️ Snapping back: ${currentPos.toFixed(1)}s → ${snapBackTarget.toFixed(1)}s ` +
             `(was at target for ~${BOOST_CONFIG.PRELOAD_SNAP_BACK_MS}ms)`,
         );
-
         stats.lastSnapBack = Date.now();
-
         try {
           originalVideo.currentTime = snapBackTarget;
         } catch (err) {
           console.error(`[Preload] ❌ Snap-back failed:`, err.message);
           stats.failedSeeks++;
           stats.isSnappingBack = false;
+          if (stats.wasPlayingBeforePreload && originalVideo.paused) {
+            originalVideo.play().catch(() => {});
+          }
           return;
         }
 
-        // ─── CHECK RESULTS AFTER SNAP-BACK SETTLES ───
         setTimeout(() => {
           stats.isSnappingBack = false;
           stats.successfulSeeks++;
 
+          if (stats.wasPlayingBeforePreload && originalVideo.paused) {
+            console.log(`[Preload] ▶️ Resuming playback after preload seek`);
+            originalVideo.play().catch((err) => {
+              console.warn(
+                `[Preload] ⚠️ Failed to resume playback:`,
+                err.message,
+              );
+            });
+          }
+
           const bufferAfter = getBufferAhead(originalVideo);
           const rangeAfter = getTotalBufferedRange(originalVideo);
           const bufferGrowth = rangeAfter.end - rangeBefore.end;
-
           console.log(
             `[Preload] ✅ #${stats.preloadSeeks} complete | ` +
               `Buffer: ${bufferBefore.toFixed(1)}s → ${bufferAfter.toFixed(1)}s ` +
@@ -325,7 +799,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
               `${rangeAfter.start.toFixed(1)}–${rangeAfter.end.toFixed(1)}`,
           );
 
-          // If buffer didn't grow, the browser might not support this technique
           if (
             bufferGrowth <= 0 &&
             stats.preloadSeeks >= 5 &&
@@ -333,15 +806,12 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
           ) {
             console.warn(
               `[Preload] ⚠️ Buffer not growing after ${stats.preloadSeeks} seeks. ` +
-                `Browser may not support silent preload technique. ` +
-                `Consider falling back to micro-boost approach.`,
+                `Browser may not support silent preload technique.`,
             );
           }
         }, 500);
       }, BOOST_CONFIG.PRELOAD_SNAP_BACK_MS);
 
-      // ─── SAFETY TIMEOUT ───
-      // If snap-back timer doesn't fire for some reason, force cleanup
       seekTimeoutTimer = setTimeout(() => {
         if (stats.isSnappingBack) {
           console.warn(`[Preload] ⚠️ Safety timeout - forcing snap-back`);
@@ -356,10 +826,13 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
           }
           stats.isSnappingBack = false;
           stats.failedSeeks++;
+
+          if (stats.wasPlayingBeforePreload && originalVideo.paused) {
+            originalVideo.play().catch(() => {});
+          }
         }
         seekTimeoutTimer = null;
       }, BOOST_CONFIG.PRELOAD_SNAP_BACK_MS + 2000);
-
       return true;
     }
 
@@ -367,11 +840,9 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     // MONITOR LOOP
     // ═══════════════════════════════════════════════════════════
     let monitorIteration = 0;
-
     const monitorInterval = setInterval(() => {
       monitorIteration++;
 
-      // Clean up if video removed from DOM
       if (!document.body.contains(originalVideo)) {
         console.log(
           `[Preload] 🗑️ Video removed from DOM, cleaning up for ${videoId}`,
@@ -380,20 +851,30 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         return;
       }
 
-      // Skip if snapping back
+      // 🔧 NEW: Skip monitoring if this video is not the active priority video
+      if (
+        BOOST_CONFIG.PRIORITY_ENABLED &&
+        !PriorityManager.isActiveVideo(originalVideo)
+      ) {
+        // Only log occasionally to reduce noise
+        if (monitorIteration % 30 === 0 && BOOST_CONFIG.DEBUG_PRELOAD) {
+          console.log(
+            `[Preload] 💤 Monitor paused for ${videoId} - not active video`,
+          );
+        }
+        return;
+      }
+
       if (stats.isSnappingBack) return;
-
-      // Skip if paused
       if (originalVideo.paused) return;
-
-      // Skip if user is seeking
       if (userInitiatedSeek) return;
 
       const mainBuffer = getBufferAhead(originalVideo);
+      stats.maxBufferSeen = Math.max(stats.maxBufferSeen, mainBuffer);
+
       const mainTime = originalVideo.currentTime;
       const mainDuration = originalVideo.duration || Infinity;
 
-      // ─── Log status every 10 iterations ───
       if (monitorIteration % 10 === 0) {
         const buffered = getTotalBufferedRange(originalVideo);
         const bufferPercent =
@@ -402,29 +883,35 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
                 1,
               )
             : "?";
+        const graceInfo = stats.gracePeriodActive
+          ? `🛡️ Grace: ${((Date.now() - stats.playStartTime) / 1000).toFixed(1)}s`
+          : "✅ Ready";
+        const priorityInfo = stats.isPrioritized
+          ? "⭐ Priority"
+          : "🔇 Background";
         console.log(
           `[Preload] 📊 Status #${monitorIteration} | ` +
             `Time: ${mainTime.toFixed(1)}s/${mainDuration.toFixed(1)}s | ` +
             `Buffer ahead: ${mainBuffer.toFixed(1)}s | ` +
+            `Max buffer: ${stats.maxBufferSeen.toFixed(1)}s | ` +
             `Total buffered: ${buffered.start.toFixed(1)}–${buffered.end.toFixed(1)} (${bufferPercent}%) | ` +
             `Seeks: ${stats.preloadSeeks} (${stats.successfulSeeks} ok, ${stats.failedSeeks} fail) | ` +
-            `Snapping: ${stats.isSnappingBack ? "🔄" : "✅"}`,
+            `${graceInfo} | ${priorityInfo}`,
         );
         stats.lastLogTime = Date.now();
       }
 
-      // ─── DECISION: Trigger preload? ───
+      if (stats.gracePeriodActive) return;
+      if (stats.maxBufferSeen < BOOST_CONFIG.PRELOAD_FIRST_BUFFER_GRACE) return;
+
       const needsMoreBuffer = mainBuffer < BOOST_CONFIG.PRELOAD_STOP_AT_BUFFER;
       const hasRoomToGrow = mainTime + mainBuffer < mainDuration - 5;
-
       if (needsMoreBuffer && hasRoomToGrow) {
         const targetTime = Math.min(
           mainTime + BOOST_CONFIG.PRELOAD_ADVANCE_SEEK,
           Math.min(mainTime + BOOST_CONFIG.PRELOAD_MAX_AHEAD, mainDuration - 5),
         );
-
         if (targetTime > mainTime + mainBuffer) {
-          // Target is beyond current buffer end → preload would help
           const urgency =
             mainBuffer < BOOST_CONFIG.MIN_FORWARD_BUFFER
               ? "🔴"
@@ -446,13 +933,16 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       `[Preload] ✅ Silent preload manager initialized for ${videoId} | ` +
         `Sync: ${BOOST_CONFIG.PRELOAD_SYNC_INTERVAL}ms | ` +
         `Advance: ${BOOST_CONFIG.PRELOAD_ADVANCE_SEEK}s | ` +
-        `Snap-back: ${BOOST_CONFIG.PRELOAD_SNAP_BACK_MS}ms`,
+        `Snap-back: ${BOOST_CONFIG.PRELOAD_SNAP_BACK_MS}ms | ` +
+        `Grace: ${BOOST_CONFIG.PRELOAD_GRACE_PERIOD_MS}ms | ` +
+        `First buffer: ${BOOST_CONFIG.PRELOAD_FIRST_BUFFER_GRACE}s | ` +
+        `Priority: ${BOOST_CONFIG.PRIORITY_ENABLED ? "✅ ON" : "❌ OFF"}`,
     );
 
     // ═══════════════════════════════════════════════════════════
-    // RETURN CONTROLLER
+    // BUILD MANAGER OBJECT (so we can update the priority entry)
     // ═══════════════════════════════════════════════════════════
-    return {
+    const manager = {
       cleanup: () => {
         console.log(
           `[Preload] 🧹 Cleaning up for ${videoId} | ` +
@@ -462,20 +952,48 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         if (seekSnapBackTimer) clearTimeout(seekSnapBackTimer);
         if (seekTimeoutTimer) clearTimeout(seekTimeoutTimer);
         if (userSeekTimeout) clearTimeout(userSeekTimeout);
+        if (gracePeriodTimer) clearTimeout(gracePeriodTimer);
+        overlayObserver.disconnect();
+        parentObserver.disconnect();
         originalVideo.removeEventListener("seeking", onUserSeeking);
         originalVideo.removeEventListener("seeked", onUserSeeked);
-        originalVideo.preload = originalPreload; // Restore original
+        originalVideo.removeEventListener("play", onPlayHandler);
+        originalVideo.removeEventListener("pause", onPauseHandler);
+
+        // 🔧 Unregister from Priority Manager
+        PriorityManager.unregister(manager);
+
+        originalVideo.preload = originalPreload;
       },
       getStats: () => ({ ...stats }),
       triggerSilentPreload,
     };
+
+    // Update the priority entry with the real manager
+    if (priorityEntry) {
+      priorityEntry.manager = manager;
+    }
+
+    // 🔧 NEW: If this video is NOT the active one, deprioritize it immediately
+    if (
+      BOOST_CONFIG.PRIORITY_ENABLED &&
+      !PriorityManager.isActiveVideo(originalVideo)
+    ) {
+      originalVideo.preload = BOOST_CONFIG.PRIORITY_BACKGROUND_PRELOAD;
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        console.log(
+          `[Preload] 🔇 ${videoId} starts as background - preload="${BOOST_CONFIG.PRIORITY_BACKGROUND_PRELOAD}"`,
+        );
+      }
+    }
+
+    return manager;
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // BOOST STATE STORAGE
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // BOOST STATE STORAGE (unchanged)
+  // ═══════════════════════════════════════════════════════════
   const boostTimers = new WeakMap();
-
   function createBoostState(video) {
     return {
       isBoosting: false,
@@ -511,7 +1029,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       preloadManager: null,
     };
   }
-
   function getBoostState(video) {
     if (!video) return null;
     let state = boostTimers.get(video);
@@ -522,9 +1039,9 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     return state;
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // ADAPTIVE RATE CALCULATION (kept for logging/reference only)
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // ADAPTIVE RATE CALCULATION (unchanged)
+  // ═══════════════════════════════════════════════════════════
   function calculateOptimalBoostRate(
     bufferAhead,
     isSeek = false,
@@ -577,21 +1094,19 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     return { rate: 1.0, level: "none" };
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // CONNECTION QUALITY DETECTION
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // CONNECTION QUALITY DETECTION (unchanged)
+  // ═══════════════════════════════════════════════════════════
   function updateConnectionQuality(video, state) {
     if (!video || !state) return;
     const now = Date.now();
     const timeSinceLastCheck = now - state.lastBufferCheck;
     if (timeSinceLastCheck < BOOST_CONFIG.CONNECTION_CHECK_WINDOW) return;
-
     const currentBufferAhead = getBufferAhead(video);
     const bufferGrowth = currentBufferAhead - state.lastBufferAhead;
     const growthRate =
       timeSinceLastCheck > 0 ? bufferGrowth / (timeSinceLastCheck / 1000) : 0;
     state.lastBufferGrowth = growthRate;
-
     if (state.isBoosting && growthRate < -0.1) {
       state.consecutiveShrinks++;
     } else if (state.isBoosting && growthRate > 0.1) {
@@ -599,65 +1114,69 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     } else if (!state.isBoosting) {
       state.consecutiveShrinks = 0;
     }
-
     const newQuality = Math.max(0.1, Math.min(2.0, Math.abs(growthRate) + 0.5));
     state.connectionQuality = state.connectionQuality * 0.7 + newQuality * 0.3;
     state.lastBufferCheck = now;
     state.lastBufferAhead = currentBufferAhead;
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // CONTINUOUS BUFFER MONITOR (preload-aware)
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // CONTINUOUS BUFFER MONITOR (priority aware)
+  // ═══════════════════════════════════════════════════════════
   function startContinuousBufferMonitor(video) {
     if (!video || video.dataset.continuousMonitorActive === "true") {
       return () => {};
     }
     video.dataset.continuousMonitorActive = "true";
     const state = getBoostState(video);
-
+    const priorityInfo = BOOST_CONFIG.PRIORITY_ENABLED
+      ? `Priority: ${PriorityManager.isActiveVideo(video) ? "⭐ Active" : "🔇 Background"}`
+      : "Priority: OFF";
     console.log(
       `[Boost] 🚀 Monitor attached | Min: ${BOOST_CONFIG.MIN_FORWARD_BUFFER}s | ` +
         `Comfort: ${BOOST_CONFIG.BUFFER_COMFORT}s | Target: ${BOOST_CONFIG.BUFFER_TARGET}s | ` +
-        `Preload: ${BOOST_CONFIG.PRELOAD_ENABLED ? "✅ ON" : "❌ OFF"}`,
+        `Preload: ${BOOST_CONFIG.PRELOAD_ENABLED ? "✅ ON" : "❌ OFF"} | ${priorityInfo}`,
     );
-
     if (!video.__trueOriginalPlaybackRate) {
       video.__trueOriginalPlaybackRate = video.playbackRate || 1.0;
       state.originalRate = video.__trueOriginalPlaybackRate;
     }
-
     const monitorInterval = setInterval(() => {
       if (typeof tabIsVisible !== "undefined" && !tabIsVisible) return;
       if (video.paused) return;
 
+      // 🔧 NEW: Skip intensive monitoring for non-priority videos
+      if (
+        BOOST_CONFIG.PRIORITY_ENABLED &&
+        !PriorityManager.isActiveVideo(video)
+      ) {
+        return;
+      }
+
       const ahead = getBufferAhead(video);
       const state = getBoostState(video);
       if (!state) return;
-
       updateConnectionQuality(video, state);
       if (state.playStartTime > 0) {
         state.totalPlayTime += BOOST_CONFIG.MONITOR_INTERVAL;
       }
-
       const now = Date.now();
       const isBelowMinimum = ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER;
-
-      // Debug log (every 5s or when below minimum)
       if (now - state.lastDebugTime > 5000 || isBelowMinimum) {
         state.lastDebugTime = now;
         const preloadStats = state.preloadManager?.getStats?.();
         const preloadInfo = preloadStats
-          ? `Seeks: ${preloadStats.preloadSeeks} (${preloadStats.successfulSeeks}✓)`
+          ? `Seeks: ${preloadStats.preloadSeeks} (${preloadStats.successfulSeeks}✓) | Grace: ${preloadStats.gracePeriodActive ? "🛡️" : "✅"}`
           : "Preload: N/A";
+        const priorityLabel = PriorityManager.isActiveVideo(video)
+          ? "⭐"
+          : "🔇";
         console.log(
-          `[Boost] 📊 Buffer: ${ahead.toFixed(1)}s${isBelowMinimum ? " ⚠️BELOW MIN" : ""} | ` +
+          `[Boost] 📊 ${priorityLabel} Buffer: ${ahead.toFixed(1)}s${isBelowMinimum ? " ⚠️BELOW MIN" : ""} | ` +
             `Rate: ${video.playbackRate.toFixed(2)}x | Play: ${(state.totalPlayTime / 1000).toFixed(0)}s | ` +
             `${preloadInfo}`,
         );
       }
-
-      // Log warnings when buffer critically low
       if (isBelowMinimum) {
         state.bufferWarningCount++;
         if (state.bufferWarningCount % 10 === 0) {
@@ -668,15 +1187,11 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
           );
         }
       }
-
-      // Ensure playback rate stays at 1.0 (no fast-forward)
       if (video.playbackRate !== 1.0 && !state.isBoosting) {
-        // video.playbackRate = 1.0;  // Still commented out - preload handles it
+        // video.playbackRate = 1.0;
       }
     }, BOOST_CONFIG.MONITOR_INTERVAL);
-
     state.monitorInterval = monitorInterval;
-
     return () => {
       clearInterval(monitorInterval);
       state.monitorInterval = null;
@@ -684,36 +1199,28 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // BOOST APPLICATION (no-op - preload handles everything)
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // BOOST APPLICATION (no-op)
+  // ═══════════════════════════════════════════════════════════
   function applyForwardBoost(video, targetRate, level, reason = "unknown") {
-    // NOTE: playbackRate modification is intentionally disabled.
-    // Silent preload seeks handle buffer growth without UX impact.
     return false;
   }
-
   function stopForwardBoost(video, reason = "target reached") {
     return;
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // SEEK BOOST HANDLER
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
+  // SEEK BOOST HANDLER (unchanged)
+  // ═══════════════════════════════════════════════════════════
   function boostBufferAfterSeek(video) {
     if (!video || video.paused) return;
     if (typeof tabIsVisible !== "undefined" && !tabIsVisible) return;
-
     const state = getBoostState(video);
     if (!state) return;
-
     if (state.seekDebounceTimer) clearTimeout(state.seekDebounceTimer);
-
     state.seekDebounceTimer = setTimeout(() => {
       const ahead = getBufferAhead(video);
       console.log(`[Boost] 🎯 Seek settled | Buffer: ${ahead.toFixed(1)}s`);
-
-      // Trigger immediate preload if buffer is low after seek
       if (
         ahead < BOOST_CONFIG.BUFFER_COMFORT &&
         state.preloadManager?.triggerSilentPreload
@@ -731,9 +1238,9 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     }, BOOST_CONFIG.SEEK_DEBOUNCE_MS);
   }
 
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
   // CLEANUP FUNCTIONS
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
   function cleanupBoost(video) {
     if (!video) return;
     const state = boostTimers.get(video);
@@ -762,7 +1269,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     delete video.dataset.continuousMonitorActive;
     delete video.dataset.boostAttached;
   }
-
   function cleanupPreviewBoost(previewVideo) {
     if (previewVideo) {
       delete previewVideo.__previewOriginalRate;
@@ -770,33 +1276,30 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       delete previewVideo.__previewBoostStartTime;
     }
   }
-
   function boostPreviewBuffer(previewVideo) {
     return () => {};
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // MAIN BOOST ATTACHMENT (with silent preload manager)
+  // MAIN BOOST ATTACHMENT (with silent preload + priority)
   // ═══════════════════════════════════════════════════════════════
   function attachBoostToVideo(video) {
     if (!video || video.dataset.boostAttached === "true") return () => {};
     video.dataset.boostAttached = "true";
     const videoId = video.dataset.videoObserverId || "unknown";
-
+    const priorityInfo = BOOST_CONFIG.PRIORITY_ENABLED
+      ? "✅ Priority"
+      : "❌ No Priority";
     console.log(
       `[Boost] 🔗 Attached to ${videoId} | Min: ${BOOST_CONFIG.MIN_FORWARD_BUFFER}s | ` +
-        `Preload: ${BOOST_CONFIG.PRELOAD_ENABLED ? "✅ Silent Seek" : "❌ Off"}`,
+        `Preload: ${BOOST_CONFIG.PRELOAD_ENABLED ? "✅ Silent Seek" : "❌ Off"} | ${priorityInfo}`,
     );
 
-    // Start silent preload manager (no fast-forward, no second video element)
     const preloadManager = createSilentPreloadManager(video);
-
-    // Store preload manager in state for monitoring
     const state = getBoostState(video);
     if (state) {
       state.preloadManager = preloadManager;
     }
-
     const stopMonitor = startContinuousBufferMonitor(video);
 
     const onPlay = () => {
@@ -804,35 +1307,36 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       if (!state) return;
       state.playStartTime = Date.now();
       video.__lastPlayTime = Date.now();
-
       const isBufferManager = video.dataset.bufferManagerBuffering === "true";
       const isChunkLoop = video.dataset.chunkLoopActive === "true";
       state.isRealPlay = !isBufferManager && !isChunkLoop;
-
       const ahead = getBufferAhead(video);
       state.lastBufferAhead = ahead;
-
       if (state.isRealPlay) {
         console.log(
           `[Boost] ▶️ Real play started for ${videoId} | Buffer: ${ahead.toFixed(1)}s`,
         );
+        // 🔧 NEW: Set this video as the active priority video
+        if (BOOST_CONFIG.PRIORITY_ENABLED && video.closest("#vo-overlay")) {
+          PriorityManager.setActiveVideo(video);
+        }
       }
     };
 
     const onPause = () => {
       const state = getBoostState(video);
       if (!state) return;
-
       if (state.playStartTime > 0) {
         state.totalPlayTime += Date.now() - state.playStartTime;
         state.playStartTime = 0;
       }
-
       const ahead = getBufferAhead(video);
       state.lastBufferBeforePause = ahead;
       state.lastBufferAhead = ahead;
 
-      if (ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER) {
+      const isPreloadActive =
+        state.preloadManager?.getStats?.()?.isSnappingBack;
+      if (ahead < BOOST_CONFIG.MIN_FORWARD_BUFFER && !isPreloadActive) {
         console.log(
           `[Boost] ⚠️ Pausing with buffer below minimum: ${ahead.toFixed(1)}s`,
         );
@@ -847,8 +1351,6 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       video.__lastSeekTime = Date.now();
       const ahead = getBufferAhead(video);
       console.log(`[Boost] 🎯 Seeked | Buffer: ${ahead.toFixed(1)}s`);
-
-      // Trigger preload after user seek
       if (typeof tabIsVisible === "undefined" || tabIsVisible) {
         boostBufferAfterSeek(video);
       }
@@ -856,6 +1358,10 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
 
     const onEnded = () => {
       console.log(`[Boost] 🏁 Video ended for ${videoId}`);
+      // 🔧 NEW: Clear priority when video ends
+      if (PriorityManager.isActiveVideo(video)) {
+        PriorityManager.clearActiveVideo();
+      }
     };
 
     video.addEventListener("play", onPlay);
@@ -887,9 +1393,9 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     };
   }
 
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
   // GLOBAL API
-  // ═══════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════
   window.BoostEngine = {
     attachBoostToVideo,
     cleanupBoost,
@@ -901,16 +1407,25 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     config: BOOST_CONFIG,
     getBoostState,
     createSilentPreloadManager,
+    PriorityManager, // 🔧 NEW: Expose Priority Manager
   };
-
-  console.log("[Boost] ✅ v2.7 Ready - Silent Preload Seek Mode");
+  console.log("[Boost] ✅ v2.9 Ready - Silent Preload + Active Video Priority");
   console.log(
     `[Boost] Min: ${BOOST_CONFIG.MIN_FORWARD_BUFFER}s | Target: ${BOOST_CONFIG.BUFFER_TARGET}s`,
   );
   console.log(
-    `[Boost] Preload: ${BOOST_CONFIG.PRELOAD_ENABLED ? "✅ Silent Seek (no fast-forward)" : "❌ Disabled"}`,
+    `[Boost] Preload: ${BOOST_CONFIG.PRELOAD_ENABLED ? "✅ Silent Seek" : "❌ Disabled"}`,
   );
   console.log(
     `[Boost] Snap-back: ${BOOST_CONFIG.PRELOAD_SNAP_BACK_MS}ms | Advance: ${BOOST_CONFIG.PRELOAD_ADVANCE_SEEK}s`,
+  );
+  console.log(
+    `[Boost] Grace: ${BOOST_CONFIG.PRELOAD_GRACE_PERIOD_MS}ms | First buffer: ${BOOST_CONFIG.PRELOAD_FIRST_BUFFER_GRACE}s`,
+  );
+  console.log(
+    `[Boost] Priority: ${BOOST_CONFIG.PRIORITY_ENABLED ? "✅ Active video gets all bandwidth" : "❌ Disabled"}`,
+  );
+  console.log(
+    `[Boost] Background preload: "${BOOST_CONFIG.PRIORITY_BACKGROUND_PRELOAD}"`,
   );
 }
