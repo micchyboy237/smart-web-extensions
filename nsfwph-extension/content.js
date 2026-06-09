@@ -23,6 +23,8 @@ const SELECTOR = ".message-inner video";
 const NUM_PREVIEW_CHUNKS = 5;
 const CHUNK_PLAY_DURATION_MS = 4000; // 4s per chunk → ~20s full cycle
 
+let cardVisibilityObserver = null;
+
 // ═══════════════════════════════════════════════════════════════
 // BUFFER BOOST ENGINE (ported from nsfwph-fastream-extension)
 // Supports both main videos AND preview videos
@@ -912,20 +914,24 @@ const BufferManager = {
    */
   isElementInViewport(el) {
     const rect = el.getBoundingClientRect();
-    const panelEl = document.getElementById("video-observer-panel");
 
-    // If in the floating panel, check against panel bounds
+    // Special handling for floating panel cards
+    const panelEl = document.getElementById("video-observer-panel");
     if (panelEl && panelEl.contains(el)) {
       const panelRect = panelEl.getBoundingClientRect();
+      const listEl = panelEl.querySelector("#videos-list");
+      const listRect = listEl ? listEl.getBoundingClientRect() : panelRect;
+
+      // Element must be within the scrollable list area of the panel
       return (
-        rect.top >= panelRect.top &&
-        rect.bottom <= panelRect.bottom &&
-        rect.left >= panelRect.left &&
-        rect.right <= panelRect.right
+        rect.top >= listRect.top &&
+        rect.bottom <= listRect.bottom &&
+        rect.left >= listRect.left &&
+        rect.right <= listRect.right
       );
     }
 
-    // Otherwise check against viewport
+    // Default: check against main browser viewport
     return (
       rect.top >= 0 &&
       rect.bottom <= window.innerHeight &&
@@ -1592,6 +1598,11 @@ function createVideoCard(entry) {
     });
   }
 
+  // 🔧 NEW: Observe this card for scroll visibility
+  if (cardVisibilityObserver) {
+    cardVisibilityObserver.observe(card);
+  }
+
   return card;
 }
 
@@ -1651,6 +1662,12 @@ function cleanupVideoEntry(entry) {
   }
   if (entry.element && entry.element === currentlyPlaying) {
     currentlyPlaying = null;
+  }
+
+  // 🔧 NEW: Stop observing the card for scroll visibility
+  const card = videoCards.get(entry.element);
+  if (card && cardVisibilityObserver) {
+    cardVisibilityObserver.unobserve(card);
   }
 }
 
@@ -1767,6 +1784,78 @@ function observeVideos() {
   performPanelUpdate();
 }
 
+function initCardVisibilityObserver() {
+  if (cardVisibilityObserver) return;
+
+  // Find the scrollable container inside the panel
+  // Fallback chain ensures it works regardless of exact CSS structure
+  const rootEl =
+    document.getElementById("videos-list") ||
+    document.getElementById("videos-tab") ||
+    document.getElementById("video-observer-panel");
+
+  cardVisibilityObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        const card = entry.target;
+        const entryId = card.dataset.videoId;
+
+        // Find the corresponding video entry
+        let targetEntry = null;
+        for (const ent of videos.values()) {
+          if (ent.id === entryId) {
+            targetEntry = ent;
+            break;
+          }
+        }
+        if (!targetEntry || !targetEntry.preview) return;
+
+        const preview = targetEntry.preview;
+        const info = BufferManager.managedVideos.get(preview);
+        if (!info) return;
+
+        // 🔧 NEVER interfere if the user is actively hovering and playing chunks
+        if (info.strategy === RAM_CONFIG.BUFFER_STRATEGY.ACTIVE) return;
+
+        if (entry.isIntersecting) {
+          // 👁️ Scrolled INTO view: Upgrade to INITIAL (buffer first frame)
+          if (
+            info.strategy === RAM_CONFIG.BUFFER_STRATEGY.METADATA ||
+            info.strategy === RAM_CONFIG.BUFFER_STRATEGY.NONE
+          ) {
+            console.log(
+              `[BufferMgr] 👁️ Scrolled into view: ${entryId} → INITIAL`,
+            );
+            BufferManager.setStrategy(
+              preview,
+              RAM_CONFIG.BUFFER_STRATEGY.INITIAL,
+            );
+          }
+        } else {
+          // 🙈 Scrolled OUT of view: Downgrade to METADATA (free RAM)
+          if (info.strategy === RAM_CONFIG.BUFFER_STRATEGY.INITIAL) {
+            console.log(
+              `[BufferMgr] 🙈 Scrolled out of view: ${entryId} → METADATA`,
+            );
+            BufferManager.setStrategy(
+              preview,
+              RAM_CONFIG.BUFFER_STRATEGY.METADATA,
+            );
+          }
+        }
+      });
+    },
+    {
+      root: rootEl,
+      threshold: 0.1, // Trigger when 10% of the card is visible
+    },
+  );
+
+  console.log(
+    `[BufferMgr] 📜 Scroll tracking observer initialized (root: ${rootEl?.id || "viewport"})`,
+  );
+}
+
 function createFloatingPanel() {
   if (panel) return;
   panel = document.createElement("div");
@@ -1807,7 +1896,14 @@ function createFloatingPanel() {
       currentlyPlaying = null;
     }
   });
-  performPanelUpdate();
+
+  // 🔧 NEW: Initialize scroll tracking after panel is in DOM
+  initCardVisibilityObserver();
+
+  // After panel is created and initial videos are added
+  setTimeout(() => {
+    performPanelUpdate(); // This will trigger scheduleSmartBuffering for all cards
+  }, 100);
 }
 
 // ═══════════════════════════════════════════════════════════════
