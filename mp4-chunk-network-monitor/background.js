@@ -1,4 +1,8 @@
-// background.js - Enhanced with video detection logging
+// background.js - Enhanced with Download Manager integration
+
+// Import download manager functionality
+importScripts("download-manager.js");
+
 class NetworkRequestMonitor {
   constructor() {
     this.requestCount = 0;
@@ -13,8 +17,6 @@ class NetworkRequestMonitor {
       (details) => {
         this.requestCount++;
         const timestamp = new Date().toISOString();
-
-        // Create log entry
         const logEntry = {
           id: this.requestCount,
           timestamp,
@@ -24,24 +26,17 @@ class NetworkRequestMonitor {
           requestId: details.requestId,
           tabId: details.tabId,
         };
-
         console.log(`[Background][REQUEST #${this.requestCount}]`, {
           method: details.method,
           url: details.url,
           timestamp,
         });
-
-        // Check if it might be a video request
         if (details.url.includes(".mp4") || details.url.includes("/video/")) {
           console.log(
             `[Background][VIDEO DETECTED] Request for video: ${details.url}`,
           );
         }
-
-        // Store for later
         this.storeRequest(details.requestId, logEntry);
-
-        // Send to popup if open
         this.sendToPopup(logEntry);
       },
       { urls: ["<all_urls>"] },
@@ -62,39 +57,18 @@ class NetworkRequestMonitor {
 
         let contentType = null;
         if (details.responseHeaders) {
-          const importantHeaders = [
-            "content-type",
-            "content-length",
-            "cache-control",
-          ];
-          const relevantHeaders = details.responseHeaders.filter((h) =>
-            importantHeaders.includes(h.name.toLowerCase()),
-          );
-
-          // Extract content-type
           const contentTypeHeader = details.responseHeaders.find(
             (h) => h.name.toLowerCase() === "content-type",
           );
           contentType = contentTypeHeader ? contentTypeHeader.value : null;
-
-          console.log("[Background][Headers]", relevantHeaders);
-
-          // Log specifically for video responses
-          if (
-            isVideoResponse ||
-            (contentType && contentType.includes("video/mp4"))
-          ) {
-            console.log(
-              `[Background][VIDEO RESPONSE] Status: ${details.statusCode}, Content-Type: ${contentType}, URL: ${details.url}`,
-            );
-          }
         }
 
+        // FIX: Ensure the log entry has all fields the popup expects
         const logEntry = {
           timestamp,
-          type: "RESPONSE",
-          statusCode: details.statusCode,
-          url: details.url,
+          type: "RESPONSE", // ✓ Must be exactly "RESPONSE"
+          statusCode: details.statusCode, // ✓ Must be a number
+          url: details.url, // ✓ Must be a string
           requestId: details.requestId,
           contentType: contentType,
           isVideoChunk:
@@ -102,7 +76,17 @@ class NetworkRequestMonitor {
             (contentType && contentType.includes("video/mp4")),
         };
 
+        // Debug: Log what we're sending
+        console.log("[Background] 📤 Sending to popup:", {
+          type: logEntry.type,
+          statusCode: logEntry.statusCode,
+          url: logEntry.url.substring(0, 60) + "...",
+        });
+
         this.sendToPopup(logEntry);
+
+        // FIX: Also store with the same format
+        this.storeRequest(details.requestId, logEntry);
       },
       { urls: ["<all_urls>"] },
       ["responseHeaders"],
@@ -116,7 +100,6 @@ class NetworkRequestMonitor {
         "from",
         sender.tab?.id,
       );
-
       if (message.type === "FETCH_RESPONSE") {
         console.log("[Background][Fetch Body]", {
           url: message.url,
@@ -132,12 +115,12 @@ class NetworkRequestMonitor {
         });
         sendResponse({ received: true });
       }
-      return true; // Keep message channel open
+      // Note: DownloadManager messages are handled in download-manager.js
+      return true;
     });
   }
 
   setupKeepAlive() {
-    // Keep service worker alive
     setInterval(() => {
       console.log("[Background] Keep-alive ping");
       chrome.storage.local.get(["lastPing"], (result) => {
@@ -146,14 +129,13 @@ class NetworkRequestMonitor {
           requestCount: this.requestCount,
         });
       });
-    }, 20000); // Every 20 seconds
+    }, 20000);
   }
 
   storeRequest(requestId, data) {
     chrome.storage.local.get(["requests"], (result) => {
       const requests = result.requests || [];
-      requests.unshift(data); // Add to beginning
-      // Keep last 100 requests
+      requests.unshift(data);
       const trimmed = requests.slice(0, 100);
       chrome.storage.local.set({ requests: trimmed });
     });
@@ -168,8 +150,6 @@ class NetworkRequestMonitor {
 
 // Initialize the monitor
 const monitor = new NetworkRequestMonitor();
-
-// Log that background script is alive
 console.log(
   "[Background] Service worker started at:",
   new Date().toISOString(),

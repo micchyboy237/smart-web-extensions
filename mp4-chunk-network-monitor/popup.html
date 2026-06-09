@@ -13,6 +13,7 @@
         gap: 10px;
         margin-bottom: 10px;
         align-items: center;
+        flex-wrap: wrap;
       }
       .log-entry {
         border-bottom: 1px solid #ccc;
@@ -64,6 +65,16 @@
       button#clearBtn:hover {
         background-color: #da190b;
       }
+      button#downloadManagerBtn {
+        background-color: #2196f3;
+        color: white;
+        border: none;
+        border-radius: 3px;
+        font-weight: bold;
+      }
+      button#downloadManagerBtn:hover {
+        background-color: #1976d2;
+      }
       .status {
         font-weight: bold;
       }
@@ -90,6 +101,11 @@
         color: #4caf50;
         margin-left: 5px;
       }
+      .separator {
+        border-left: 1px solid #ccc;
+        height: 20px;
+        margin: 0 5px;
+      }
     </style>
   </head>
   <body>
@@ -101,6 +117,8 @@
         <span>🎬 Show only progressive MP4 videos (206 responses)</span>
       </label>
       <button id="downloadBtn" style="display: none">📥 Download Videos</button>
+      <span class="separator"></span>
+      <button id="downloadManagerBtn">📂 Download Manager</button>
     </div>
     <div id="logs"></div>
     <script src="popup.js"></script>

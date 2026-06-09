@@ -1,9 +1,16 @@
 {
   "manifest_version": 3,
   "name": "MP4 Chunks - Network Request Monitor",
-  "version": "1.1",
-  "description": "Monitors network requests, headers, and response bodies related to progressive mp4 chunking. Supports video detection and bulk download.",
-  "permissions": ["webRequest", "storage", "scripting", "downloads"],
+  "version": "1.2",
+  "description": "Monitors network requests, headers, and response bodies related to progressive mp4 chunking. Supports video detection and bulk download. Includes download manager.",
+  "permissions": [
+    "webRequest",
+    "storage",
+    "scripting",
+    "downloads",
+    "downloads.open",
+    "downloads.shelf"
+  ],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
