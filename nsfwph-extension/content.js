@@ -19,6 +19,8 @@
     intervals: [],
   };
 
+  let observeInProgress = false;
+
   // Panel update batching - prevents multiple rapid panel updates
   let panelUpdatePending = false;
   let panelUpdateTimer = null;
@@ -276,9 +278,16 @@
   }
 
   function observeVideos() {
+    // ✅ Prevent concurrent observation batches
+    if (observeInProgress) {
+      console.log("[Content] ⏭️ Observation already in progress, skipping");
+      return;
+    }
+    observeInProgress = true;
+
     const foundVideos = document.querySelectorAll(SELECTOR);
     const previouslyTracked = videos.size;
-    const videoArray = Array.from(foundVideos); // Convert NodeList to Array
+    const videoArray = Array.from(foundVideos);
 
     console.log(
       `[Content] Observing ${videoArray.length} video elements (previously tracked: ${previouslyTracked})`,
@@ -286,33 +295,27 @@
 
     if (videoArray.length === 0) {
       console.log("[Content] No videos found");
+      observeInProgress = false;
       return;
     }
 
-    // ✅ Staggered processing for smooth visual appearance
-    // Use longer stagger on initial load (50ms between cards for visible progression)
-    // Use shorter stagger on subsequent observations (16ms ~ 1 frame)
     const staggerMs = previouslyTracked === 0 ? 50 : 16;
-
     console.log(
       `[Content] 🎬 Starting staggered processing with ${staggerMs}ms delay between cards`,
     );
 
-    // Start staggered processing (non-blocking)
     processVideosStaggered(videoArray, staggerMs).then(() => {
-      // After all staggered processing completes:
       if (previouslyTracked > 0) {
-        // Subsequent observation — run full cleanup for detached videos
         performPanelUpdateNow();
         console.log(
           `[Content] 🧹 Full panel cleanup after staggered processing (${previouslyTracked}→${videos.size} videos)`,
         );
       } else {
-        // Initial load — all cards were created via staggered processing
         console.log(
           `[Content] ✅ Initial load complete — ${videos.size} cards inserted via staggered updates`,
         );
       }
+      observeInProgress = false;
     });
   }
 

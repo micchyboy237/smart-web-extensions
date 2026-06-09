@@ -250,31 +250,12 @@
       const info = this.managedVideos.get(previewVideo);
       if (!info) return;
       previewVideo.preload = "metadata";
-
-      // ✅ If source was deferred, set it now from data attribute
-      if (
-        previewVideo.dataset.sourceDeferred === "true" &&
-        previewVideo.dataset.previewSrc
-      ) {
-        const deferredSrc = previewVideo.dataset.previewSrc;
-        if (
-          deferredSrc &&
-          deferredSrc !== "undefined" &&
-          deferredSrc !== "null"
-        ) {
-          previewVideo.src = deferredSrc;
-          delete previewVideo.dataset.sourceDeferred;
-          console.log(
-            `[BufferMgr] 🔗 Set deferred src for ${info.entryId}: ${deferredSrc.substring(0, 60)}...`,
-          );
-        }
-      } else if (previewVideo.dataset.bufferReleased === "true") {
+      if (previewVideo.dataset.bufferReleased === "true") {
         const savedSrc = previewVideo.dataset.savedSrc;
         if (savedSrc && savedSrc !== "undefined" && savedSrc !== "null") {
           previewVideo.src = savedSrc;
         }
         previewVideo.dataset.bufferReleased = "false";
-
         // When restoring buffer, wait for metadata then remove loading spinner
         const entryId = info.entryId;
         const onMetaRestored = () => {
@@ -293,21 +274,14 @@
           info.metadataReady = true;
           previewVideo.dataset.previewReady = "true";
           const card = previewVideo.closest(".video-card");
-          if (card) {
-            card.classList.remove("preview-loading");
-          }
+          if (card) card.classList.remove("preview-loading");
         } else {
           previewVideo.addEventListener("loadedmetadata", onMetaRestored, {
             once: true,
           });
           setTimeout(() => {
             const card = previewVideo.closest(".video-card");
-            if (card) {
-              card.classList.remove("preview-loading");
-              console.log(
-                `[BufferMgr] ⏱️ Metadata timeout for ${entryId}, removed loading state anyway`,
-              );
-            }
+            if (card) card.classList.remove("preview-loading");
           }, RAM_CONFIG.METADATA_TIMEOUT_MS);
         }
       }

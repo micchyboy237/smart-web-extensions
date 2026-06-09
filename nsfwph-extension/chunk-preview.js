@@ -9,7 +9,7 @@
   // ═══════════════════════════════════════════════════════════════
   const NUM_PREVIEW_CHUNKS = 5;
   const CHUNK_PLAY_DURATION_MS = 4000; // 4s per chunk → ~20s full cycle
-  const PREVIEW_INIT_TIMEOUT = 8000; // Max wait for preview init
+  const PREVIEW_INIT_TIMEOUT = 2000; // Max wait for preview init
 
   /**
    * Calculate evenly distributed chunk start positions across the video.
@@ -385,13 +385,11 @@
     if (videoUrl)
       videoUrl += (videoUrl.includes("?") ? "&" : "?") + "preview=1";
     const preview = document.createElement("video");
-    // ✅ Store URL in data attribute instead of setting src immediately
-    // This prevents flooding the browser's connection pool (max 6 per domain)
-    preview.dataset.previewSrc = videoUrl;
+    preview.src = videoUrl; // ✅ Set immediately — staggered processing handles pacing
     preview.muted = true;
     preview.loop = false;
     preview.playsInline = true;
-    preview.preload = "none"; // Start with none — BufferManager upgrades
+    preview.preload = "metadata";
     preview.style.width = "100%";
     preview.style.height = "100%";
     preview.style.objectFit = "cover";
@@ -401,20 +399,18 @@
     preview.style.cursor = "pointer";
     preview.dataset.cacheKeySrc = cleanSrc;
     preview.dataset.previewReady = "false";
-    preview.dataset.sourceDeferred = "true"; // Track that src is deferred
     console.log(
       `[Preview] 🏷️ Stored cacheKeySrc on preview element: ${cleanSrc.substring(0, 40)}...`,
     );
-    console.log(
-      `[Preview] 📦 Src deferred for ${entryId} (avoids connection pool flood)`,
-    );
     window.BufferManager.register(preview, entryId);
     let isInitialized = false;
+    let metadataTimeout = null;
 
-    async function initializePreview() {
-      if (isInitialized) {
-        console.log(`[Preview:D] Already initialized for ${entryId}, skipping`);
-        return;
+    function initializePreview() {
+      if (isInitialized) return;
+      if (metadataTimeout) {
+        clearTimeout(metadataTimeout);
+        metadataTimeout = null;
       }
       console.log(`[Preview] Initializing preview for ${entryId}`);
       isInitialized = true;
@@ -451,7 +447,7 @@
       preview.addEventListener("loadedmetadata", initializePreview, {
         once: true,
       });
-      setTimeout(() => {
+      metadataTimeout = setTimeout(() => {
         if (!isInitialized && document.body.contains(preview)) {
           console.warn(
             `[Preview] ⚠️ Metadata timeout for ${entryId}, initializing anyway`,
