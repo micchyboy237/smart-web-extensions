@@ -1,0 +1,110 @@
+/* overlay-previews.css */
+/* ───── Layout Restructuring (Flexbox Magic) ───── */
+#vo-player {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Create a row container for video and previews */
+#vo-media-wrap {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0; /* Crucial for flex children to shrink/scroll properly */
+  overflow: hidden; /* Ensures previews don't overflow the wrapper */
+  align-items: stretch;
+}
+
+/* Make video wrap take remaining horizontal space */
+#vo-video-wrap {
+  flex: 1 1 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-height: 100%;
+}
+
+/* Force controls to wrap to the next line / stay at bottom */
+#vo-controls {
+  flex: 0 0 auto !important;
+  width: 100% !important;
+}
+
+/* ───── Side Previews Container ───── */
+#vo-previews-wrap {
+  width: 120px;
+  flex-shrink: 0;
+  background: #13131f;
+  border-left: 1px solid #333;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: 100%;
+  /* Custom scrollbar for Webkit */
+  scrollbar-width: thin;
+  scrollbar-color: #444 #13131f;
+}
+#vo-previews-wrap::-webkit-scrollbar {
+  width: 6px;
+}
+#vo-previews-wrap::-webkit-scrollbar-track {
+  background: #13131f;
+}
+#vo-previews-wrap::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 3px;
+}
+
+/* ───── Thumbnail Items ───── */
+.vo-preview-thumb-wrapper {
+  position: relative;
+  width: 100%;
+
+  /* 🔧 REDUCED HEIGHT: Use fixed height instead of aspect-ratio for compact UI */
+  height: 120px; /* Adjust this value (e.g., 40px, 60px) to your liking */
+  aspect-ratio: unset; /* Removes the default 16/9 constraint */
+  overflow: hidden; /* Ensures the cropped video doesn't bleed out */
+
+  background: #000;
+  cursor: pointer;
+  border-bottom: 1px solid #222;
+  transition:
+    background 0.2s,
+    outline 0.2s;
+  flex-shrink: 0;
+}
+
+.vo-preview-thumb-wrapper:hover {
+  background: #222;
+}
+
+/* Highlight the preview closest to current playback time */
+.vo-preview-thumb-wrapper.active {
+  outline: 2px solid #00d4ff;
+  outline-offset: -2px;
+  background: #1a1a2e;
+}
+
+.vo-preview-thumb-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover; /* This ensures the video fills the 50px height without stretching */
+  display: block;
+  pointer-events: none; /* Clicks pass through to wrapper */
+}
+
+.vo-preview-time-label {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-family: monospace;
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  pointer-events: none;
+  user-select: none;
+}

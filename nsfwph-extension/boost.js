@@ -424,27 +424,32 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     },
     /** @type {Set<HTMLVideoElement>} Videos currently prioritized for gallery */
     _galleryVideos: new Set(),
+    /** @type {Set<HTMLVideoElement>} Videos currently prioritized for gallery */
+    _galleryVideos: new Set(),
+    /** @type {Set<HTMLVideoElement>} Videos currently prioritized for overlay previews */
+    _overlayPreviews: new Set(),
     /**
-     * Prioritize a set of gallery videos for downloading.
-     * Temporarily suspends the main active video and deprioritizes all others.
-     * @param {HTMLVideoElement[]} videos - Array of gallery video elements
+     * Internal helper to apply priority to a batch of videos.
+     * @private
      */
-    setGalleryPriority(videos) {
+    _applyBatchPriority(videos, targetSet, label) {
       if (!BOOST_CONFIG.PRIORITY_ENABLED) {
         console.log(
-          "[Priority] ⚠️ Priority disabled, skipping gallery priority",
+          `[Priority] ⚠️ Priority disabled, skipping ${label} priority`,
         );
         return;
       }
 
       console.log(
-        `[Priority] 🖼️ Setting gallery priority for ${videos.length} videos`,
+        `[Priority] 🖼️ Setting ${label} priority for ${videos.length} videos`,
       );
 
       // Deprioritize the main active video if it exists
       if (this._activeVideo) {
         this._deprioritizeVideoForElement(this._activeVideo);
-        console.log(`[Priority] ⏸️ Temporarily suspended main active video`);
+        console.log(
+          `[Priority] ⏸️ Temporarily suspended main active video for ${label}`,
+        );
       }
 
       // Deprioritize all other registered background videos
@@ -454,53 +459,82 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         }
       }
 
-      // Prioritize gallery videos
-      this._galleryVideos.clear();
+      // Prioritize batch videos
+      targetSet.clear();
       videos.forEach((video) => {
-        this._galleryVideos.add(video);
-        video.preload = "auto"; // Force download for gallery items
+        targetSet.add(video);
+        video.preload = "auto"; // Force download for batch items
         if (BOOST_CONFIG.DEBUG_PRIORITY) {
-          const id = video.dataset.videoObserverId || "gallery-item";
           console.log(
-            `[Priority] ⬆️ GALLERY PRIORITIZED ${id} | preload → "auto"`,
+            `[Priority] ⬆️ ${label.toUpperCase()} PRIORITIZED | preload → "auto"`,
           );
         }
       });
     },
     /**
-     * Clear gallery priority and perform proper cleanup on gallery videos to free RAM.
-     * Restores the main active video's priority if applicable.
+     * Internal helper to clear batch priority and clean up RAM.
+     * @private
      */
-    clearGalleryPriority() {
-      if (this._galleryVideos.size === 0) return;
+    _clearBatchPriority(targetSet, label) {
+      if (targetSet.size === 0) return;
 
       console.log(
-        `[Priority] 🖼️ Clearing gallery priority and cleaning up ${this._galleryVideos.size} videos`,
+        `[Priority] 🖼️ Clearing ${label} priority and cleaning up ${targetSet.size} videos`,
       );
 
-      // Proper cleanup for each gallery video to free RAM
-      this._galleryVideos.forEach((video) => {
+      // Proper cleanup for each batch video to free RAM
+      targetSet.forEach((video) => {
         try {
           video.pause();
           video.removeAttribute("src");
           video.load(); // Force release of decoded frames
           if (BOOST_CONFIG.DEBUG_PRIORITY) {
-            console.log(`[Priority] 🗑️ Cleaned up gallery video`);
+            console.log(`[Priority] 🗑️ Cleaned up ${label} video`);
           }
         } catch (err) {
-          console.warn("[Priority] Error cleaning up gallery video:", err);
+          console.warn(`[Priority] Error cleaning up ${label} video:`, err);
         }
       });
-      this._galleryVideos.clear();
+      targetSet.clear();
 
       // Restore main active video if it still exists and is in DOM
       if (this._activeVideo && document.body.contains(this._activeVideo)) {
         this._prioritizeVideoForElement(this._activeVideo);
-        console.log(`[Priority] 🔄 Restored main active video priority`);
+        console.log(
+          `[Priority] 🔄 Restored main active video priority after ${label}`,
+        );
       }
 
       // Restore all other background videos to metadata
       this._restoreAllToMetadata();
+    },
+    /**
+     * Prioritize a set of gallery videos for downloading.
+     */
+    setGalleryPriority(videos) {
+      this._applyBatchPriority(videos, this._galleryVideos, "Gallery");
+    },
+    /**
+     * Clear gallery priority and perform proper cleanup.
+     */
+    clearGalleryPriority() {
+      this._clearBatchPriority(this._galleryVideos, "Gallery");
+    },
+    /**
+     * Prioritize a set of overlay preview videos for downloading.
+     */
+    setOverlayPreviewsPriority(videos) {
+      this._applyBatchPriority(
+        videos,
+        this._overlayPreviews,
+        "OverlayPreviews",
+      );
+    },
+    /**
+     * Clear overlay previews priority and perform proper cleanup.
+     */
+    clearOverlayPreviewsPriority() {
+      this._clearBatchPriority(this._overlayPreviews, "OverlayPreviews");
     },
     /**
      * Get priority stats for debugging.

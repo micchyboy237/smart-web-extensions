@@ -1,63 +1,24 @@
-/* overlay.js
- * ═══════════════════════════════════════════════════════════════
- * Video Overlay Controller
- *
- * Handles creating, showing, closing, and controlling the floating
- * video overlay player. Extracted from content.js for modularity.
- *
- * Integrates with ScrubberSystem (scrubber.js) for:
- *   - Progress bar with thumb
- *   - Buffered regions display
- *   - Hover thumbnail preview popup
- *
- * PUBLIC API (exposed on window.VideoOverlay):
- *   setup(deps)          - Inject dependencies from content.js
- *   show(videoEl, entry) - Open overlay with a video
- *   close()              - Close the overlay
- *   isShowing(videoEl)   - Check if a specific video is in overlay
- *   getCurrentVideo()    - Get the currently displayed video
- *   destroy()            - Full cleanup
- *
- * DEPENDENCIES (injected via setup):
- *   - enforceSinglePlayback(videoEl) from content.js
- *   - log(message, data) from content.js
- *   - ScrubberSystem (window.ScrubberSystem) from scrubber.js
- * ═══════════════════════════════════════════════════════════════ */
-
+/* overlay.js */
 (function () {
   "use strict";
-
   // ─── Private state ───────────────────────────────────────────
-  let _overlayEl = null; // #vo-overlay DOM element
-  let _currentVideo = null; // currently displayed <video>
-  let _currentEntry = null; // associated entry object
-  let _scrubberController = null; // ScrubberSystem controller instance
-  let _keydownCleanup = null; // ESC key handler cleanup
-  let _deps = null; // { enforceSinglePlayback, log }
+  let _overlayEl = null;
+  let _currentVideo = null;
+  let _currentEntry = null;
+  let _scrubberController = null;
+  let _keydownCleanup = null;
+  let _deps = null;
 
-  // ─── Setup: receive dependencies from content.js ─────────────
-  /**
-   * Must be called once before any other function.
-   * @param {Object} deps
-   * @param {Function} deps.enforceSinglePlayback
-   * @param {Function} deps.log
-   */
   function setup(deps) {
     _deps = deps;
     console.log("[Overlay] ✅ Dependencies injected:", Object.keys(deps));
-
-    // Verify scrubber system is available
     if (typeof window.ScrubberSystem === "undefined") {
-      console.warn(
-        "[Overlay] ⚠️ ScrubberSystem not found! scrubber.js may be missing. " +
-          "Scrubber features (progress bar, thumbnails) will be disabled.",
-      );
+      console.warn("[Overlay] ⚠️ ScrubberSystem not found!");
     } else {
       console.log("[Overlay] ✅ ScrubberSystem detected");
     }
   }
 
-  // ─── Helpers ─────────────────────────────────────────────────
   function _log(message, data) {
     if (_deps && _deps.log) {
       _deps.log(message, data);
@@ -66,21 +27,20 @@
     }
   }
 
-  // ─── DOM Creation ────────────────────────────────────────────
   function create() {
     if (_overlayEl) {
       _log("Overlay DOM already exists, skipping create()");
       return;
     }
-
-    _log("Creating overlay DOM...");
-
+    _log("Creating overlay DOM with #vo-media-wrap...");
     const overlay = document.createElement("div");
     overlay.id = "vo-overlay";
     overlay.innerHTML = `
       <div id="vo-player" data-size="m">
-        <div id="vo-video-wrap">
-          <button id="vo-close" title="Close (Esc)">✕</button>
+        <div id="vo-media-wrap">
+          <div id="vo-video-wrap">
+            <button id="vo-close" title="Close (Esc)">✕</button>
+          </div>
         </div>
         <div id="vo-controls">
           <div id="vo-top-row">
@@ -91,15 +51,11 @@
               <button class="vo-size-btn" data-size="l">L</button>
             </div>
           </div>
-          <!-- Scrubber + bottom row injected by ScrubberSystem -->
         </div>
       </div>
     `;
-
     document.body.appendChild(overlay);
     _overlayEl = overlay;
-
-    // ─── Event bindings ────────────────────────────────────────
 
     // Close on scrim click
     overlay.addEventListener("click", (e) => {
@@ -109,13 +65,11 @@
       }
     });
 
-    // Close button
     document.getElementById("vo-close").addEventListener("click", () => {
       _log("Close button clicked");
       close();
     });
 
-    // ESC key
     const onKeyDown = (e) => {
       if (e.key === "Escape") {
         _log("ESC key pressed → closing overlay");
@@ -125,7 +79,6 @@
     document.addEventListener("keydown", onKeyDown);
     _keydownCleanup = () => document.removeEventListener("keydown", onKeyDown);
 
-    // Size mode buttons
     document.getElementById("vo-size-btns").addEventListener("click", (e) => {
       const btn = e.target.closest(".vo-size-btn");
       if (!btn) return;
@@ -138,53 +91,42 @@
       _log(`Size mode → ${size}`);
     });
 
-    // Play/pause button (delegated — created by ScrubberSystem)
-    // We use event delegation on #vo-controls since scrubber buttons
-    // are injected dynamically
     document.getElementById("vo-controls").addEventListener("click", (e) => {
       const playPauseBtn = e.target.closest("#vo-playpause");
       const muteBtn = e.target.closest("#vo-mute");
       const pipBtn = e.target.closest("#vo-pip");
-
       if (playPauseBtn) {
         const video = _currentVideo;
         if (!video) return;
         if (video.paused) {
           _log("Play button clicked");
-          if (_deps && _deps.enforceSinglePlayback) {
+          if (_deps && _deps.enforceSinglePlayback)
             _deps.enforceSinglePlayback(video);
-          }
-          video.play().catch((err) => {
-            console.warn("[Overlay] Play failed:", err);
-          });
+          video
+            .play()
+            .catch((err) => console.warn("[Overlay] Play failed:", err));
         } else {
           _log("Pause button clicked");
           video.pause();
         }
         return;
       }
-
       if (muteBtn) {
         const video = _currentVideo;
         if (!video) return;
         video.muted = !video.muted;
         muteBtn.textContent = video.muted ? "🔇 Unmute" : "🔊 Mute";
-        _log(`Mute toggled → ${video.muted ? "muted" : "unmuted"}`);
         return;
       }
-
       if (pipBtn) {
         const video = _currentVideo;
         if (!video) return;
         (async () => {
           try {
-            if (document.pictureInPictureElement) {
-              _log("Exiting PiP");
+            if (document.pictureInPictureElement)
               await document.exitPictureInPicture();
-            } else if (video.requestPictureInPicture) {
-              _log("Entering PiP");
+            else if (video.requestPictureInPicture)
               await video.requestPictureInPicture();
-            }
           } catch (err) {
             console.warn("[Overlay] PiP failed:", err);
           }
@@ -192,176 +134,101 @@
         return;
       }
     });
-
-    _log("✅ Overlay DOM created with all event bindings");
+    _log("✅ Overlay DOM created with #vo-media-wrap and event bindings");
   }
 
-  // ─── DOM Return Logic ────────────────────────────────────────
   function _returnVideoToOriginalParent(videoEl) {
-    if (!videoEl._overlayOriginalParent) {
-      _log(
-        `No original parent stored for ${videoEl.dataset.videoObserverId}, skipping return`,
-      );
-      return;
-    }
-
+    if (!videoEl._overlayOriginalParent) return;
     const parent = videoEl._overlayOriginalParent;
     const nextSib = videoEl._overlayOriginalNextSibling;
-
     try {
       if (nextSib && nextSib.parentElement === parent) {
         parent.insertBefore(videoEl, nextSib);
       } else {
         parent.appendChild(videoEl);
       }
-      _log(`Returned ${videoEl.dataset.videoObserverId} to original DOM`);
     } catch (err) {
       console.warn("[Overlay] Could not return video to original parent:", err);
     }
-
     delete videoEl._overlayOriginalParent;
     delete videoEl._overlayOriginalNextSibling;
   }
 
-  // ─── Public API ──────────────────────────────────────────────
-
-  /**
-   * Open the overlay with a specific video element.
-   * Moves the actual <video> DOM node into the overlay and
-   * attaches the scrubber system.
-   *
-   * @param {HTMLVideoElement} videoEl - The video to display
-   * @param {Object} entry - The video entry object with { id }
-   */
   function show(videoEl, entry) {
     _log(`show() called for ${entry.id}`);
-
-    if (!_overlayEl) {
-      create();
-    }
+    if (!_overlayEl) create();
 
     const videoWrap = document.getElementById("vo-video-wrap");
     const title = document.getElementById("vo-title");
     const controlsContainer = document.getElementById("vo-controls");
 
-    // Detach previous video + scrubber
     if (_currentVideo && _currentVideo !== videoEl) {
-      _log("Detaching previous video and scrubber from overlay");
-      if (_scrubberController) {
-        _scrubberController.detach();
-      }
+      if (_scrubberController) _scrubberController.detach();
       _returnVideoToOriginalParent(_currentVideo);
     }
 
-    // Store original parent
     if (!videoEl._overlayOriginalParent) {
       videoEl._overlayOriginalParent = videoEl.parentElement;
       videoEl._overlayOriginalNextSibling = videoEl.nextSibling;
-      _log(`Stored original parent for ${entry.id}`);
     }
 
-    // Move video into overlay
     const closeBtn = document.getElementById("vo-close");
     videoWrap.insertBefore(videoEl, closeBtn);
 
-    // Set title
     const src = videoEl.currentSrc || videoEl.src || "";
     const filename = src.split("/").pop().split("?")[0] || entry.id;
     title.textContent = `${entry.id} — ${filename}`;
 
-    // ─── Scrubber ─────────────────────────────────────────────
     if (typeof window.ScrubberSystem !== "undefined") {
       if (!_scrubberController) {
         _scrubberController =
           window.ScrubberSystem.createScrubberController(controlsContainer);
-        _log("Scrubber controller created");
       }
       _scrubberController.attach(videoEl);
-      _log(
-        `Scrubber attached (${_scrubberController.getThumbnailCount()} thumbnails)`,
-      );
     }
 
-    // ─── NEW: Settings UI ─────────────────────────────────────
     if (typeof window.OverlaySettings !== "undefined") {
-      // Create settings UI if this is first open
       if (!_overlayEl.querySelector("#vo-settings-panel")) {
         window.OverlaySettings.createSettingsUI(_overlayEl);
-        _log("Settings UI created inside overlay");
       }
-      // Apply any saved settings to this video
       window.OverlaySettings.applyTo(videoEl);
-      _log("Settings applied to video");
-    } else {
-      _log("⚠️ OverlaySettings not available — no brightness/zoom controls");
+    }
+
+    if (typeof window.OverlayPreviews !== "undefined") {
+      window.OverlayPreviews.show(videoEl, entry);
     }
 
     _currentVideo = videoEl;
     _currentEntry = entry;
-
-    requestAnimationFrame(() => {
-      _overlayEl.classList.add("visible");
-    });
-
+    requestAnimationFrame(() => _overlayEl.classList.add("visible"));
     _log(`✅ Overlay opened for ${entry.id}`);
   }
 
-  /**
-   * Close the overlay and return the video to its original DOM position.
-   */
   function close() {
-    if (!_overlayEl) {
-      _log("close() called but overlay doesn't exist");
-      return;
-    }
-
+    if (!_overlayEl) return;
     const video = _currentVideo;
-    _log(
-      `close() called${video ? ` for ${video.dataset.videoObserverId}` : ""}`,
-    );
-
     _overlayEl.classList.remove("visible");
 
-    // Wait for transition to finish before moving the video back
     const onTransitionEnd = () => {
       _overlayEl.removeEventListener("transitionend", onTransitionEnd);
-
       if (video) {
-        // Detach scrubber (keeps thumbnails cached for re-open)
-        if (_scrubberController) {
-          _scrubberController.detach();
-          _log(
-            `Scrubber detached (${_scrubberController.getThumbnailCount()} thumbnails preserved)`,
-          );
-        }
-
+        if (_scrubberController) _scrubberController.detach();
+        if (typeof window.OverlayPreviews !== "undefined")
+          window.OverlayPreviews.hide();
         _returnVideoToOriginalParent(video);
         _currentVideo = null;
         _currentEntry = null;
       }
-
       _log("✅ Overlay closed, video returned to DOM");
     };
-
     _overlayEl.addEventListener("transitionend", onTransitionEnd, {
       once: true,
     });
-
-    // Fallback in case transition doesn't fire
     setTimeout(() => {
-      if (_currentVideo === video && video) {
-        _log("Transition fallback triggered");
-        onTransitionEnd();
-      }
+      if (_currentVideo === video && video) onTransitionEnd();
     }, 400);
   }
 
-  /**
-   * Check if a specific video element is currently displayed in the overlay.
-   *
-   * @param {HTMLVideoElement} videoEl
-   * @returns {boolean}
-   */
   function isShowing(videoEl) {
     return (
       _overlayEl !== null &&
@@ -370,55 +237,28 @@
     );
   }
 
-  /**
-   * Get the currently displayed video element (or null).
-   *
-   * @returns {HTMLVideoElement|null}
-   */
   function getCurrentVideo() {
     return _currentVideo;
   }
 
-  /**
-   * Clean up all overlay resources.
-   * Called on extension unload or page teardown.
-   */
   function destroy() {
     _log("Destroying overlay...");
-
-    if (_currentVideo) {
-      close();
-    }
-
-    if (_scrubberController) {
-      _scrubberController.cleanup();
-      _scrubberController = null;
-      _log("Scrubber fully cleaned up");
-    }
-
-    // ─── NEW: Cleanup settings ────────────────────────────────
-    if (typeof window.OverlaySettings !== "undefined") {
+    if (_currentVideo) close();
+    if (_scrubberController) _scrubberController.cleanup();
+    if (typeof window.OverlaySettings !== "undefined")
       window.OverlaySettings.destroy();
-      _log("Settings destroyed");
-    }
-
-    if (_keydownCleanup) {
-      _keydownCleanup();
-      _keydownCleanup = null;
-    }
-
-    if (_overlayEl) {
-      _overlayEl.remove();
-      _overlayEl = null;
-    }
-
+    if (typeof window.OverlayPreviews !== "undefined")
+      window.OverlayPreviews.destroy();
+    if (_keydownCleanup) _keydownCleanup();
+    if (_overlayEl) _overlayEl.remove();
     _currentVideo = null;
     _currentEntry = null;
-
+    _scrubberController = null;
+    _keydownCleanup = null;
+    _overlayEl = null;
     _log("✅ Overlay destroyed");
   }
 
-  // ─── Expose public API on window ─────────────────────────────
   window.VideoOverlay = {
     setup,
     create,
@@ -428,6 +268,5 @@
     getCurrentVideo,
     destroy,
   };
-
   console.log("[Overlay] Module loaded, API exposed at window.VideoOverlay");
 })();

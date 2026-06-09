@@ -62,12 +62,23 @@
 #vo-video-wrap {
   width: 100%;
   aspect-ratio: 16 / 9;
-  max-height: 100vh;
   background: #000;
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+#vo-player[data-size="s"] #vo-video-wrap {
+  max-height: 90vh;
+}
+
+#vo-player[data-size="m"] #vo-video-wrap {
+  max-height: 95vh;
+}
+
+#vo-player[data-size="l"] #vo-video-wrap {
+  max-height: 100vh;
 }
 
 #vo-video-wrap video {
