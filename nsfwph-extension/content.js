@@ -7,7 +7,7 @@
   // ═══════════════════════════════════════════════════════════════
   // CORE CONSTANTS
   // ═══════════════════════════════════════════════════════════════
-  const SELECTOR = ".message-inner video";
+  const VIDEO_SELECTOR = ".message-inner video";
   const MAX_GALLERY_ITEMS = 6;
 
   // ═══════════════════════════════════════════════════════════════
@@ -285,7 +285,7 @@
     }
     observeInProgress = true;
 
-    const foundVideos = document.querySelectorAll(SELECTOR);
+    const foundVideos = document.querySelectorAll(VIDEO_SELECTOR);
     const previouslyTracked = videos.size;
     const videoArray = Array.from(foundVideos);
 
