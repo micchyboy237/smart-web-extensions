@@ -422,6 +422,86 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         }
       }
     },
+    /** @type {Set<HTMLVideoElement>} Videos currently prioritized for gallery */
+    _galleryVideos: new Set(),
+    /**
+     * Prioritize a set of gallery videos for downloading.
+     * Temporarily suspends the main active video and deprioritizes all others.
+     * @param {HTMLVideoElement[]} videos - Array of gallery video elements
+     */
+    setGalleryPriority(videos) {
+      if (!BOOST_CONFIG.PRIORITY_ENABLED) {
+        console.log(
+          "[Priority] ⚠️ Priority disabled, skipping gallery priority",
+        );
+        return;
+      }
+
+      console.log(
+        `[Priority] 🖼️ Setting gallery priority for ${videos.length} videos`,
+      );
+
+      // Deprioritize the main active video if it exists
+      if (this._activeVideo) {
+        this._deprioritizeVideoForElement(this._activeVideo);
+        console.log(`[Priority] ⏸️ Temporarily suspended main active video`);
+      }
+
+      // Deprioritize all other registered background videos
+      for (const entry of this._registeredManagers) {
+        if (!videos.includes(entry.video)) {
+          this._deprioritizeVideo(entry);
+        }
+      }
+
+      // Prioritize gallery videos
+      this._galleryVideos.clear();
+      videos.forEach((video) => {
+        this._galleryVideos.add(video);
+        video.preload = "auto"; // Force download for gallery items
+        if (BOOST_CONFIG.DEBUG_PRIORITY) {
+          const id = video.dataset.videoObserverId || "gallery-item";
+          console.log(
+            `[Priority] ⬆️ GALLERY PRIORITIZED ${id} | preload → "auto"`,
+          );
+        }
+      });
+    },
+    /**
+     * Clear gallery priority and perform proper cleanup on gallery videos to free RAM.
+     * Restores the main active video's priority if applicable.
+     */
+    clearGalleryPriority() {
+      if (this._galleryVideos.size === 0) return;
+
+      console.log(
+        `[Priority] 🖼️ Clearing gallery priority and cleaning up ${this._galleryVideos.size} videos`,
+      );
+
+      // Proper cleanup for each gallery video to free RAM
+      this._galleryVideos.forEach((video) => {
+        try {
+          video.pause();
+          video.removeAttribute("src");
+          video.load(); // Force release of decoded frames
+          if (BOOST_CONFIG.DEBUG_PRIORITY) {
+            console.log(`[Priority] 🗑️ Cleaned up gallery video`);
+          }
+        } catch (err) {
+          console.warn("[Priority] Error cleaning up gallery video:", err);
+        }
+      });
+      this._galleryVideos.clear();
+
+      // Restore main active video if it still exists and is in DOM
+      if (this._activeVideo && document.body.contains(this._activeVideo)) {
+        this._prioritizeVideoForElement(this._activeVideo);
+        console.log(`[Priority] 🔄 Restored main active video priority`);
+      }
+
+      // Restore all other background videos to metadata
+      this._restoreAllToMetadata();
+    },
     /**
      * Get priority stats for debugging.
      */

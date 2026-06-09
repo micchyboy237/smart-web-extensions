@@ -3,9 +3,6 @@ const GALLERY_ID = "video-gallery-modal";
 
 /**
  * Format seconds to mm:ss display string.
- * Examples: 0 → "0:00", 65 → "1:05", 3661 → "61:01"
- * @param {number} totalSeconds
- * @returns {string}
  */
 function formatMMSS(totalSeconds) {
   if (!isFinite(totalSeconds) || totalSeconds < 0) return "0:00";
@@ -17,200 +14,145 @@ function formatMMSS(totalSeconds) {
 function createGalleryModal() {
   let modal = document.getElementById(GALLERY_ID);
   if (modal) {
-    // Reuse existing modal but make sure grid is cleared
     cleanupGallery(modal);
     return modal;
   }
+
   modal = document.createElement("div");
   modal.id = GALLERY_ID;
   modal.innerHTML = `
-    <div class="gallery-overlay"></div>
-    <div class="gallery-content">
-      <button class="gallery-close">✕</button>
-      <div class="gallery-grid"></div>
-    </div>
-  `;
+        <div class="gallery-overlay"></div>
+        <div class="gallery-content">
+            <button class="gallery-close">✕</button>
+            <div class="gallery-grid"></div>
+        </div>
+    `;
   document.body.appendChild(modal);
+
   const closeBtn = modal.querySelector(".gallery-close");
   const overlay = modal.querySelector(".gallery-overlay");
+
   const closeModal = () => {
     cleanupGallery(modal);
     modal.remove();
   };
+
   closeBtn.onclick = closeModal;
   overlay.onclick = closeModal;
-  // Also support Escape key
+
   const escHandler = (e) => {
     if (e.key === "Escape") closeModal();
   };
   document.addEventListener("keydown", escHandler, { once: true });
-  // Store handler so we can remove it later if needed
   modal._escHandler = escHandler;
+
   console.log("[Gallery] Modal created");
   return modal;
 }
 
-/** Main cleanup function - revokes all media resources */
+/**
+ * Main cleanup function - revokes all media resources and clears priority.
+ */
 function cleanupGallery(modal) {
   const grid = modal.querySelector(".gallery-grid");
   if (!grid) return;
-  // Remove all children and revoke any resources
+
+  // 🔧 NEW: Clear gallery priority and perform proper cleanup via PriorityManager
+  if (window.BoostEngine?.PriorityManager) {
+    window.BoostEngine.PriorityManager.clearGalleryPriority();
+  }
+
+  // Fallback cleanup for any remaining videos
   const wrappers = Array.from(grid.querySelectorAll(".gallery-item-wrapper"));
-  console.log(`[Gallery] 🧹 Cleaning up ${wrappers.length} gallery items`);
+  console.log(
+    `[Gallery] 🧹 Fallback cleaning up ${wrappers.length} gallery items`,
+  );
+
   wrappers.forEach((wrapper) => {
-    const media = wrapper.querySelector("video, img");
-    if (media instanceof HTMLVideoElement) {
-      media.pause();
-      media.src = ""; // Important: break reference to video data
-      media.load(); // Forces release of decoded frames
-    }
-    if (media instanceof HTMLImageElement && media.src.startsWith("data:")) {
-      media.src = ""; // Free base64 data URL
+    const video = wrapper.querySelector("video");
+    if (video) {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
     }
     wrapper.remove();
   });
-  // Also remove any leftover children (safety)
-  Array.from(grid.children).forEach((child) => {
-    grid.removeChild(child);
-  });
+
   grid.innerHTML = "";
-  // Remove escape handler
+
   if (modal._escHandler) {
     document.removeEventListener("keydown", modal._escHandler);
     delete modal._escHandler;
   }
+
   console.log("[Gallery] Cleanup complete");
 }
 
 /**
- * Extract a frame from a video at a specific time.
- * Returns the media element wrapped in a container with time label.
+ * Create a gallery item using a native <video> element to avoid CORS issues.
+ * Instead of extracting to canvas, we let the browser render the video frame.
  *
  * @param {string} videoSrc - The video source URL
- * @param {number} time - Time in seconds to capture the frame
- * @returns {Promise<HTMLElement|null>} - The wrapper div with media + time label, or null
+ * @param {number} time - Time in seconds to show
+ * @returns {HTMLElement} - The wrapper div with video + time label
  */
-function extractFrame(videoSrc, time) {
-  return new Promise((resolve) => {
-    const video = document.createElement("video");
-    const canvas = document.createElement("canvas");
-    let resolved = false;
-    video.muted = true;
-    video.preload = "metadata"; // Better than "auto" for thumbnails
-    video.src = videoSrc;
+function createGalleryVideoItem(videoSrc, time) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "gallery-item-wrapper";
 
-    const cleanupVideo = () => {
-      video.pause();
-      video.src = "";
-      video.load();
-      // Remove all listeners to prevent leaks
-      video.removeEventListener("loadedmetadata", onLoadedMetadata);
-      video.removeEventListener("seeked", onSeeked);
-      video.removeEventListener("error", onError);
-    };
+  const video = document.createElement("video");
+  video.src = videoSrc;
+  video.muted = true;
+  video.preload = "metadata"; // Will be upgraded to "auto" by PriorityManager
+  video.className = "gallery-media";
+  video.playsInline = true;
+  video.controls = false;
 
-    /**
-     * Creates the wrapper container with media element and time label.
-     * @param {HTMLImageElement|HTMLVideoElement} mediaElement
-     * @param {number} frameTime
-     * @returns {HTMLElement}
-     */
-    const createWrapper = (mediaElement, frameTime) => {
-      const wrapper = document.createElement("div");
-      wrapper.className = "gallery-item-wrapper";
-
-      // Add the media element
-      mediaElement.classList.add("gallery-media");
-      wrapper.appendChild(mediaElement);
-
-      // Add the time label overlay
-      const timeLabel = document.createElement("span");
-      timeLabel.className = "gallery-time-label";
-      timeLabel.textContent = formatMMSS(frameTime);
-      wrapper.appendChild(timeLabel);
-
-      console.log(`[Gallery] 🖼️ Frame extracted at ${formatMMSS(frameTime)}`);
-      return wrapper;
-    };
-
-    const onLoadedMetadata = () => {
-      canvas.width = video.videoWidth || 320;
-      canvas.height = video.videoHeight || 180;
+  // Seek to the specific frame once metadata is loaded
+  const seekToFrame = () => {
+    try {
       video.currentTime = time;
-      console.log(
-        `[Gallery] 📐 Metadata loaded for frame at ${formatMMSS(time)} | ` +
-          `Dimensions: ${canvas.width}x${canvas.height}`,
-      );
-    };
+    } catch (e) {
+      console.warn("[Gallery] Seek failed:", e);
+    }
+  };
 
-    const onSeeked = () => {
-      if (resolved) return;
-      resolved = true;
-      try {
-        const ctx = canvas.getContext("2d", { alpha: false });
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
-        const img = document.createElement("img");
-        img.src = dataUrl;
-        img.className = "gallery-image";
-        img.loading = "lazy";
-        cleanupVideo();
-        resolve(createWrapper(img, time));
-      } catch (e) {
-        console.warn(`[Gallery] ⚠️ Canvas extraction failed:`, e.message);
-        // Fallback to a mini video element
-        cleanupVideo();
-        const fallback = document.createElement("video");
-        fallback.src = `${videoSrc}${videoSrc.includes("?") ? "&" : "?"}t=${Math.floor(time)}`;
-        fallback.muted = true;
-        fallback.className = "gallery-video";
-        fallback.controls = false;
-        fallback.loop = false;
-        fallback.preload = "metadata";
-        fallback.addEventListener(
-          "loadeddata",
-          () => {
-            fallback.currentTime = time;
-            fallback
-              .play()
-              .then(() => setTimeout(() => fallback.pause(), 150))
-              .catch(() => {});
-          },
-          { once: true },
-        );
-        resolve(createWrapper(fallback, time));
-      }
-    };
+  if (video.readyState >= 1) {
+    seekToFrame();
+  } else {
+    video.addEventListener("loadedmetadata", seekToFrame, { once: true });
+  }
 
-    const onError = () => {
-      if (resolved) return;
-      resolved = true;
-      console.warn(
-        `[Gallery] ❌ Failed to load video for frame at ${formatMMSS(time)}`,
-      );
-      cleanupVideo();
-      resolve(null);
-    };
+  // Play briefly to render the frame, then pause to save bandwidth
+  video.addEventListener(
+    "seeked",
+    () => {
+      video
+        .play()
+        .then(() => {
+          setTimeout(() => {
+            if (!video.paused) video.pause();
+          }, 150);
+        })
+        .catch(() => {
+          // Autoplay might be blocked, which is fine for a thumbnail
+        });
+    },
+    { once: true },
+  );
 
-    video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
-    video.addEventListener("seeked", onSeeked, { once: true });
-    video.addEventListener("error", onError, { once: true });
+  wrapper.appendChild(video);
 
-    // Safety timeout in case video hangs
-    setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        console.warn(`[Gallery] ⏰ Timeout for frame at ${formatMMSS(time)}`);
-        cleanupVideo();
-        resolve(null);
-      }
-    }, 8000);
-  });
+  const timeLabel = document.createElement("span");
+  timeLabel.className = "gallery-time-label";
+  timeLabel.textContent = formatMMSS(time);
+  wrapper.appendChild(timeLabel);
+
+  return wrapper;
 }
 
 /**
  * Open the gallery modal for a video entry.
- * @param {Object} entry - The video entry object with element, src, duration
  */
 function openGallery(entry) {
   console.log("[Gallery] 📂 Opening gallery");
@@ -231,49 +173,43 @@ function openGallery(entry) {
   }
 
   const MAX = calcFrameCount(duration);
-
-  // Calculate evenly spaced time points throughout the video
   const times = Array.from(
     { length: MAX },
     (_, i) => ((i + 1) / (MAX + 1)) * duration,
   );
 
   console.log(
-    `[Gallery] 🎬 Extracting ${MAX} frames from ${formatMMSS(duration)} video | ` +
+    `[Gallery] 🎬 Creating ${MAX} video items for ${formatMMSS(duration)} video | ` +
       `Times: ${times.map((t) => formatMMSS(t)).join(", ")}`,
   );
 
-  // Sequential extraction to avoid overwhelming the browser
+  const galleryVideos = [];
+
+  // Sequential creation to avoid overwhelming the DOM
   (async () => {
-    let successCount = 0;
     for (const t of times) {
-      const wrapper = await extractFrame(src, t);
-      if (wrapper) {
-        grid.appendChild(wrapper);
-        successCount++;
-      }
+      const wrapper = createGalleryVideoItem(src, t);
+      grid.appendChild(wrapper);
+      galleryVideos.push(wrapper.querySelector("video"));
     }
+
     console.log(
-      `[Gallery] ✅ Gallery complete: ${successCount}/${MAX} frames extracted`,
+      `[Gallery] ✅ Gallery complete: ${galleryVideos.length} video items created`,
     );
+
+    // 🔧 NEW: Apply priority to download gallery videos
+    if (window.BoostEngine?.PriorityManager) {
+      window.BoostEngine.PriorityManager.setGalleryPriority(galleryVideos);
+    } else {
+      console.warn(
+        "[Gallery] ⚠️ PriorityManager not available, gallery videos will use default preload",
+      );
+    }
   })();
 }
 
 /**
  * Calculate the number of frames to extract for a video based on its duration.
- * Uses a logarithmic scale so short videos get fewer frames and long videos
- * get more, with diminishing returns to stay performant.
- *
- * @param {number} duration - Video duration in seconds
- * @returns {number} - Frame count between 3 and 12
- *
- * | Duration  | Frames |
- * |-----------|--------|
- * | < 30s     | 3      |
- * | 30s–2min  | 4–5    |
- * | 2–10min   | 6–7    |
- * | 10–60min  | 8–10   |
- * | 60min+    | 11–12  |
  */
 function calcFrameCount(duration) {
   if (!duration || !isFinite(duration) || duration < 1) {
