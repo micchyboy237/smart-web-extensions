@@ -5,6 +5,12 @@
   console.log("[Content] Core module loading...");
 
   // ═══════════════════════════════════════════════════════════════
+  // CORE CONSTANTS
+  // ═══════════════════════════════════════════════════════════════
+  const SELECTOR = ".message-inner video";
+  const MAX_GALLERY_ITEMS = 6;
+
+  // ═══════════════════════════════════════════════════════════════
   // GLOBAL STATE (shared across modules via getters/setters)
   // ═══════════════════════════════════════════════════════════════
   let videos = new Map(); // video element → entry
@@ -67,12 +73,6 @@
       console.warn("[Content] Gallery module not loaded");
     }
   };
-
-  // ═══════════════════════════════════════════════════════════════
-  // CORE CONSTANTS
-  // ═══════════════════════════════════════════════════════════════
-  const SELECTOR = ".message-inner video";
-  const MAX_GALLERY_ITEMS = 6;
 
   // ═══════════════════════════════════════════════════════════════
   // SINGLE PLAYBACK CONTROLLER
