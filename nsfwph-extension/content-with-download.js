@@ -1525,12 +1525,46 @@ function createVideoCard(entry) {
       </div>
       <span class="video-status ${entry.info.paused ? "paused" : "playing"}">${entry.info.paused ? "⏸ Paused" : "▶ Playing"}</span>
     </div>
+    <!-- NEW: Download action buttons row -->
+    <div class="video-actions-row">
+      <button class="download-btn dl-mp4-btn" title="Download full .mp4 video" data-original-text="⬇ MP4">⬇ MP4</button>
+      <button class="download-btn dl-chunks-btn" title="Download merged chunks as .bin" data-original-text="⬇ Chunks">⬇ Chunks</button>
+    </div>
   `;
 
-  card.addEventListener("click", (e) => {
-    // Don't trigger card click if gallery button was clicked
-    if (e.target.closest(".gallery-btn")) return;
+  // Wire up MP4 download button
+  const mp4Btn = card.querySelector(".dl-mp4-btn");
+  if (mp4Btn) {
+    mp4Btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (mp4Btn.dataset.state === "downloading") return;
+      if (window.DownloadButtons?.downloadVideoFile) {
+        window.DownloadButtons.downloadVideoFile(entry.element, mp4Btn);
+      } else {
+        console.warn("[Card] DownloadButtons module not loaded yet");
+      }
+    });
+  }
 
+  // Wire up Chunks download button
+  const chunksBtn = card.querySelector(".dl-chunks-btn");
+  if (chunksBtn) {
+    chunksBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (chunksBtn.dataset.state === "downloading") return;
+      if (window.DownloadButtons?.downloadVideoChunks) {
+        window.DownloadButtons.downloadVideoChunks(entry.element, chunksBtn);
+      } else {
+        console.warn("[Card] DownloadButtons module not loaded yet");
+      }
+    });
+  }
+
+  card.addEventListener("click", (e) => {
+    // Don't trigger card click if gallery button or download button was clicked
+    if (e.target.closest(".gallery-btn, .download-btn")) return;
     e.stopImmediatePropagation();
     const videoEl = entry.element;
     if (!videoEl) return;
@@ -1564,7 +1598,6 @@ function createVideoCard(entry) {
       openGallery(entry);
     });
   }
-
   return card;
 }
 
@@ -1784,62 +1817,237 @@ function createFloatingPanel() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// VIDEO OVERLAY CONTROLLER (delegates to overlay.js)
+// VIDEO OVERLAY CONTROLLER
 // ═══════════════════════════════════════════════════════════════
 
-/**
- * Inject dependencies into the VideoOverlay module.
- * Called once during init.
- */
-function setupVideoOverlay() {
-  if (typeof window.VideoOverlay === "undefined") {
-    console.warn(
-      "[content] VideoOverlay module not loaded! overlay.js may be missing.",
-    );
-    return;
-  }
-  window.VideoOverlay.setup({
-    enforceSinglePlayback,
-    log,
+function createVideoOverlay() {
+  if (document.getElementById("vo-overlay")) return;
+
+  const overlay = document.createElement("div");
+  overlay.id = "vo-overlay";
+
+  // Get scrubber HTML from ScrubberSystem (includes controls row)
+  const scrubberHTML =
+    window.ScrubberSystem?.getScrubberHTML?.() ||
+    `
+    <div id="vo-scrubber-wrap">
+      <div id="vo-scrubber-track">
+        <div id="vo-scrubber-fill"></div>
+        <div id="vo-scrubber-thumb"></div>
+      </div>
+    </div>
+    <div id="vo-bottom-row">
+      <span id="vo-time">0:00 / 0:00</span>
+      <div id="vo-btn-row">
+        <button class="vo-btn" id="vo-playpause">⏸ Pause</button>
+        <button class="vo-btn" id="vo-mute">🔊 Mute</button>
+        <button class="vo-btn" id="vo-pip">⛶ PiP</button>
+      </div>
+    </div>
+  `;
+
+  overlay.innerHTML = `
+    <div id="vo-player" data-size="m">
+      <div id="vo-video-wrap">
+        <button id="vo-close" title="Close (Esc)">✕</button>
+      </div>
+      <div id="vo-controls">
+        <div id="vo-top-row">
+          <div id="vo-title">—</div>
+          <div id="vo-size-btns">
+            <button class="vo-size-btn" data-size="s">S</button>
+            <button class="vo-size-btn active" data-size="m">M</button>
+            <button class="vo-size-btn" data-size="l">L</button>
+          </div>
+        </div>
+        ${scrubberHTML}
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Close on scrim click
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeVideoOverlay();
   });
-  console.log("[content] ✅ VideoOverlay dependencies injected");
+  document
+    .getElementById("vo-close")
+    .addEventListener("click", closeVideoOverlay);
+
+  // ESC key
+  const onKeyDown = (e) => {
+    if (e.key === "Escape") closeVideoOverlay();
+  };
+  document.addEventListener("keydown", onKeyDown);
+  overlay._keydownCleanup = () =>
+    document.removeEventListener("keydown", onKeyDown);
+
+  // Size mode buttons
+  document.getElementById("vo-size-btns").addEventListener("click", (e) => {
+    const btn = e.target.closest(".vo-size-btn");
+    if (!btn) return;
+    const size = btn.dataset.size;
+    const player = document.getElementById("vo-player");
+    player.dataset.size = size;
+    document.querySelectorAll(".vo-size-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.size === size);
+    });
+    console.log(`[Overlay] Size mode → ${size}`);
+  });
+
+  // Play/pause toggle
+  document.getElementById("vo-playpause").addEventListener("click", () => {
+    const video = overlay._currentVideo;
+    if (!video) return;
+    if (video.paused) {
+      enforceSinglePlayback(video);
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
+  });
+
+  // Mute toggle
+  document.getElementById("vo-mute").addEventListener("click", () => {
+    const video = overlay._currentVideo;
+    if (!video) return;
+    video.muted = !video.muted;
+    document.getElementById("vo-mute").textContent = video.muted
+      ? "🔇 Unmute"
+      : "🔊 Mute";
+  });
+
+  // PiP
+  document.getElementById("vo-pip").addEventListener("click", async () => {
+    const video = overlay._currentVideo;
+    if (!video) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (video.requestPictureInPicture) {
+        await video.requestPictureInPicture();
+      }
+    } catch (err) {
+      console.warn("[Overlay] PiP failed:", err);
+    }
+  });
+
+  // ─── Create scrubber controller ───
+  const controlsContainer = document.getElementById("vo-controls");
+  overlay._scrubberController =
+    window.ScrubberSystem?.createScrubberController?.(controlsContainer) ||
+    null;
+
+  console.log("[Overlay] Overlay DOM created");
 }
 
-/**
- * Show the video overlay for a given video element.
- * Delegates to overlay.js.
- */
 function showVideoOverlay(videoEl, entry) {
-  log(`Opening overlay for ${entry.id}`);
-  if (typeof window.VideoOverlay !== "undefined") {
-    window.VideoOverlay.show(videoEl, entry);
-  } else {
-    console.error(
-      "[content] VideoOverlay not available — is overlay.js loaded?",
-    );
+  createVideoOverlay(); // no-op if already exists
+
+  const overlay = document.getElementById("vo-overlay");
+  const videoWrap = document.getElementById("vo-video-wrap");
+  const title = document.getElementById("vo-title");
+
+  // Detach any previous video from overlay first
+  const existing = videoWrap.querySelector("video");
+  if (existing && existing !== videoEl) {
+    _returnVideoToOriginalParent(existing);
   }
+
+  // Store original parent so we can return the video element later
+  if (!videoEl._overlayOriginalParent) {
+    videoEl._overlayOriginalParent = videoEl.parentElement;
+    videoEl._overlayOriginalNextSibling = videoEl.nextSibling;
+  }
+
+  // Move the actual video element into the overlay
+  videoWrap.insertBefore(videoEl, document.getElementById("vo-close"));
+
+  // Set title
+  const src = videoEl.currentSrc || videoEl.src || "";
+  const filename = src.split("/").pop().split("?")[0] || entry.id;
+  title.textContent = `${entry.id} — ${filename}`;
+
+  // Attach scrubber to the video
+  if (overlay._scrubberController) {
+    overlay._scrubberController.attach(videoEl);
+  }
+
+  // Mark which video is in the overlay
+  overlay._currentVideo = videoEl;
+  overlay._currentEntry = entry;
+
+  // Show with transition
+  requestAnimationFrame(() => {
+    overlay.classList.add("visible");
+  });
+
+  console.log(`[Overlay] Opened for ${entry.id}`);
 }
 
-/**
- * Close the video overlay.
- * Delegates to overlay.js.
- */
 function closeVideoOverlay() {
-  log("Closing overlay");
-  if (typeof window.VideoOverlay !== "undefined") {
-    window.VideoOverlay.close();
+  const overlay = document.getElementById("vo-overlay");
+  if (!overlay) return;
+
+  const video = overlay._currentVideo;
+
+  // Detach and cleanup scrubber
+  if (overlay._scrubberController) {
+    overlay._scrubberController.cleanup();
+    overlay._scrubberController = null;
   }
+
+  overlay.classList.remove("visible");
+
+  // Wait for transition to finish before moving the video back
+  const onTransitionEnd = () => {
+    overlay.removeEventListener("transitionend", onTransitionEnd);
+    if (video) {
+      _returnVideoToOriginalParent(video);
+      overlay._currentVideo = null;
+      overlay._currentEntry = null;
+    }
+  };
+  overlay.addEventListener("transitionend", onTransitionEnd, { once: true });
+
+  // Fallback in case transition doesn't fire
+  setTimeout(() => {
+    if (overlay._currentVideo === video) {
+      onTransitionEnd();
+    }
+  }, 400);
+
+  console.log("[Overlay] Closed");
 }
 
-/**
- * Check if a specific video is currently in the overlay.
- * Delegates to overlay.js.
- */
 function isOverlayShowingVideo(videoEl) {
-  if (typeof window.VideoOverlay !== "undefined") {
-    return window.VideoOverlay.isShowing(videoEl);
+  const overlay = document.getElementById("vo-overlay");
+  return (
+    overlay &&
+    overlay._currentVideo === videoEl &&
+    overlay.classList.contains("visible")
+  );
+}
+
+function _returnVideoToOriginalParent(videoEl) {
+  if (!videoEl._overlayOriginalParent) return;
+  const parent = videoEl._overlayOriginalParent;
+  const nextSib = videoEl._overlayOriginalNextSibling;
+  try {
+    if (nextSib && nextSib.parentElement === parent) {
+      parent.insertBefore(videoEl, nextSib);
+    } else {
+      parent.appendChild(videoEl);
+    }
+  } catch (err) {
+    console.warn("[Overlay] Could not return video to original parent:", err);
   }
-  return false;
+  delete videoEl._overlayOriginalParent;
+  delete videoEl._overlayOriginalNextSibling;
+  console.log(
+    `[Overlay] Returned ${videoEl.dataset.videoObserverId} to original DOM`,
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1979,14 +2187,6 @@ function cleanupRuntimeResources() {
  */
 function cleanupAllResources() {
   cleanupRuntimeResources();
-
-  // ─── NEW: Destroy overlay ────────────────────────────────
-  if (typeof window.VideoOverlay !== "undefined") {
-    window.VideoOverlay.destroy();
-    log("Video overlay destroyed.");
-  }
-  // ─────────────────────────────────────────────────────────
-
   ChunkCache.clear().catch((err) => {
     console.warn("[Cleanup] Error clearing chunk cache:", err);
   });
@@ -2012,16 +2212,15 @@ function waitForBody(callback) {
 function init() {
   if (window.__VIDEO_OBSERVER_INITIALIZED__) return;
   window.__VIDEO_OBSERVER_INITIALIZED__ = true;
+
+  // Only clean RUNTIME resources, preserve IndexedDB cache
   cleanupRuntimeResources();
-  log("Video Observer initialized – ...");
+
+  log(
+    "Video Observer initialized – SINGLE PLAYBACK + CHUNK PREVIEWS + MAIN & PREVIEW BOOST + BACKGROUND PAUSE",
+  );
   createFloatingPanel();
   log("Floating panel created.");
-
-  // ─── NEW: Setup overlay module ───────────────────────────
-  setupVideoOverlay();
-  log("Video overlay module initialized.");
-  // ─────────────────────────────────────────────────────────
-
   observeVideos();
   log("Initial video observation performed.");
 

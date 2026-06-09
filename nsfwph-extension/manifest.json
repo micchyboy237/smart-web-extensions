@@ -2,15 +2,21 @@
   "manifest_version": 3,
   "name": "nsfwPH Extension",
   "description": "Automatically shows floating panel for .message-inner video elements",
-  "version": "1.12",
+  "version": "1.14",
   "action": {
     "default_title": "nsfwph.org Video Observer (Floating Panel)"
   },
   "content_scripts": [
     {
       "matches": ["https://nsfwph.org/*"],
-      "js": ["boost.js", "content.js", "gallery.js"],
-      "css": ["panel.css", "gallery.css"],
+      "js": [
+        "boost.js",
+        "scrubber.js",
+        "overlay.js",
+        "content.js",
+        "gallery.js"
+      ],
+      "css": ["panel.css", "scrubber.css", "overlay.css", "gallery.css"],
       "run_at": "document_start"
     }
   ],

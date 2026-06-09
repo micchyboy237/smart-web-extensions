@@ -1,0 +1,144 @@
+/* scrubber.css */
+/* ═══════════════════════════════════════════════════════════════
+   VIDEO OVERLAY SCRUBBER - Complete styles
+   Extracted from panel.css + hover preview additions
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── Scrubber Track ─── */
+#vo-scrubber-wrap {
+  position: relative;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+
+#vo-scrubber-track {
+  width: 100%;
+  height: 3px;
+  background: #333;
+  border-radius: 2px;
+  position: relative;
+  overflow: visible;
+}
+
+/* ─── Progress Fill ─── */
+#vo-scrubber-fill {
+  height: 100%;
+  background: #00d4ff;
+  border-radius: 2px;
+  width: 0%;
+  pointer-events: none;
+}
+
+/* ─── Draggable Thumb ─── */
+#vo-scrubber-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0%;
+  transform: translate(-50%, -50%);
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #00d4ff;
+  pointer-events: none;
+  transition: transform 0.1s;
+}
+
+#vo-scrubber-wrap:hover #vo-scrubber-thumb {
+  transform: translate(-50%, -50%) scale(1.35);
+}
+
+/* ─── Buffered Regions Layer ─── */
+#vo-scrubber-buffered {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.vo-buffer-segment {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* Thicker buffered bar on hover */
+#vo-scrubber-wrap:hover .vo-buffer-segment {
+  height: 140%;
+  top: -20%;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+}
+
+/* ─── Hover Preview Popup ─── */
+#vo-scrubber-preview {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  transform: translateX(-50%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 10;
+  background: #0d0d1a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+  /* Default size, overridden by data-size on player */
+  width: 160px;
+  aspect-ratio: 16 / 9;
+}
+
+#vo-scrubber-preview.visible {
+  opacity: 1;
+}
+
+#vo-scrubber-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+#vo-scrubber-preview .preview-time-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 2px 6px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Adjust preview size for different player sizes */
+#vo-player[data-size="s"] #vo-scrubber-preview {
+  width: 120px;
+}
+
+#vo-player[data-size="m"] #vo-scrubber-preview {
+  width: 160px;
+}
+
+#vo-player[data-size="l"] #vo-scrubber-preview {
+  width: 200px;
+}
+
+/* ─── Scrubber Time Label ─── */
+#vo-time {
+  font-size: 11px;
+  color: #777;
+  font-variant-numeric: tabular-nums;
+}
