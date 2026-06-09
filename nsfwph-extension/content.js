@@ -247,22 +247,73 @@
   // ═══════════════════════════════════════════════════════════════
   // VIDEO OBSERVATION
   // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Process videos one at a time with staggered delays.
+   * Allows the browser to paint each card before processing the next,
+   * giving smooth visual appearance and preventing DOM thrashing.
+   */
+  async function processVideosStaggered(foundVideos, staggerMs = 16) {
+    for (let i = 0; i < foundVideos.length; i++) {
+      const video = foundVideos[i];
+
+      // Track this video (creates card, attaches preview, updates panel)
+      trackVideo(video);
+
+      console.log(
+        `[Content] 📋 Processed ${i + 1}/${foundVideos.length} videos`,
+      );
+
+      // Yield to browser between each video to allow painting
+      if (i < foundVideos.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, staggerMs));
+      }
+    }
+
+    console.log(
+      `[Content] ✅ All ${foundVideos.length} videos processed with staggered delays`,
+    );
+  }
+
   function observeVideos() {
     const foundVideos = document.querySelectorAll(SELECTOR);
-    console.log(`[Content] Observing ${foundVideos.length} video elements`);
+    const previouslyTracked = videos.size;
+    const videoArray = Array.from(foundVideos); // Convert NodeList to Array
 
-    // Track all videos — each one performs a targeted single-card update
-    foundVideos.forEach(trackVideo);
-
-    // ✅ Run one final full panel update for cleanup:
-    //   - Removes cards for detached videos
-    //   - Syncs counts
-    //   - Updates any cards that may have been missed
-    // This is cheap because all cards already exist; it just cleans up stragglers
-    performPanelUpdateNow(); // No videoId → full update
     console.log(
-      `[Content] 📋 Final full panel sync after observing ${foundVideos.length} videos`,
+      `[Content] Observing ${videoArray.length} video elements (previously tracked: ${previouslyTracked})`,
     );
+
+    if (videoArray.length === 0) {
+      console.log("[Content] No videos found");
+      return;
+    }
+
+    // ✅ Staggered processing for smooth visual appearance
+    // Use longer stagger on initial load (50ms between cards for visible progression)
+    // Use shorter stagger on subsequent observations (16ms ~ 1 frame)
+    const staggerMs = previouslyTracked === 0 ? 50 : 16;
+
+    console.log(
+      `[Content] 🎬 Starting staggered processing with ${staggerMs}ms delay between cards`,
+    );
+
+    // Start staggered processing (non-blocking)
+    processVideosStaggered(videoArray, staggerMs).then(() => {
+      // After all staggered processing completes:
+      if (previouslyTracked > 0) {
+        // Subsequent observation — run full cleanup for detached videos
+        performPanelUpdateNow();
+        console.log(
+          `[Content] 🧹 Full panel cleanup after staggered processing (${previouslyTracked}→${videos.size} videos)`,
+        );
+      } else {
+        // Initial load — all cards were created via staggered processing
+        console.log(
+          `[Content] ✅ Initial load complete — ${videos.size} cards inserted via staggered updates`,
+        );
+      }
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════

@@ -11,162 +11,6 @@
   const CHUNK_PLAY_DURATION_MS = 4000; // 4s per chunk → ~20s full cycle
   const PREVIEW_INIT_TIMEOUT = 8000; // Max wait for preview init
 
-  // ═══════════════════════════════════════════════════════════════
-  // BATCH CHUNK LOADER - Prevents IndexedDB serialization bottleneck
-  // ═══════════════════════════════════════════════════════════════
-  const batchLoader = {
-    _queue: [],
-    _processing: false,
-    _processInterval: null,
-
-    queueLoad(previewVideo, entryId, cacheKeySrc) {
-      this._queue.push({
-        previewVideo,
-        entryId,
-        cacheKeySrc,
-        addedAt: Date.now(),
-      });
-      console.log(
-        `[BatchLoader] 📥 Queued ${entryId} for chunk loading (queue: ${this._queue.length})`,
-      );
-      this._startProcessing();
-    },
-
-    dequeue(previewVideo) {
-      const idx = this._queue.findIndex(
-        (item) => item.previewVideo === previewVideo,
-      );
-      if (idx !== -1) {
-        const removed = this._queue.splice(idx, 1)[0];
-        console.log(`[BatchLoader] 🗑️ Removed ${removed.entryId} from queue`);
-      }
-    },
-
-    async _startProcessing() {
-      if (this._processing) return;
-      this._processing = true;
-      console.log(
-        `[BatchLoader] 🔄 Starting batch processing (${this._queue.length} items)`,
-      );
-
-      while (this._queue.length > 0) {
-        const item = this._queue.shift();
-
-        if (!document.body.contains(item.previewVideo)) {
-          console.log(
-            `[BatchLoader] ⏭️ Skipping ${item.entryId} - removed from DOM`,
-          );
-          continue;
-        }
-
-        console.log(
-          `[BatchLoader] 🔍 Processing ${item.entryId} (waited ${Date.now() - item.addedAt}ms)`,
-        );
-
-        try {
-          await this._loadChunksForVideo(
-            item.previewVideo,
-            item.entryId,
-            item.cacheKeySrc,
-          );
-        } catch (err) {
-          console.warn(
-            `[BatchLoader] ❌ Failed to load chunks for ${item.entryId}:`,
-            err,
-          );
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-
-      this._processing = false;
-      console.log("[BatchLoader] ✅ Batch processing complete");
-    },
-
-    async _loadChunksForVideo(previewVideo, entryId, cacheKeySrc) {
-      if (!cacheKeySrc || typeof cacheKeySrc !== "string") {
-        const rawSrc = previewVideo.currentSrc || previewVideo.src || "";
-        cacheKeySrc = rawSrc
-          .replace(/([?&])preview=1(&|$)/, "$1")
-          .replace(/[?&]$/, "");
-        if (!cacheKeySrc) {
-          cacheKeySrc = `fallback-${entryId}-${Date.now()}`;
-        }
-      }
-
-      let chunkStarts = null;
-      let duration = previewVideo.duration || 0;
-
-      // Try L1 memory cache first
-      if (window.ChunkCache && window.ChunkCache.memoryCache) {
-        const memEntry = window.ChunkCache.memoryCache.get(cacheKeySrc);
-        if (memEntry && memEntry.chunks && memEntry.chunks.length > 0) {
-          console.log(
-            `[BatchLoader] ⚡ L1 MEMORY HIT for ${entryId} (${memEntry.chunks.length} chunks)`,
-          );
-          chunkStarts = memEntry.chunks;
-          duration = memEntry.duration || duration;
-        }
-      }
-
-      // Try L2 IndexedDB cache
-      if (!chunkStarts && window.ChunkCache) {
-        try {
-          const cached = await window.ChunkCache.get(cacheKeySrc);
-          if (cached && cached.chunks && cached.chunks.length > 0) {
-            console.log(
-              `[BatchLoader] ✅ CACHE HIT for ${entryId} (${cached.chunks.length} chunks)`,
-            );
-            chunkStarts = cached.chunks;
-            duration = cached.duration || duration;
-          }
-        } catch (err) {
-          console.warn(
-            `[BatchLoader] Cache read failed for ${entryId}:`,
-            err.message,
-          );
-        }
-      }
-
-      // Calculate chunks if no cache hit
-      if (!chunkStarts) {
-        console.log(
-          `[BatchLoader] ❌ CACHE MISS for ${entryId} - calculating chunks`,
-        );
-        chunkStarts = calculateChunkPositions(duration);
-        if (window.ChunkCache && chunkStarts.length > 0) {
-          window.ChunkCache.set(cacheKeySrc, chunkStarts, duration).catch(
-            (err) => {
-              console.warn(
-                `[BatchLoader] Failed to cache chunks for ${entryId}:`,
-                err,
-              );
-            },
-          );
-        }
-      }
-
-      if (chunkStarts && chunkStarts.length > 0) {
-        previewVideo._chunkStarts = chunkStarts;
-        previewVideo._chunkDuration = duration;
-        console.log(
-          `[BatchLoader] ✅ Chunks loaded for ${entryId}: ${chunkStarts.length} chunks, ` +
-            `positions: [${chunkStarts.map((s) => s.toFixed(2)).join(", ")}]`,
-        );
-      } else {
-        previewVideo._chunkStarts = [0];
-        previewVideo._chunkDuration = duration;
-      }
-    },
-
-    getStats() {
-      return {
-        queueLength: this._queue.length,
-        processing: this._processing,
-      };
-    },
-  };
-
   /**
    * Calculate evenly distributed chunk start positions across the video.
    */
@@ -183,14 +27,105 @@
     return chunkStarts;
   }
 
+  /**
+   * Load chunk positions for a preview video directly.
+   * Checks L1 memory cache → L2 IndexedDB → Calculates if missing.
+   * No batching needed — each call is independent and async.
+   */
+  async function loadChunksForPreview(previewVideo, entryId, cacheKeySrc) {
+    if (!cacheKeySrc || typeof cacheKeySrc !== "string") {
+      const rawSrc = previewVideo.currentSrc || previewVideo.src || "";
+      cacheKeySrc = rawSrc
+        .replace(/([?&])preview=1(&|$)/, "$1")
+        .replace(/[?&]$/, "");
+      if (!cacheKeySrc) {
+        cacheKeySrc = `fallback-${entryId}-${Date.now()}`;
+      }
+    }
+
+    let chunkStarts = null;
+    let duration = previewVideo.duration || 0;
+
+    // Try L1 memory cache first
+    if (window.ChunkCache && window.ChunkCache.memoryCache) {
+      const memEntry = window.ChunkCache.memoryCache.get(cacheKeySrc);
+      if (memEntry && memEntry.chunks && memEntry.chunks.length > 0) {
+        console.log(
+          `[ChunkLoad] ⚡ L1 MEMORY HIT for ${entryId} (${memEntry.chunks.length} chunks)`,
+        );
+        chunkStarts = memEntry.chunks;
+        duration = memEntry.duration || duration;
+      }
+    }
+
+    // Try L2 IndexedDB cache
+    if (!chunkStarts && window.ChunkCache) {
+      try {
+        const cached = await window.ChunkCache.get(cacheKeySrc);
+        if (cached && cached.chunks && cached.chunks.length > 0) {
+          console.log(
+            `[ChunkLoad] ✅ CACHE HIT for ${entryId} (${cached.chunks.length} chunks)`,
+          );
+          chunkStarts = cached.chunks;
+          duration = cached.duration || duration;
+        }
+      } catch (err) {
+        console.warn(
+          `[ChunkLoad] Cache read failed for ${entryId}:`,
+          err.message,
+        );
+      }
+    }
+
+    // Calculate chunks if no cache hit
+    if (!chunkStarts) {
+      console.log(
+        `[ChunkLoad] ❌ CACHE MISS for ${entryId} - calculating chunks`,
+      );
+      chunkStarts = calculateChunkPositions(duration);
+      if (window.ChunkCache && chunkStarts.length > 0) {
+        window.ChunkCache.set(cacheKeySrc, chunkStarts, duration).catch(
+          (err) => {
+            console.warn(
+              `[ChunkLoad] Failed to cache chunks for ${entryId}:`,
+              err,
+            );
+          },
+        );
+      }
+    }
+
+    if (chunkStarts && chunkStarts.length > 0) {
+      previewVideo._chunkStarts = chunkStarts;
+      previewVideo._chunkDuration = duration;
+      console.log(
+        `[ChunkLoad] ✅ Chunks loaded for ${entryId}: ${chunkStarts.length} chunks, ` +
+          `positions: [${chunkStarts.map((s) => s.toFixed(2)).join(", ")}]`,
+      );
+    } else {
+      previewVideo._chunkStarts = [0];
+      previewVideo._chunkDuration = duration;
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // CORE FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
 
   function setupLightChunkPreview(previewVideo, entryId) {
+    // ✅ Guard: If already set up, clean up old before re-creating
     if (previewVideo.dataset.previewLoopReady === "true") {
-      console.log(`[Preview:D] Loop already set up for ${entryId}, skipping`);
-      return () => {};
+      console.log(
+        `[Preview:D] Loop already set up for ${entryId}, cleaning up old before re-creating`,
+      );
+      // Clean up existing loop state
+      if (typeof previewVideo._stopPreviewLoop === "function") {
+        previewVideo._stopPreviewLoop();
+      }
+      delete previewVideo.dataset.previewLoopReady;
+      delete previewVideo._chunkStarts;
+      delete previewVideo._chunkDuration;
+      // Continue to recreate
     }
 
     previewVideo.dataset.previewLoopReady = "true";
@@ -434,7 +369,6 @@
         card.removeEventListener("mouseenter", onMouseEnter);
         card.removeEventListener("mouseleave", onMouseLeave);
       }
-      batchLoader.dequeue(previewVideo);
     };
   }
 
@@ -451,11 +385,13 @@
     if (videoUrl)
       videoUrl += (videoUrl.includes("?") ? "&" : "?") + "preview=1";
     const preview = document.createElement("video");
-    preview.src = videoUrl;
+    // ✅ Store URL in data attribute instead of setting src immediately
+    // This prevents flooding the browser's connection pool (max 6 per domain)
+    preview.dataset.previewSrc = videoUrl;
     preview.muted = true;
     preview.loop = false;
     preview.playsInline = true;
-    preview.preload = "metadata";
+    preview.preload = "none"; // Start with none — BufferManager upgrades
     preview.style.width = "100%";
     preview.style.height = "100%";
     preview.style.objectFit = "cover";
@@ -465,31 +401,26 @@
     preview.style.cursor = "pointer";
     preview.dataset.cacheKeySrc = cleanSrc;
     preview.dataset.previewReady = "false";
+    preview.dataset.sourceDeferred = "true"; // Track that src is deferred
     console.log(
       `[Preview] 🏷️ Stored cacheKeySrc on preview element: ${cleanSrc.substring(0, 40)}...`,
+    );
+    console.log(
+      `[Preview] 📦 Src deferred for ${entryId} (avoids connection pool flood)`,
     );
     window.BufferManager.register(preview, entryId);
     let isInitialized = false;
 
-    function initializePreview() {
+    async function initializePreview() {
       if (isInitialized) {
         console.log(`[Preview:D] Already initialized for ${entryId}, skipping`);
         return;
       }
-
       console.log(`[Preview] Initializing preview for ${entryId}`);
       isInitialized = true;
-
-      // Set up the chunk loop (hover listeners, etc.)
       const stopLoop = setupLightChunkPreview(preview, entryId);
       preview._stopPreviewLoop = stopLoop;
-
-      // Queue chunk position loading in background
-      batchLoader.queueLoad(preview, entryId, cleanSrc);
-
-      // Set initial strategy: METADATA only (let CardManager upgrade to INITIAL)
-      // The CardManager's IntersectionObserver will detect when the card becomes
-      // visible and upgrade to INITIAL when appropriate.
+      loadChunksForPreview(preview, entryId, cleanSrc);
       if (window.__tabIsVisible) {
         window.BufferManager.setStrategy(
           preview,
@@ -501,11 +432,17 @@
           window.RAM_CONFIG.BUFFER_STRATEGY.NONE,
         );
       }
-
       preview.dataset.previewReady = "true";
       console.log(
         `[Preview] ✅ Preview ready for ${entryId} - hover to play chunks`,
       );
+      const card = preview.closest(".video-card");
+      if (card) {
+        card.classList.remove("preview-loading");
+        console.log(
+          `[CardManager] ✅ Preview ready for ${entryId}, removed loading state`,
+        );
+      }
     }
 
     if (preview.readyState >= 1) {
@@ -533,7 +470,7 @@
   window.ChunkPreview = {
     setupLightChunkPreview,
     createSinglePreview,
-    batchLoader,
+    loadChunksForPreview,
     NUM_PREVIEW_CHUNKS,
     CHUNK_PLAY_DURATION_MS,
   };
@@ -542,6 +479,6 @@
   console.log("[ChunkPreview] Config:", {
     numPreviewChunks: NUM_PREVIEW_CHUNKS,
     chunkPlayDuration: CHUNK_PLAY_DURATION_MS + "ms",
-    batchLoader: "✅ Enabled (non-blocking)",
+    chunkLoading: "✅ Direct (no batch queue)",
   });
 })();

@@ -31,8 +31,8 @@
   }
 
   /**
-   * Restart all preview loops.
-   * Uses cacheKeySrc from the preview element's dataset (not entry, which gets cleaned up).
+   * Restart all preview loops after tab becomes visible again.
+   * Chunks are already cached on previewVideo._chunkStarts, so no need to reload.
    */
   function restartAllPreviewLoops() {
     const videos = window.__getVideosMap();
@@ -41,29 +41,18 @@
     for (const entry of videos.values()) {
       if (!entry.preview) continue;
 
-      // Get cacheKeySrc from the preview element's dataset (persistent)
-      // Fallback: derive from the entry if available
-      const cacheKeySrc =
-        entry.preview.dataset.cacheKeySrc || entry.cacheKeySrc || "";
-
-      if (!cacheKeySrc) {
-        console.warn(
-          `[Visibility] No cacheKeySrc for ${entry.id}, cannot restart loop`,
-        );
-        continue;
-      }
-
-      // Clean up existing loop if any
+      // Clean up existing loop if any (stopAllPreviewLoops already did this,
+      // but ensure clean state in case of partial cleanup)
       if (typeof entry.preview._stopPreviewLoop === "function") {
         entry.preview._stopPreviewLoop();
       }
-
       delete entry.preview.dataset.previewLoopReady;
 
+      // ✅ setupLightChunkPreview only needs previewVideo and entryId
+      // Chunks are already on previewVideo._chunkStarts from initial load
       const stopFn = window.ChunkPreview.setupLightChunkPreview(
         entry.preview,
         entry.id,
-        cacheKeySrc,
       );
 
       entry.preview._stopPreviewLoop = stopFn;
@@ -156,27 +145,42 @@
    */
   function onTabVisible() {
     window.__tabIsVisible = true;
-
     console.log("[Visibility] 👁️ Tab visible — resuming everything");
-
     restartAllPreviewLoops();
     restartAllBoosts();
 
-    // Restore buffers - but ONLY for visible cards, not all videos
-    // The CardManager's IntersectionObserver will handle upgrading visible cards to INITIAL
-    // So we just set all to METADATA and let the observer do its job
+    // ✅ FIX: Only restore METADATA for visible cards to avoid connection pool flood
+    // Non-visible cards stay at NONE until scrolled into view
     const videos = window.__getVideosMap();
+    const panelEl = document.getElementById("video-observer-panel");
+    let restoredCount = 0;
+
     for (const entry of videos.values()) {
-      if (entry.preview) {
-        // Only set to METADATA - CardManager will upgrade to INITIAL for visible cards
+      if (!entry.preview) continue;
+
+      // Check if card is visible in the panel
+      const card = entry.preview.closest(".video-card");
+      const isCardInPanel = card && panelEl && panelEl.contains(card);
+
+      if (isCardInPanel) {
+        // Card is in panel — set to METADATA, CardManager will upgrade to INITIAL
         window.BufferManager.setStrategy(
           entry.preview,
           window.RAM_CONFIG.BUFFER_STRATEGY.METADATA,
         );
+        restoredCount++;
+      } else {
+        // Card not in panel — leave at NONE to avoid wasting connections
+        window.BufferManager.setStrategy(
+          entry.preview,
+          window.RAM_CONFIG.BUFFER_STRATEGY.NONE,
+        );
       }
     }
+
     console.log(
-      `[Visibility] Set all previews to METADATA, CardManager will upgrade visible ones`,
+      `[Visibility] Restored METADATA for ${restoredCount}/${videos.size} visible cards ` +
+        `(others stay at NONE until scrolled into view)`,
     );
 
     // Restart polling interval
@@ -190,7 +194,6 @@
     // Reconnect DOM observer
     const domObserver = window.__getDomObserver();
     const chatRoot = window.__getChatRoot();
-
     if (domObserver) {
       domObserver.observe(chatRoot || document.body, {
         childList: true,
@@ -203,7 +206,6 @@
 
     // Perform immediate observation
     window.__observeVideos();
-
     window.__log("Tab visible — resuming everything");
   }
 

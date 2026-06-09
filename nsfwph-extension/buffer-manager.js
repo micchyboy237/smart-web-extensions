@@ -219,29 +219,28 @@
       if (!previewVideo) return;
       const info = this.managedVideos.get(previewVideo);
       if (previewVideo.dataset.bufferReleased === "true") return;
-
       try {
         previewVideo.pause();
       } catch (e) {}
-
       if (!previewVideo.dataset.savedSrc) {
         previewVideo.dataset.savedSrc =
-          previewVideo.src || previewVideo.currentSrc || "";
+          previewVideo.src ||
+          previewVideo.currentSrc ||
+          previewVideo.dataset.previewSrc ||
+          "";
       }
-
       if (previewVideo.src) {
         previewVideo.removeAttribute("src");
         previewVideo.load();
+        previewVideo.dataset.sourceDeferred = "true";
       }
-
       previewVideo.dataset.bufferReleased = "true";
-
+      previewVideo.dataset.previewReady = "false";
       if (info) {
         info.metadataReady = false;
         this.activeBufferCount = Math.max(0, this.activeBufferCount - 1);
         this.totalEstimatedRAM = Math.max(0, this.totalEstimatedRAM - 500000);
       }
-
       console.log(
         `[BufferMgr] 💾 Released buffer for ${info?.entryId || "unknown"}`,
       );
@@ -250,17 +249,68 @@
     lightBuffer(previewVideo) {
       const info = this.managedVideos.get(previewVideo);
       if (!info) return;
-
       previewVideo.preload = "metadata";
 
-      if (previewVideo.dataset.bufferReleased === "true") {
+      // ✅ If source was deferred, set it now from data attribute
+      if (
+        previewVideo.dataset.sourceDeferred === "true" &&
+        previewVideo.dataset.previewSrc
+      ) {
+        const deferredSrc = previewVideo.dataset.previewSrc;
+        if (
+          deferredSrc &&
+          deferredSrc !== "undefined" &&
+          deferredSrc !== "null"
+        ) {
+          previewVideo.src = deferredSrc;
+          delete previewVideo.dataset.sourceDeferred;
+          console.log(
+            `[BufferMgr] 🔗 Set deferred src for ${info.entryId}: ${deferredSrc.substring(0, 60)}...`,
+          );
+        }
+      } else if (previewVideo.dataset.bufferReleased === "true") {
         const savedSrc = previewVideo.dataset.savedSrc;
         if (savedSrc && savedSrc !== "undefined" && savedSrc !== "null") {
           previewVideo.src = savedSrc;
         }
         previewVideo.dataset.bufferReleased = "false";
-      }
 
+        // When restoring buffer, wait for metadata then remove loading spinner
+        const entryId = info.entryId;
+        const onMetaRestored = () => {
+          previewVideo.removeEventListener("loadedmetadata", onMetaRestored);
+          info.metadataReady = true;
+          previewVideo.dataset.previewReady = "true";
+          const card = previewVideo.closest(".video-card");
+          if (card) {
+            card.classList.remove("preview-loading");
+            console.log(
+              `[BufferMgr] ✅ Metadata restored for ${entryId}, removed loading state`,
+            );
+          }
+        };
+        if (previewVideo.readyState >= 1 && previewVideo.duration > 0) {
+          info.metadataReady = true;
+          previewVideo.dataset.previewReady = "true";
+          const card = previewVideo.closest(".video-card");
+          if (card) {
+            card.classList.remove("preview-loading");
+          }
+        } else {
+          previewVideo.addEventListener("loadedmetadata", onMetaRestored, {
+            once: true,
+          });
+          setTimeout(() => {
+            const card = previewVideo.closest(".video-card");
+            if (card) {
+              card.classList.remove("preview-loading");
+              console.log(
+                `[BufferMgr] ⏱️ Metadata timeout for ${entryId}, removed loading state anyway`,
+              );
+            }
+          }, RAM_CONFIG.METADATA_TIMEOUT_MS);
+        }
+      }
       console.log(
         `[BufferMgr] 📋 Light buffer (metadata only) set for ${info.entryId}`,
       );

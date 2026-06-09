@@ -101,59 +101,45 @@
     if (timeEl) {
       timeEl.textContent = `${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s`;
     }
-    // Replace placeholder with real preview - SAFELY (don't destroy existing previews)
+    // Replace placeholder with real preview - SAFELY
     const placeholder = card.querySelector(".thumb-placeholder");
     if (placeholder && entry.preview) {
       window.__log(`Replacing placeholder with real preview for ${entry.id}`);
       const container = card.querySelector(".preview-container");
       if (container) {
-        // Remove the placeholder div (NOT innerHTML = "" which destroys all children)
         placeholder.remove();
-        // Only append preview if it's not already in this container
         if (entry.preview.parentElement !== container) {
           container.appendChild(entry.preview);
           console.log(
             `[CardManager] 🖼️ Attached preview to card for ${entry.id}`,
           );
-
-          // ✅ NEW: Add loading class to card until preview metadata loads
+          // ✅ Add loading class if preview isn't ready yet
           if (entry.preview.dataset.previewReady !== "true") {
             card.classList.add("preview-loading");
             console.log(
               `[CardManager] ⏳ Preview loading for ${entry.id}, added loading state`,
             );
-
-            // Listen for preview ready
-            const checkReady = () => {
-              if (
-                entry.preview.dataset.previewReady === "true" ||
-                entry.preview.readyState >= 1
-              ) {
-                card.classList.remove("preview-loading");
-                console.log(
-                  `[CardManager] ✅ Preview ready for ${entry.id}, removed loading state`,
-                );
-                entry.preview.removeEventListener("loadedmetadata", checkReady);
-              }
-            };
-
-            if (entry.preview.dataset.previewReady === "true") {
-              card.classList.remove("preview-loading");
-            } else {
-              entry.preview.addEventListener("loadedmetadata", checkReady, {
-                once: true,
-              });
-              // Fallback: remove loading state after 10 seconds
-              setTimeout(() => {
-                card.classList.remove("preview-loading");
-              }, 10000);
-            }
           }
         } else {
           console.log(
             `[CardManager] 🖼️ Preview already in card for ${entry.id}`,
           );
         }
+      }
+    }
+
+    // ✅ NEW: Check if buffer was released and preview needs loading state restored
+    if (entry.preview && entry.preview.dataset.bufferReleased === "false") {
+      // Buffer was just restored (lightBuffer was called)
+      // Check if metadata isn't ready yet
+      const info = window.BufferManager.managedVideos.get(entry.preview);
+      if (info && !info.metadataReady) {
+        // Reset preview ready state so loading spinner shows
+        entry.preview.dataset.previewReady = "false";
+        card.classList.add("preview-loading");
+        console.log(
+          `[CardManager] ⏳ Buffer restored, re-adding loading state for ${entry.id}`,
+        );
       }
     }
   }
