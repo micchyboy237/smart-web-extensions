@@ -97,12 +97,10 @@
       statusEl.className = `video-status ${entry.info.paused ? "paused" : "playing"}`;
       statusEl.textContent = entry.info.paused ? "⏸ Paused" : "▶ Playing";
     }
-
     const timeEl = card.querySelector(".video-meta");
     if (timeEl) {
       timeEl.textContent = `${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s`;
     }
-
     // Replace placeholder with real preview - SAFELY (don't destroy existing previews)
     const placeholder = card.querySelector(".thumb-placeholder");
     if (placeholder && entry.preview) {
@@ -111,13 +109,46 @@
       if (container) {
         // Remove the placeholder div (NOT innerHTML = "" which destroys all children)
         placeholder.remove();
-
         // Only append preview if it's not already in this container
         if (entry.preview.parentElement !== container) {
           container.appendChild(entry.preview);
           console.log(
             `[CardManager] 🖼️ Attached preview to card for ${entry.id}`,
           );
+
+          // ✅ NEW: Add loading class to card until preview metadata loads
+          if (entry.preview.dataset.previewReady !== "true") {
+            card.classList.add("preview-loading");
+            console.log(
+              `[CardManager] ⏳ Preview loading for ${entry.id}, added loading state`,
+            );
+
+            // Listen for preview ready
+            const checkReady = () => {
+              if (
+                entry.preview.dataset.previewReady === "true" ||
+                entry.preview.readyState >= 1
+              ) {
+                card.classList.remove("preview-loading");
+                console.log(
+                  `[CardManager] ✅ Preview ready for ${entry.id}, removed loading state`,
+                );
+                entry.preview.removeEventListener("loadedmetadata", checkReady);
+              }
+            };
+
+            if (entry.preview.dataset.previewReady === "true") {
+              card.classList.remove("preview-loading");
+            } else {
+              entry.preview.addEventListener("loadedmetadata", checkReady, {
+                once: true,
+              });
+              // Fallback: remove loading state after 10 seconds
+              setTimeout(() => {
+                card.classList.remove("preview-loading");
+              }, 10000);
+            }
+          }
         } else {
           console.log(
             `[CardManager] 🖼️ Preview already in card for ${entry.id}`,
@@ -258,6 +289,81 @@
   }
 
   /**
+   * Perform a targeted single-card update for one video.
+   * Creates and inserts a card immediately without re-processing all existing cards.
+   * Used when a new video is tracked — provides instant visual feedback.
+   *
+   * @param {string} videoId - The video ID (e.g., "video-5") to create/update a card for
+   */
+  function performSingleCardUpdate(videoId) {
+    const panel = document.getElementById("video-observer-panel");
+    if (!panel) {
+      console.warn(
+        `[CardManager] ⚠️ Panel not found for single card update: ${videoId}`,
+      );
+      return false;
+    }
+
+    const videos = window.__getVideosMap();
+    const videoCards = window.__getVideoCards();
+    const list = panel.querySelector("#videos-list");
+    const countEl = panel.querySelector("#video-count");
+    const empty = panel.querySelector("#empty-videos");
+
+    // Find the entry for this videoId
+    let targetEntry = null;
+    let targetVideoEl = null;
+    for (const [videoEl, entry] of videos.entries()) {
+      if (entry.id === videoId) {
+        targetEntry = entry;
+        targetVideoEl = videoEl;
+        break;
+      }
+    }
+
+    if (!targetEntry) {
+      console.warn(
+        `[CardManager] ⚠️ No entry found for single card update: ${videoId}`,
+      );
+      return false;
+    }
+
+    // Hide empty state if we have videos
+    if (videos.size > 0) {
+      empty.style.display = "none";
+    }
+
+    // Update count
+    countEl.textContent = videos.size;
+
+    let card;
+    let isNew = false;
+
+    if (!videoCards.has(targetVideoEl)) {
+      // Create new card
+      card = createVideoCard(targetEntry);
+      videoCards.set(targetVideoEl, card);
+      list.appendChild(card);
+      isNew = true;
+      console.log(`[CardManager] 🆕 Created + inserted card for ${videoId}`);
+    } else {
+      // Update existing card
+      card = videoCards.get(targetVideoEl);
+      console.log(`[CardManager] 🔄 Updating existing card for ${videoId}`);
+    }
+
+    // Always run updateExistingCard to refresh status, time, and attach preview
+    updateExistingCard(card, targetEntry);
+
+    console.log(
+      `[CardManager] 📋 Single card ${isNew ? "inserted" : "updated"} for ${videoId} ` +
+        `(total: ${videos.size} videos, ${videoCards.size} cards)`,
+    );
+
+    return true;
+  }
+
+  /**
    * Initialize scroll-based card visibility tracking
    */
   function initCardVisibilityObserver() {
@@ -343,6 +449,7 @@
     updateExistingCard,
     cleanupVideoEntry,
     performPanelUpdate,
+    performSingleCardUpdate, // ← NEW: targeted single-card update
     initCardVisibilityObserver,
     getObserver: () => cardVisibilityObserver,
   };

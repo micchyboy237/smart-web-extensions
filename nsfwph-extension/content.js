@@ -171,9 +171,9 @@
     // Start preview creation - this returns a preview element
     if (window.ChunkPreview) {
       entry.preview = window.ChunkPreview.createSinglePreview(video, id);
-      // IMMEDIATE panel update to show this video right away
-      // Each video appears in the panel as soon as it's tracked
-      performPanelUpdateNow();
+      // ✅ OPTIMIZED: Targeted single-card update — instant visual feedback
+      // Only creates/inserts this ONE card instead of rebuilding all cards
+      performPanelUpdateNow(id);
     }
 
     // Track all video events
@@ -220,12 +220,26 @@
   // ═══════════════════════════════════════════════════════════════
 
   /**
-   * Perform panel update immediately (skips debounce).
-   * Used when a single video is tracked and should appear right away.
+   * Perform panel update, optionally targeting a single video.
+   *
+   * With videoId: Creates/updates ONLY the card for that video (O(1) per video).
+   *   Used in trackVideo() for instant per-card appearance as each video is detected.
+   *
+   * Without videoId: Full panel rebuild with cleanup (O(n)).
+   *   Used in observeVideos() after batch tracking completes, and on visibility restore.
+   *
+   * @param {string} [videoId] - Optional. If provided, only update the card for this video.
    */
-  function performPanelUpdateNow() {
-    console.log("[Content] 🔄 Performing panel update...");
-    if (window.CardManager) {
+  function performPanelUpdateNow(videoId) {
+    if (!window.CardManager) return;
+
+    if (videoId) {
+      // ✅ OPTIMIZED: Targeted single-card update — instant visual feedback
+      console.log(`[Content] 🎯 Targeted panel update for ${videoId}`);
+      window.CardManager.performSingleCardUpdate(videoId);
+    } else {
+      // Full panel rebuild (for cleanup, visibility restore, etc.)
+      console.log("[Content] 🔄 Full panel update...");
       window.CardManager.performPanelUpdate();
     }
   }
@@ -237,10 +251,18 @@
     const foundVideos = document.querySelectorAll(SELECTOR);
     console.log(`[Content] Observing ${foundVideos.length} video elements`);
 
-    // Track all videos - each one triggers its own immediate panel update
+    // Track all videos — each one performs a targeted single-card update
     foundVideos.forEach(trackVideo);
 
-    // No final panel update needed - each video updates the panel as it's tracked
+    // ✅ Run one final full panel update for cleanup:
+    //   - Removes cards for detached videos
+    //   - Syncs counts
+    //   - Updates any cards that may have been missed
+    // This is cheap because all cards already exist; it just cleans up stragglers
+    performPanelUpdateNow(); // No videoId → full update
+    console.log(
+      `[Content] 📋 Final full panel sync after observing ${foundVideos.length} videos`,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════
