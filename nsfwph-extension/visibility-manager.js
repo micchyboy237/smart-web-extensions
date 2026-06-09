@@ -6,6 +6,10 @@
 
   console.log("[VisibilityManager] Module loading...");
 
+  // Debounce to prevent rapid hide/show cycles
+  let _visibilityDebounceTimer = null;
+  const VISIBILITY_DEBOUNCE_MS = 500;
+
   /**
    * Stop all active preview loops
    */
@@ -27,39 +31,43 @@
   }
 
   /**
-   * Restart all preview loops
+   * Restart all preview loops.
+   * Uses cacheKeySrc from the preview element's dataset (not entry, which gets cleaned up).
    */
   function restartAllPreviewLoops() {
     const videos = window.__getVideosMap();
     let restarted = 0;
 
     for (const entry of videos.values()) {
-      if (entry.preview) {
-        const cacheKeySrc = entry.cacheKeySrc || "";
+      if (!entry.preview) continue;
 
-        if (!cacheKeySrc) {
-          console.warn(
-            `[Visibility] No cacheKeySrc for ${entry.id}, cannot restart loop`,
-          );
-          continue;
-        }
+      // Get cacheKeySrc from the preview element's dataset (persistent)
+      // Fallback: derive from the entry if available
+      const cacheKeySrc =
+        entry.preview.dataset.cacheKeySrc || entry.cacheKeySrc || "";
 
-        // Clean up existing loop if any
-        if (typeof entry.preview._stopPreviewLoop === "function") {
-          entry.preview._stopPreviewLoop();
-        }
-
-        delete entry.preview.dataset.previewLoopReady;
-
-        const stopFn = window.ChunkPreview.setupLightChunkPreview(
-          entry.preview,
-          entry.id,
-          cacheKeySrc,
+      if (!cacheKeySrc) {
+        console.warn(
+          `[Visibility] No cacheKeySrc for ${entry.id}, cannot restart loop`,
         );
-
-        entry.preview._stopPreviewLoop = stopFn;
-        restarted++;
+        continue;
       }
+
+      // Clean up existing loop if any
+      if (typeof entry.preview._stopPreviewLoop === "function") {
+        entry.preview._stopPreviewLoop();
+      }
+
+      delete entry.preview.dataset.previewLoopReady;
+
+      const stopFn = window.ChunkPreview.setupLightChunkPreview(
+        entry.preview,
+        entry.id,
+        cacheKeySrc,
+      );
+
+      entry.preview._stopPreviewLoop = stopFn;
+      restarted++;
     }
 
     console.log(`[Visibility] Restarted ${restarted} preview loops`);
@@ -73,7 +81,8 @@
 
     for (const entry of videos.values()) {
       if (entry.boostCleanup) {
-        window.BoostEngine?.cleanupBoost(entry.element);
+        entry.boostCleanup();
+        entry.boostCleanup = null;
       }
 
       if (entry.preview) {
@@ -142,7 +151,8 @@
   }
 
   /**
-   * Handle tab becoming visible
+   * Handle tab becoming visible.
+   * Restores preview loops and buffers without flooding INITIAL for all videos.
    */
   function onTabVisible() {
     window.__tabIsVisible = true;
@@ -152,8 +162,22 @@
     restartAllPreviewLoops();
     restartAllBoosts();
 
-    // Restore buffers for visible previews
-    window.BufferManager.onTabVisible();
+    // Restore buffers - but ONLY for visible cards, not all videos
+    // The CardManager's IntersectionObserver will handle upgrading visible cards to INITIAL
+    // So we just set all to METADATA and let the observer do its job
+    const videos = window.__getVideosMap();
+    for (const entry of videos.values()) {
+      if (entry.preview) {
+        // Only set to METADATA - CardManager will upgrade to INITIAL for visible cards
+        window.BufferManager.setStrategy(
+          entry.preview,
+          window.RAM_CONFIG.BUFFER_STRATEGY.METADATA,
+        );
+      }
+    }
+    console.log(
+      `[Visibility] Set all previews to METADATA, CardManager will upgrade visible ones`,
+    );
 
     // Restart polling interval
     if (window.__getPollingInterval() === null) {
@@ -184,15 +208,23 @@
   }
 
   /**
-   * Initialize visibility change listener
+   * Initialize visibility change listener with debouncing
    */
   function initVisibilityListener() {
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        onTabHidden();
-      } else {
-        onTabVisible();
+      // Debounce to prevent rapid hide/show cycles
+      if (_visibilityDebounceTimer) {
+        clearTimeout(_visibilityDebounceTimer);
       }
+
+      _visibilityDebounceTimer = setTimeout(() => {
+        _visibilityDebounceTimer = null;
+        if (document.hidden) {
+          onTabHidden();
+        } else {
+          onTabVisible();
+        }
+      }, VISIBILITY_DEBOUNCE_MS);
     });
 
     console.log("[Visibility] Visibility change listener initialized ✅");

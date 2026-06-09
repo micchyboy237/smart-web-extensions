@@ -171,8 +171,9 @@
     // Start preview creation - this returns a preview element
     if (window.ChunkPreview) {
       entry.preview = window.ChunkPreview.createSinglePreview(video, id);
-      // Schedule a panel update to show this preview in the card
-      schedulePanelUpdate();
+      // IMMEDIATE panel update to show this video right away
+      // Each video appears in the panel as soon as it's tracked
+      performPanelUpdateNow();
     }
 
     // Track all video events
@@ -215,40 +216,18 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // DEBOUNCED PANEL UPDATE - prevents rapid consecutive updates
+  // PANEL UPDATE FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
 
   /**
-   * Schedule a panel update with debouncing.
-   * Multiple rapid calls will be coalesced into a single update.
-   */
-  function schedulePanelUpdate() {
-    if (panelUpdateTimer) {
-      clearTimeout(panelUpdateTimer);
-    }
-
-    panelUpdateTimer = setTimeout(() => {
-      panelUpdateTimer = null;
-      performPanelUpdateNow();
-    }, PANEL_UPDATE_DEBOUNCE);
-  }
-
-  /**
    * Perform panel update immediately (skips debounce).
+   * Used when a single video is tracked and should appear right away.
    */
   function performPanelUpdateNow() {
     console.log("[Content] 🔄 Performing panel update...");
     if (window.CardManager) {
       window.CardManager.performPanelUpdate();
     }
-  }
-
-  /**
-   * Legacy performPanelUpdate - now delegates to debounced version.
-   * Called from card-manager.js and other modules.
-   */
-  function performPanelUpdate() {
-    schedulePanelUpdate();
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -258,11 +237,10 @@
     const foundVideos = document.querySelectorAll(SELECTOR);
     console.log(`[Content] Observing ${foundVideos.length} video elements`);
 
-    // Track all videos first (creates entries and previews)
+    // Track all videos - each one triggers its own immediate panel update
     foundVideos.forEach(trackVideo);
 
-    // Then do ONE panel update at the end (debounced)
-    schedulePanelUpdate();
+    // No final panel update needed - each video updates the panel as it's tracked
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -422,7 +400,7 @@
       window.VisibilityManager.initVisibilityListener();
     }
 
-    // Perform initial observation - this will batch all previews and update panel ONCE
+    // Perform initial observation - each video updates panel as tracked
     observeVideos();
     log("Initial video observation performed.");
 
