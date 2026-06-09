@@ -1,15 +1,12 @@
 // content.js - Core Video Observer orchestrator
 // Coordinates all modules: Boost, Cache, Buffer, Preview, Cards, Panel, Overlay, Visibility
-
 (function () {
   "use strict";
-
   console.log("[Content] Core module loading...");
 
   // ═══════════════════════════════════════════════════════════════
   // GLOBAL STATE (shared across modules via getters/setters)
   // ═══════════════════════════════════════════════════════════════
-
   let videos = new Map(); // video element → entry
   let videoCards = new Map(); // video element → card DOM element
   let currentlyPlaying = null; // Global: only one video plays at a time
@@ -17,16 +14,19 @@
   let domObserver = null;
   let pollingInterval = null;
   let chatRoot = null;
-
   let globalResources = {
     observers: [],
     intervals: [],
   };
 
+  // Panel update batching - prevents multiple rapid panel updates
+  let panelUpdatePending = false;
+  let panelUpdateTimer = null;
+  const PANEL_UPDATE_DEBOUNCE = 100; // ms
+
   // ═══════════════════════════════════════════════════════════════
   // GLOBAL ACCESSORS (for cross-module communication)
   // ═══════════════════════════════════════════════════════════════
-
   window.__getVideosMap = () => videos;
   window.__getVideoCards = () => videoCards;
   window.__getCurrentlyPlaying = () => currentlyPlaying;
@@ -34,38 +34,29 @@
     currentlyPlaying = val;
   };
   window.__videoCounter = videoCounter;
-
   window.__getPollingInterval = () => pollingInterval;
   window.__setPollingInterval = (val) => {
     pollingInterval = val;
   };
-
   window.__getDomObserver = () => domObserver;
   window.__setDomObserver = (val) => {
     domObserver = val;
   };
-
   window.__getChatRoot = () => chatRoot;
-
   window.__addGlobalInterval = (interval) => {
     globalResources.intervals.push(interval);
   };
-
   window.__addGlobalObserver = (observer) => {
     globalResources.observers.push(observer);
   };
-
   window.__tabIsVisible = !document.hidden;
-
   window.__observeVideos = observeVideos;
   window.__enforceSinglePlayback = enforceSinglePlayback;
   window.__log = log;
-
   // Overlay bridge functions (delegated to overlay.js when available)
   window.__showVideoOverlay = showVideoOverlay;
   window.__closeVideoOverlay = closeVideoOverlay;
   window.__isOverlayShowingVideo = isOverlayShowingVideo;
-
   // Gallery bridge
   window.__openGallery = (entry) => {
     if (typeof window.GalleryModule !== "undefined") {
@@ -78,14 +69,12 @@
   // ═══════════════════════════════════════════════════════════════
   // CORE CONSTANTS
   // ═══════════════════════════════════════════════════════════════
-
   const SELECTOR = ".message-inner video";
   const MAX_GALLERY_ITEMS = 6;
 
   // ═══════════════════════════════════════════════════════════════
   // SINGLE PLAYBACK CONTROLLER
   // ═══════════════════════════════════════════════════════════════
-
   function enforceSinglePlayback(videoToPlay) {
     if (currentlyPlaying && currentlyPlaying !== videoToPlay) {
       currentlyPlaying.pause();
@@ -93,23 +82,18 @@
         `Paused previous video to enforce single playback`,
         currentlyPlaying ? currentlyPlaying.dataset.videoObserverId : "",
       );
-
       if (isOverlayShowingVideo(currentlyPlaying)) {
         closeVideoOverlay();
       }
     }
-
     currentlyPlaying = videoToPlay;
-
     const onEnded = () => {
       if (currentlyPlaying === videoToPlay) {
         currentlyPlaying = null;
         closeVideoOverlay();
       }
     };
-
     videoToPlay.addEventListener("ended", onEnded, { once: true });
-
     console.log(
       `[Content] Single playback enforced for ${videoToPlay.dataset.videoObserverId}`,
     );
@@ -118,7 +102,6 @@
   // ═══════════════════════════════════════════════════════════════
   // LOGGING
   // ═══════════════════════════════════════════════════════════════
-
   function log(message, data = null) {
     if (window.PanelManager && window.PanelManager.logToPanel) {
       window.PanelManager.logToPanel(message, data);
@@ -144,7 +127,6 @@
   // ═══════════════════════════════════════════════════════════════
   // VIDEO TRACKING
   // ═══════════════════════════════════════════════════════════════
-
   function trackVideo(video) {
     if (video.dataset.videoObserverAttached === "true") return;
     video.dataset.videoObserverAttached = "true";
@@ -186,22 +168,11 @@
         window.BoostEngine.attachBoostToVideo(video) || (() => {});
     }
 
-    // Start preview creation
-    const startPreview = () => {
-      if (window.ChunkPreview) {
-        entry.preview = window.ChunkPreview.createSinglePreview(video, id);
-        performPanelUpdate();
-      }
-    };
-
-    if (video.readyState >= 2) {
-      startPreview();
-    } else {
-      const handler = () => startPreview();
-      video.addEventListener("loadedmetadata", handler, { once: true });
-      entry.cleanups.push(() =>
-        video.removeEventListener("loadedmetadata", handler),
-      );
+    // Start preview creation - this returns a preview element
+    if (window.ChunkPreview) {
+      entry.preview = window.ChunkPreview.createSinglePreview(video, id);
+      // Schedule a panel update to show this preview in the card
+      schedulePanelUpdate();
     }
 
     // Track all video events
@@ -244,31 +215,59 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // PANEL UPDATE
+  // DEBOUNCED PANEL UPDATE - prevents rapid consecutive updates
   // ═══════════════════════════════════════════════════════════════
 
-  function performPanelUpdate() {
+  /**
+   * Schedule a panel update with debouncing.
+   * Multiple rapid calls will be coalesced into a single update.
+   */
+  function schedulePanelUpdate() {
+    if (panelUpdateTimer) {
+      clearTimeout(panelUpdateTimer);
+    }
+
+    panelUpdateTimer = setTimeout(() => {
+      panelUpdateTimer = null;
+      performPanelUpdateNow();
+    }, PANEL_UPDATE_DEBOUNCE);
+  }
+
+  /**
+   * Perform panel update immediately (skips debounce).
+   */
+  function performPanelUpdateNow() {
+    console.log("[Content] 🔄 Performing panel update...");
     if (window.CardManager) {
       window.CardManager.performPanelUpdate();
     }
   }
 
+  /**
+   * Legacy performPanelUpdate - now delegates to debounced version.
+   * Called from card-manager.js and other modules.
+   */
+  function performPanelUpdate() {
+    schedulePanelUpdate();
+  }
+
   // ═══════════════════════════════════════════════════════════════
   // VIDEO OBSERVATION
   // ═══════════════════════════════════════════════════════════════
-
   function observeVideos() {
     const foundVideos = document.querySelectorAll(SELECTOR);
     console.log(`[Content] Observing ${foundVideos.length} video elements`);
 
+    // Track all videos first (creates entries and previews)
     foundVideos.forEach(trackVideo);
-    performPanelUpdate();
+
+    // Then do ONE panel update at the end (debounced)
+    schedulePanelUpdate();
   }
 
   // ═══════════════════════════════════════════════════════════════
   // VIDEO OVERLAY BRIDGE
   // ═══════════════════════════════════════════════════════════════
-
   function setupVideoOverlay() {
     if (typeof window.VideoOverlay === "undefined") {
       console.warn(
@@ -276,18 +275,15 @@
       );
       return;
     }
-
     window.VideoOverlay.setup({
       enforceSinglePlayback,
       log,
     });
-
     console.log("[Content] ✅ VideoOverlay dependencies injected");
   }
 
   function showVideoOverlay(videoEl, entry) {
     log(`Opening overlay for ${entry.id}`);
-
     if (typeof window.VideoOverlay !== "undefined") {
       window.VideoOverlay.show(videoEl, entry);
     } else {
@@ -299,7 +295,6 @@
 
   function closeVideoOverlay() {
     log("Closing overlay");
-
     if (typeof window.VideoOverlay !== "undefined") {
       window.VideoOverlay.close();
     }
@@ -315,12 +310,17 @@
   // ═══════════════════════════════════════════════════════════════
   // CLEANUP FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
-
   /**
    * Clean up runtime resources only - preserves IndexedDB cache
    */
   function cleanupRuntimeResources() {
     console.log("[Content] Cleaning up runtime resources...");
+
+    // Clear pending panel update
+    if (panelUpdateTimer) {
+      clearTimeout(panelUpdateTimer);
+      panelUpdateTimer = null;
+    }
 
     globalResources.observers.forEach((o) => o.disconnect());
     globalResources.observers = [];
@@ -333,12 +333,10 @@
         entry.boostCleanup();
         entry.boostCleanup = null;
       }
-
       if (entry.preview) {
         if (typeof entry.preview._initialBoostCleanup === "function") {
           entry.preview._initialBoostCleanup();
         }
-
         if (window.BoostEngine) {
           window.BoostEngine.cleanupPreviewBoost(entry.preview);
         }
@@ -358,7 +356,6 @@
    */
   function cleanupAllResources() {
     console.log("[Content] Performing full cleanup...");
-
     cleanupRuntimeResources();
 
     // Destroy overlay
@@ -380,15 +377,12 @@
   // ═══════════════════════════════════════════════════════════════
   // INITIALIZATION
   // ═══════════════════════════════════════════════════════════════
-
   function waitForBody(callback) {
     if (document.body) {
       console.log("[Content] Body already available, initializing immediately");
       return callback();
     }
-
     console.log("[Content] Waiting for body element...");
-
     const observer = new MutationObserver(() => {
       if (document.body) {
         observer.disconnect();
@@ -396,9 +390,7 @@
         callback();
       }
     });
-
     observer.observe(document.documentElement, { childList: true });
-
     setTimeout(() => {
       if (document.body) callback();
     }, 1500);
@@ -411,8 +403,8 @@
     }
 
     window.__VIDEO_OBSERVER_INITIALIZED__ = true;
-    cleanupRuntimeResources();
 
+    cleanupRuntimeResources();
     console.log("[Content] Initializing Video Observer...");
 
     // Create floating panel
@@ -430,13 +422,12 @@
       window.VisibilityManager.initVisibilityListener();
     }
 
-    // Perform initial observation
+    // Perform initial observation - this will batch all previews and update panel ONCE
     observeVideos();
     log("Initial video observation performed.");
 
     // Setup MutationObserver for new videos
     let debounceTimer = null;
-
     domObserver = new MutationObserver((mutations) => {
       if (!window.__tabIsVisible) return;
 
@@ -472,6 +463,7 @@
     globalResources.intervals.push(pollingInterval);
 
     log("Init complete — observer watching chat root for child additions only");
+
     console.log("[Content] ✅ Full initialization complete");
     console.log("[Content] Active modules:", {
       BoostEngine: !!window.BoostEngine,
@@ -488,7 +480,6 @@
   // ═══════════════════════════════════════════════════════════════
   // CLEANUP ON UNLOAD
   // ═══════════════════════════════════════════════════════════════
-
   window.addEventListener("unload", () => {
     console.log("[Content] Page unloading, performing cleanup...");
     cleanupAllResources();
@@ -497,9 +488,7 @@
   // ═══════════════════════════════════════════════════════════════
   // STARTUP
   // ═══════════════════════════════════════════════════════════════
-
   console.log("[Content] Waiting for body to start initialization...");
   waitForBody(init);
-
   console.log("[Content] Core module loaded ✅");
 })();

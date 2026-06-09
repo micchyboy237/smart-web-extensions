@@ -1,9 +1,7 @@
 // card-manager.js - Video Card Creation and Management
 // Handles DOM card creation, updates, and cleanup for the floating panel
-
 (function () {
   "use strict";
-
   console.log("[CardManager] Module loading...");
 
   let cardVisibilityObserver = null;
@@ -49,7 +47,6 @@
 
       if (videoEl.dataset.clickInProgress === "true") return;
       videoEl.dataset.clickInProgress = "true";
-
       setTimeout(() => {
         delete videoEl.dataset.clickInProgress;
       }, 300);
@@ -91,7 +88,8 @@
   }
 
   /**
-   * Update an existing card with new video information
+   * Update an existing card with new video information.
+   * SAFELY replaces placeholder without destroying preview elements.
    */
   function updateExistingCard(card, entry) {
     const statusEl = card.querySelector(".video-status");
@@ -105,15 +103,26 @@
       timeEl.textContent = `${Math.floor(entry.info.currentTime)}/${Math.floor(entry.info.duration)}s`;
     }
 
-    // Replace placeholder with real preview
+    // Replace placeholder with real preview - SAFELY (don't destroy existing previews)
     const placeholder = card.querySelector(".thumb-placeholder");
     if (placeholder && entry.preview) {
       window.__log(`Replacing placeholder with real preview for ${entry.id}`);
-
       const container = card.querySelector(".preview-container");
       if (container) {
-        container.innerHTML = "";
-        container.appendChild(entry.preview);
+        // Remove the placeholder div (NOT innerHTML = "" which destroys all children)
+        placeholder.remove();
+
+        // Only append preview if it's not already in this container
+        if (entry.preview.parentElement !== container) {
+          container.appendChild(entry.preview);
+          console.log(
+            `[CardManager] 🖼️ Attached preview to card for ${entry.id}`,
+          );
+        } else {
+          console.log(
+            `[CardManager] 🖼️ Preview already in card for ${entry.id}`,
+          );
+        }
       }
     }
   }
@@ -123,7 +132,6 @@
    */
   function cleanupVideoEntry(entry) {
     if (!entry) return;
-
     window.__log(`Cleaning up video entry for RAM optimization: ${entry.id}`);
 
     // Clean up boost
@@ -152,6 +160,11 @@
       const currentlyPlaying = window.__getCurrentlyPlaying();
       if (currentlyPlaying === entry.preview) {
         window.__setCurrentlyPlaying(null);
+      }
+
+      // Remove from DOM if attached
+      if (entry.preview.parentElement) {
+        entry.preview.remove();
       }
 
       entry.preview.src = "";
@@ -188,7 +201,6 @@
 
     const videos = window.__getVideosMap();
     const videoCards = window.__getVideoCards();
-
     const list = panel.querySelector("#videos-list");
     const countEl = panel.querySelector("#video-count");
     const empty = panel.querySelector("#empty-videos");
@@ -204,18 +216,23 @@
     empty.style.display = "none";
 
     // Create or update cards
+    let newCardsCreated = 0;
+    let cardsUpdated = 0;
+
     Array.from(videos.values()).forEach((entry) => {
       let card;
-
       if (!videoCards.has(entry.element)) {
+        // New card needed
         card = createVideoCard(entry);
         videoCards.set(entry.element, card);
         list.appendChild(card);
+        newCardsCreated++;
         console.log(`[CardManager] Added new card for ${entry.id}`);
-      } else {
-        card = videoCards.get(entry.element);
-        updateExistingCard(card, entry);
       }
+      // Always update existing cards (handles both new and existing)
+      card = videoCards.get(entry.element);
+      updateExistingCard(card, entry);
+      cardsUpdated++;
     });
 
     // Remove cards for detached videos
@@ -223,7 +240,6 @@
       if (!document.body.contains(videoEl)) {
         cleanupVideoEntry(entry);
         videos.delete(videoEl);
-
         const card = videoCards.get(videoEl);
         if (card) {
           card.remove();
@@ -236,7 +252,8 @@
     }
 
     console.log(
-      `[CardManager] Panel updated: ${videos.size} videos, ${videoCards.size} cards`,
+      `[CardManager] Panel updated: ${videos.size} videos, ${videoCards.size} cards ` +
+        `(${newCardsCreated} new, ${cardsUpdated} updated)`,
     );
   }
 
@@ -260,7 +277,6 @@
           // Find corresponding video entry
           let targetEntry = null;
           const videos = window.__getVideosMap();
-
           for (const ent of videos.values()) {
             if (ent.id === entryId) {
               targetEntry = ent;
@@ -283,13 +299,17 @@
               info.strategy === window.RAM_CONFIG.BUFFER_STRATEGY.METADATA ||
               info.strategy === window.RAM_CONFIG.BUFFER_STRATEGY.NONE
             ) {
-              console.log(
-                `[CardManager] 👁️ Card scrolled into view: ${entryId} → INITIAL`,
-              );
-              window.BufferManager.setStrategy(
-                preview,
-                window.RAM_CONFIG.BUFFER_STRATEGY.INITIAL,
-              );
+              // Only upgrade to INITIAL if metadata is ready
+              if (preview.readyState >= 1 && preview.duration > 0) {
+                console.log(
+                  `[CardManager] 👁️ Card visible: ${entryId} → INITIAL`,
+                );
+                window.BufferManager.setStrategy(
+                  preview,
+                  window.RAM_CONFIG.BUFFER_STRATEGY.INITIAL,
+                );
+              }
+              // If metadata not ready, stay at METADATA until it loads
             }
           } else {
             if (info.strategy === window.RAM_CONFIG.BUFFER_STRATEGY.INITIAL) {
@@ -318,7 +338,6 @@
   // ═══════════════════════════════════════════════════════════════
   // EXPORT TO GLOBAL SCOPE
   // ═══════════════════════════════════════════════════════════════
-
   window.CardManager = {
     createVideoCard,
     updateExistingCard,
