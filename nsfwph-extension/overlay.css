@@ -62,7 +62,7 @@
 #vo-video-wrap {
   width: 100%;
   aspect-ratio: 16 / 9;
-  max-height: 72vh;
+  max-height: 100vh;
   background: #000;
   position: relative;
   display: flex;

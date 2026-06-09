@@ -236,7 +236,6 @@
   function show(videoEl, entry) {
     _log(`show() called for ${entry.id}`);
 
-    // Create overlay DOM if it doesn't exist yet
     if (!_overlayEl) {
       create();
     }
@@ -245,28 +244,23 @@
     const title = document.getElementById("vo-title");
     const controlsContainer = document.getElementById("vo-controls");
 
-    // Detach any previous video + scrubber from overlay
+    // Detach previous video + scrubber
     if (_currentVideo && _currentVideo !== videoEl) {
       _log("Detaching previous video and scrubber from overlay");
-
-      // Detach scrubber from old video
       if (_scrubberController) {
         _scrubberController.detach();
       }
-
       _returnVideoToOriginalParent(_currentVideo);
     }
 
-    // Store original parent so we can return the video element later
+    // Store original parent
     if (!videoEl._overlayOriginalParent) {
       videoEl._overlayOriginalParent = videoEl.parentElement;
       videoEl._overlayOriginalNextSibling = videoEl.nextSibling;
-      _log(
-        `Stored original parent for ${entry.id}: ${videoEl._overlayOriginalParent?.tagName || "unknown"}`,
-      );
+      _log(`Stored original parent for ${entry.id}`);
     }
 
-    // Move the actual video element into the overlay
+    // Move video into overlay
     const closeBtn = document.getElementById("vo-close");
     videoWrap.insertBefore(videoEl, closeBtn);
 
@@ -275,28 +269,36 @@
     const filename = src.split("/").pop().split("?")[0] || entry.id;
     title.textContent = `${entry.id} — ${filename}`;
 
-    // ─── Initialize or re-attach scrubber system ────────────────
+    // ─── Scrubber ─────────────────────────────────────────────
     if (typeof window.ScrubberSystem !== "undefined") {
       if (!_scrubberController) {
-        // First time: create the scrubber controller (injects DOM)
         _scrubberController =
           window.ScrubberSystem.createScrubberController(controlsContainer);
-        _log("Scrubber controller created (DOM injected)");
+        _log("Scrubber controller created");
       }
-      // Attach scrubber to the new video
       _scrubberController.attach(videoEl);
       _log(
-        `Scrubber attached to ${entry.id} (${_scrubberController.getThumbnailCount()} thumbnails cached)`,
+        `Scrubber attached (${_scrubberController.getThumbnailCount()} thumbnails)`,
       );
-    } else {
-      _log("⚠️ ScrubberSystem unavailable — no progress bar or thumbnails");
     }
 
-    // Mark which video is in the overlay
+    // ─── NEW: Settings UI ─────────────────────────────────────
+    if (typeof window.OverlaySettings !== "undefined") {
+      // Create settings UI if this is first open
+      if (!_overlayEl.querySelector("#vo-settings-panel")) {
+        window.OverlaySettings.createSettingsUI(_overlayEl);
+        _log("Settings UI created inside overlay");
+      }
+      // Apply any saved settings to this video
+      window.OverlaySettings.applyTo(videoEl);
+      _log("Settings applied to video");
+    } else {
+      _log("⚠️ OverlaySettings not available — no brightness/zoom controls");
+    }
+
     _currentVideo = videoEl;
     _currentEntry = entry;
 
-    // Show with transition
     requestAnimationFrame(() => {
       _overlayEl.classList.add("visible");
     });
@@ -388,11 +390,16 @@
       close();
     }
 
-    // Full scrubber cleanup (frees canvas + thumbnails)
     if (_scrubberController) {
       _scrubberController.cleanup();
       _scrubberController = null;
-      _log("Scrubber fully cleaned up (memory freed)");
+      _log("Scrubber fully cleaned up");
+    }
+
+    // ─── NEW: Cleanup settings ────────────────────────────────
+    if (typeof window.OverlaySettings !== "undefined") {
+      window.OverlaySettings.destroy();
+      _log("Settings destroyed");
     }
 
     if (_keydownCleanup) {

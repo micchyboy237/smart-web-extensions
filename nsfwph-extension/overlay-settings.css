@@ -1,0 +1,165 @@
+/* overlay-settings.css */
+/* ═══════════════════════════════════════════════════════════════
+   VIDEO OVERLAY SETTINGS PANEL
+   Brightness, Contrast, Saturation, Zoom controls
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── Settings Toggle Button ─────────────────────────────────── */
+#vo-settings-toggle {
+  font-size: 13px;
+  padding: 3px 7px;
+  transition: all 0.15s;
+}
+#vo-settings-toggle.active {
+  background: rgba(0, 212, 255, 0.2);
+  color: #00d4ff;
+  border-color: rgba(0, 212, 255, 0.5);
+}
+
+/* ─── Settings Panel Container ───────────────────────────────── */
+#vo-settings-panel {
+  position: absolute;
+  right: 10px;
+  bottom: 60px; /* Above the controls bar */
+  width: 260px;
+  background: #1a1a2e;
+  border: 1px solid #444;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7);
+  z-index: 10;
+  opacity: 0;
+  transform: translateY(8px) scale(0.95);
+  pointer-events: none;
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s cubic-bezier(0.34, 1.2, 0.64, 1);
+  overflow: hidden;
+}
+#vo-settings-panel.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: all;
+}
+
+/* ─── Header ─────────────────────────────────────────────────── */
+.vo-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #25253a;
+  border-bottom: 1px solid #3a3a4a;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e0ff;
+}
+.vo-settings-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+.vo-settings-close:hover {
+  color: #ff7070;
+}
+
+/* ─── Body (sliders) ─────────────────────────────────────────── */
+.vo-settings-body {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.vo-setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.vo-setting-row label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #999;
+  letter-spacing: 0.02em;
+}
+.vo-setting-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vo-setting-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: #3a3a4a;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.vo-setting-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #00d4ff;
+  border: 2px solid #1a1a2e;
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(0, 212, 255, 0.3);
+  transition: transform 0.1s;
+}
+.vo-setting-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+.vo-setting-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #00d4ff;
+  border: 2px solid #1a1a2e;
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(0, 212, 255, 0.3);
+}
+.vo-setting-value {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #00d4ff;
+  min-width: 36px;
+  text-align: right;
+  font-weight: 600;
+}
+
+/* ─── Footer ─────────────────────────────────────────────────── */
+.vo-settings-footer {
+  padding: 8px 14px;
+  border-top: 1px solid #3a3a4a;
+  display: flex;
+  justify-content: flex-end;
+}
+.vo-settings-reset-btn {
+  background: none;
+  border: 1px solid #3a3a4a;
+  color: #aaa;
+  border-radius: 5px;
+  font-size: 11px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  letter-spacing: 0.02em;
+}
+.vo-settings-reset-btn:hover {
+  background: rgba(255, 112, 112, 0.15);
+  color: #ff7070;
+  border-color: rgba(255, 112, 112, 0.4);
+}
+
+/* ─── Pan cursor when zoomed ─────────────────────────────────── */
+#vo-video-wrap video {
+  cursor: default;
+  transition: filter 0.1s ease;
+}
+/* When zoom > 1, cursor changes to grab via JS */
