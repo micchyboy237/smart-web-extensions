@@ -102,39 +102,6 @@ class PopupController {
     );
   }
 
-  /**
-   * Populate the stream URL input field with the detected URL.
-   * Updates the UI to show the detected stream.
-   */
-  async _populateStreamUrl() {
-    const detectedUrl = await this._detectStreamUrl();
-
-    if (detectedUrl && this.el.streamUrl) {
-      // Only update if the detected URL is different from current
-      const currentValue = this.el.streamUrl.value.trim();
-      if (
-        detectedUrl !== currentValue &&
-        detectedUrl !== "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
-      ) {
-        this.el.streamUrl.value = detectedUrl;
-        this.logger.info(
-          "popup",
-          `📝 Stream URL input updated to: ${detectedUrl}`,
-        );
-
-        // Update the UI to reflect that a stream was detected
-        this._updatePlayerConnectionStatus("connected", this.activeTabId);
-      } else if (detectedUrl === currentValue) {
-        this.logger.debug(
-          "popup",
-          `Stream URL already matches: ${detectedUrl}`,
-        );
-      } else {
-        this.logger.debug("popup", `Using default stream URL: ${detectedUrl}`);
-      }
-    }
-  }
-
   _cacheElements() {
     const ids = [
       "openPlayerBtn",
@@ -767,6 +734,163 @@ class PopupController {
     }
   }
 
+  /**
+   * Populate the stream URL input field with the detected URL.
+   * Updates the UI to show the detected stream.
+   */
+  async _populateStreamUrl() {
+    const detectedUrl = await this._detectStreamUrl();
+
+    if (detectedUrl && this.el.streamUrl) {
+      const currentValue = this.el.streamUrl.value.trim();
+      const defaultUrl = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+
+      if (detectedUrl !== currentValue && detectedUrl !== defaultUrl) {
+        this.el.streamUrl.value = detectedUrl;
+        this.logger.info(
+          "popup",
+          `📝 Stream URL input updated to: ${detectedUrl}`,
+        );
+        this._updatePlayerConnectionStatus("connected", this.activeTabId);
+      } else if (detectedUrl === currentValue) {
+        this.logger.debug(
+          "popup",
+          `Stream URL already matches: ${detectedUrl}`,
+        );
+      } else {
+        this.logger.debug("popup", `Using default stream URL: ${detectedUrl}`);
+      }
+    }
+  }
+
+  // ==========================================================================
+  // ⬇️ ADD THE TWO NEW METHODS HERE (inside the class, before _setDemoRunningState)
+  // ==========================================================================
+
+  /**
+   * Send a message to background.js and wait for response
+   * @param {Object} message - Message to send
+   * @returns {Promise<Object>} Response
+   */
+  _sendMessageAsync(message) {
+    return new Promise((resolve, reject) => {
+      if (
+        typeof chrome === "undefined" ||
+        !chrome.runtime ||
+        !chrome.runtime.sendMessage
+      ) {
+        resolve({ success: false, error: "chrome.runtime not available" });
+        return;
+      }
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({
+            success: false,
+            error: chrome.runtime.lastError.message,
+          });
+          return;
+        }
+        resolve(response || { success: false, error: "No response" });
+      });
+    });
+  }
+
+  /**
+   * Detect the stream URL from multiple sources:
+   * 1. Video element's src on the active page
+   * 2. Background's request history (recent .m3u8 URLs)
+   * 3. Keep current popup input value as fallback
+   *
+   * @returns {Promise<string>} Detected stream URL
+   */
+  async _detectStreamUrl() {
+    this.logger.info("popup", "🔍 Detecting stream URL...");
+
+    // Source 1: Try to get the video element's source from the page
+    if (this.activeTabId && this.videoFound) {
+      try {
+        const videoInfo = await this._getVideoElementInfo();
+        if (videoInfo && videoInfo.currentSrc) {
+          const src = videoInfo.currentSrc;
+          // Filter out blob URLs (these are temporary MSE URLs, not the actual stream)
+          if (src && !src.startsWith("blob:")) {
+            this.logger.info(
+              "popup",
+              `✅ Stream URL from video element: ${src}`,
+            );
+            return src;
+          } else if (src && src.startsWith("blob:")) {
+            this.logger.info(
+              "popup",
+              `⚠️ Video src is blob URL, checking other sources...`,
+            );
+          }
+        }
+      } catch (error) {
+        this.logger.debug(
+          "popup",
+          `Could not get URL from video element: ${error.message}`,
+        );
+      }
+    }
+
+    // Source 2: Try to get the stream URL from background request history
+    try {
+      const response = await this._sendMessageAsync({ action: "getStats" });
+      if (response && response.success && response.stats) {
+        const stats = response.stats;
+
+        // Look for recent .m3u8 requests
+        if (stats.recentRequests && stats.recentRequests.length > 0) {
+          // Find the most recent .m3u8 URL
+          const recentM3u8 = stats.recentRequests
+            .filter((req) => req.url && req.url.endsWith(".m3u8"))
+            .sort((a, b) => b.timestamp - a.timestamp);
+
+          if (recentM3u8.length > 0) {
+            const streamUrl = recentM3u8[0].url;
+            this.logger.info(
+              "popup",
+              `✅ Stream URL from background history: ${streamUrl}`,
+            );
+            return streamUrl;
+          }
+        }
+
+        // Check active streams (domains only, but better than nothing)
+        if (stats.activeStreams && stats.activeStreams.length > 0) {
+          this.logger.info(
+            "popup",
+            `⚠️ Active domains from background: ${stats.activeStreams.join(", ")}`,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.debug(
+        "popup",
+        `Could not get URL from background: ${error.message}`,
+      );
+    }
+
+    // Source 3: Keep current popup input value (fallback)
+    const currentValue = this.el.streamUrl?.value?.trim();
+    if (currentValue) {
+      this.logger.info(
+        "popup",
+        `ℹ️ Using existing popup input value: ${currentValue}`,
+      );
+      return currentValue;
+    }
+
+    // Ultimate fallback
+    const fallback = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+    this.logger.info(
+      "popup",
+      `⚠️ No stream URL detected, using fallback: ${fallback}`,
+    );
+    return fallback;
+  }
+
   // ==========================================================================
   // UI Update Methods
   // ==========================================================================
@@ -1012,6 +1136,137 @@ class PopupController {
     } else if (this.el.domainList) {
       this.el.domainList.style.display = "none";
     }
+  }
+
+  // ==========================================================================
+  // Stream URL Detection (NEW)
+  // ==========================================================================
+  /**
+   * Detect the stream URL from multiple sources:
+   * 1. Video element's src on the active page
+   * 2. Background's request history (recent .m3u8 URLs)
+   * 3. Keep current popup input value as fallback
+   *
+   * @returns {Promise<string>} Detected stream URL
+   */
+  async _detectStreamUrl() {
+    this.logger.info("popup", "🔍 Detecting stream URL...");
+
+    // Source 1: Try to get the video element's source from the page
+    if (this.activeTabId && this.videoFound) {
+      try {
+        const videoInfo = await this._getVideoElementInfo();
+        if (videoInfo && videoInfo.currentSrc) {
+          const src = videoInfo.currentSrc;
+          // Filter out blob URLs (these are temporary MSE URLs, not the actual stream)
+          if (src && !src.startsWith("blob:")) {
+            this.logger.info(
+              "popup",
+              `✅ Stream URL from video element: ${src}`,
+            );
+            return src;
+          } else if (src && src.startsWith("blob:")) {
+            this.logger.info(
+              "popup",
+              `⚠️ Video src is blob URL, checking other sources...`,
+            );
+            // Blob URLs mean MSE is being used - the actual stream URL is different
+            // Continue to check background history
+          }
+        }
+      } catch (error) {
+        this.logger.debug(
+          "popup",
+          `Could not get URL from video element: ${error.message}`,
+        );
+      }
+    }
+
+    // Source 2: Try to get the stream URL from background request history
+    try {
+      const response = await this._sendMessageAsync({ action: "getStats" });
+      if (response && response.success && response.stats) {
+        const stats = response.stats;
+
+        // Look for recent .m3u8 requests
+        if (stats.recentRequests && stats.recentRequests.length > 0) {
+          // Find the most recent .m3u8 URL
+          const recentM3u8 = stats.recentRequests
+            .filter((req) => req.url && req.url.endsWith(".m3u8"))
+            .sort((a, b) => b.timestamp - a.timestamp);
+
+          if (recentM3u8.length > 0) {
+            const streamUrl = recentM3u8[0].url;
+            this.logger.info(
+              "popup",
+              `✅ Stream URL from background history: ${streamUrl}`,
+            );
+            return streamUrl;
+          }
+        }
+
+        // Check active streams (domains only, but better than nothing)
+        if (stats.activeStreams && stats.activeStreams.length > 0) {
+          const domain = stats.activeStreams[0];
+          this.logger.info(
+            "popup",
+            `⚠️ Only domain available from background: ${domain}`,
+          );
+          // Can't reconstruct full URL from domain alone
+        }
+      }
+    } catch (error) {
+      this.logger.debug(
+        "popup",
+        `Could not get URL from background: ${error.message}`,
+      );
+    }
+
+    // Source 3: Keep current popup input value (fallback)
+    const currentValue = this.el.streamUrl?.value?.trim();
+    if (currentValue) {
+      this.logger.info(
+        "popup",
+        `ℹ️ Using existing popup input value: ${currentValue}`,
+      );
+      return currentValue;
+    }
+
+    // Ultimate fallback
+    const fallback = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+    this.logger.info(
+      "popup",
+      `⚠️ No stream URL detected, using fallback: ${fallback}`,
+    );
+    return fallback;
+  }
+
+  /**
+   * Send a message to background.js and wait for response
+   * @param {Object} message - Message to send
+   * @returns {Promise<Object>} Response
+   */
+  _sendMessageAsync(message) {
+    return new Promise((resolve, reject) => {
+      if (
+        typeof chrome === "undefined" ||
+        !chrome.runtime ||
+        !chrome.runtime.sendMessage
+      ) {
+        resolve({ success: false, error: "chrome.runtime not available" });
+        return;
+      }
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({
+            success: false,
+            error: chrome.runtime.lastError.message,
+          });
+          return;
+        }
+        resolve(response || { success: false, error: "No response" });
+      });
+    });
   }
 
   // --------------------------------------------------------------------------

@@ -56,6 +56,11 @@
           break;
       }
     },
+    // Shorthand methods so Logger.info(), Logger.warn(), etc. work
+    debug: (msg, data) => Logger.log("debug", msg, data),
+    info: (msg, data) => Logger.log("info", msg, data),
+    warn: (msg, data) => Logger.log("warn", msg, data),
+    error: (msg, data) => Logger.log("error", msg, data),
   };
 
   // ============================================================================

@@ -361,19 +361,18 @@ class PlayerApp {
 
   /**
    * Run all feature demonstrations
+   * NOTE: This is PlayerApp (player.js) - uses direct video element, NOT proxy mode
    */
   async _runAllDemos() {
     if (this.isDemoRunning) {
       Logger.warn("app", "Demo is already running");
       return;
     }
-
-    if (!this.player) {
-      Logger.warn("app", "No player loaded. Please load a stream first.");
-      this._updateDemoStatus("❌ Load a stream first");
+    if (!this.player && !this.videoEl) {
+      Logger.warn("app", "No video element available.");
+      this._updateDemoStatus("❌ No video element");
       return;
     }
-
     if (!this.demoRunner) {
       Logger.error("app", "DemoRunner not available");
       this._updateDemoStatus("❌ DemoRunner not available");
@@ -385,15 +384,24 @@ class PlayerApp {
     this._updateDemoStatus("🔄 Running all demos...");
     this._clearDemoResults();
 
+    // ✅ CRITICAL: Destroy existing player so demo runner can create a fresh one
+    if (this.player) {
+      Logger.info("app", "🗑️ Destroying existing player before demo...");
+      this._destroyPlayer();
+      // Small delay to let MediaSource fully close
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+
     const streamUrl = document.getElementById("streamUrl").value.trim();
 
     Logger.info("app", "=".repeat(50));
     Logger.info("app", "🚀 STARTING FULL FEATURE DEMONSTRATION");
+    Logger.info("app", `📋 Stream URL: ${streamUrl}`);
     Logger.info("app", "=".repeat(50));
 
     try {
       const options = {
-        videoElement: this.videoEl,
+        videoElement: this.videoEl, // Fresh video element, no existing player
         streamUrl: streamUrl,
         verbose: true,
         stopOnFailure: false,
@@ -425,20 +433,22 @@ class PlayerApp {
 
   /**
    * Run a quick demo (core + quality + playback only)
+   * NOTE: This is PlayerApp (player.js) - uses direct video element
    */
   async _runQuickDemo() {
+    // ✅ Fixed: Use Logger (global) not this.logger
     if (this.isDemoRunning) {
       Logger.warn("app", "Demo is already running");
       return;
     }
-
+    // ✅ Fixed: Check this.player instead of this.videoFound
     if (!this.player) {
       Logger.warn("app", "No player loaded. Please load a stream first.");
       this._updateDemoStatus("❌ Load a stream first");
       return;
     }
-
     if (!this.demoRunner) {
+      Logger.error("app", "DemoRunner not available");
       this._updateDemoStatus("❌ DemoRunner not available");
       return;
     }
@@ -453,6 +463,7 @@ class PlayerApp {
     Logger.info("app", "⚡ Running quick demo test...");
 
     try {
+      // ✅ Fixed: Use this.videoEl (direct mode)
       const options = {
         videoElement: this.videoEl,
         streamUrl: streamUrl,
@@ -632,8 +643,22 @@ class PlayerApp {
   async _preloadCorsThenCreatePlayer(url) {
     Logger.info("app", "🔧 Step 1: Pre-loading CORS bypass rules...");
 
-    // Check if FetchProxy is available (content script or injected)
     let corsPreloaded = false;
+
+    // ✅ NEW: Try to inject fetch-proxy manually for the player page
+    if (
+      !window.FetchProxy ||
+      !window.FetchProxy.isActive ||
+      !window.FetchProxy.isActive()
+    ) {
+      Logger.info("app", "📦 fetch-proxy not active, injecting now...");
+      try {
+        // Dynamically inject the fetch-proxy script
+        await this._injectFetchProxy();
+      } catch (error) {
+        Logger.warn("app", "Could not inject fetch-proxy: " + error.message);
+      }
+    }
 
     if (
       window.FetchProxy &&
@@ -641,7 +666,6 @@ class PlayerApp {
     ) {
       corsPreloaded = await window.FetchProxy.preloadCorsRules(url);
     } else {
-      // Fall back to direct message to background
       corsPreloaded = await this._preloadCorsRulesDirect(url);
     }
 
@@ -659,6 +683,27 @@ class PlayerApp {
       Logger.error("app", "Failed to create player", { error: error.message });
       document.getElementById("loadingOverlay").style.display = "none";
     }
+  }
+
+  /**
+   * Inject fetch-proxy.js into the player page
+   */
+  async _injectFetchProxy() {
+    const scriptUrl = chrome.runtime.getURL("modules/fetch-proxy.js");
+
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = scriptUrl;
+      script.onload = () => {
+        Logger.info("app", "✅ fetch-proxy injected into player page");
+        resolve();
+      };
+      script.onerror = (error) => {
+        Logger.warn("app", "❌ Failed to inject fetch-proxy: " + error);
+        reject(error);
+      };
+      (document.head || document.documentElement).appendChild(script);
+    });
   }
 
   /**

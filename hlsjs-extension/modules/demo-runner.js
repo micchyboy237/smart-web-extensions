@@ -1981,7 +1981,6 @@ class DemoRunner {
         resolve({ success: false, error: "chrome.runtime not available" });
         return;
       }
-
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
           resolve({
