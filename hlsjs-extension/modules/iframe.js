@@ -954,6 +954,99 @@ class IFrameController {
     return status;
   }
 
+  /**
+   * Get all loaded thumbnail URLs
+   * @returns {Array<string>} Array of blob URLs
+   */
+  getThumbnailUrls() {
+    return this.timelinePreviews
+      .filter((p) => p.loaded && p.imageUrl)
+      .map((p) => p.imageUrl);
+  }
+
+  /**
+   * Get thumbnail URL for a specific timestamp
+   * @param {number} timestamp - Timestamp in seconds
+   * @returns {string|null} Blob URL or null if not loaded
+   */
+  getThumbnailUrlAt(timestamp) {
+    const preview = this.timelinePreviews.find(
+      (p) => Math.abs(p.timestamp - timestamp) < 0.5,
+    );
+    return preview?.imageUrl || null;
+  }
+
+  /**
+   * Get all preview data including URLs
+   * @returns {Array<Object>} Array of preview objects with URLs
+   */
+  getAllPreviews() {
+    return this.timelinePreviews.map((p) => ({
+      index: p.index,
+      timestamp: p.timestamp,
+      formattedTime: this._formatTime(p.timestamp),
+      loaded: p.loaded,
+      error: p.error,
+      imageUrl: p.imageUrl, // ← This is the blob URL for img src
+      element: p.element,
+      percent: p.percent,
+    }));
+  }
+
+  /**
+   * Get thumbnail URLs without creating UI elements
+   * @param {number} duration - Video duration
+   * @param {number} count - Number of thumbnails
+   * @returns {Promise<Array<{timestamp: number, url: string}>>}
+   */
+  async getThumbnailUrlsOnly(duration, count) {
+    const timestamps = this.calculateThumbnailTimestamps(duration, count);
+    const results = [];
+
+    for (const ts of timestamps) {
+      try {
+        const tempPlayer = this.hls.createImageIFramePlayer();
+        if (!tempPlayer) continue;
+
+        const url = await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error("Timeout")), 10000);
+
+          tempPlayer.on(Hls.Events.FRAG_PARSED, (event, data) => {
+            clearTimeout(timeout);
+            const jpegBytes = data.frag.data;
+            const blob = new Blob([jpegBytes], { type: "image/jpeg" });
+            const blobUrl = URL.createObjectURL(blob);
+            tempPlayer.destroy();
+            resolve(blobUrl);
+          });
+
+          tempPlayer.on(Hls.Events.ERROR, (event, data) => {
+            clearTimeout(timeout);
+            reject(new Error(data.details));
+          });
+
+          tempPlayer.loadMediaAt(ts.timestamp);
+        });
+
+        results.push({
+          timestamp: ts.timestamp,
+          formattedTime: this._formatTime(ts.timestamp),
+          url: url,
+        });
+      } catch (error) {
+        console.error(`Failed at ${ts.timestamp}s:`, error);
+        results.push({
+          timestamp: ts.timestamp,
+          formattedTime: this._formatTime(ts.timestamp),
+          url: null,
+          error: error.message,
+        });
+      }
+    }
+
+    return results;
+  }
+
   // --------------------------------------------------------------------------
   // Cleanup
   // --------------------------------------------------------------------------

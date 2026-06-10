@@ -1762,6 +1762,7 @@ class DemoRunner {
   // ==========================================================================
   // Phase 9: I-Frame Preview Features
   // ==========================================================================
+
   /**
    * Test I-Frame preview features including smart timeline previews
    */
@@ -1806,53 +1807,30 @@ class DemoRunner {
     );
 
     // ========================================================================
-    // NEW: Smart Timeline Previews Tests - WITH SAFE DURATION HANDLING
+    // SMART TIMELINE PREVIEWS TESTS - NO SKIP LOGIC
     // ========================================================================
 
-    // SAFE: Check if video duration is available before proceeding
-    const hasValidDuration = await this._safeCheckVideoDuration(player.video);
-
-    if (!hasValidDuration) {
-      Logger.warn(
-        "demo-runner",
-        "⚠️ Video duration not available - skipping timeline preview tests",
-      );
-
-      // Test 53-57: Skip gracefully
-      const skipTests = [
-        "Smart thumbnail count calculation",
-        "Timeline preview generation",
-        "Timeline status monitoring",
-        "Timeline seek functionality",
-        "Clear timeline previews",
-      ];
-
-      skipTests.forEach((testName) => {
-        this._runTest(
-          testName,
-          phase,
-          () => true, // Soft pass - skip gracefully
-          "Test skipped: Video duration not available (video may not be loaded)",
-          "Test skipped: Video duration not available",
-        );
-      });
-
-      return;
-    }
-
-    const duration = player.video.duration;
-    Logger.info("demo-runner", `📊 Video duration: ${duration.toFixed(1)}s`);
+    // Get duration directly from video element (HTML5 video element)
+    const duration = player.video?.duration || 0;
+    Logger.info(
+      "demo-runner",
+      `📊 Video duration: ${duration.toFixed(1)}s (readyState: ${player.video?.readyState})`,
+    );
 
     // Test 53: Smart thumbnail count calculation
     this._runTest(
       "Smart thumbnail count calculation",
       phase,
       () => {
+        if (duration <= 0) {
+          Logger.warn("demo-runner", "Video duration not available yet");
+          return false;
+        }
         const count = iFrameController.calculateOptimalThumbnailCount(duration);
         return count >= 5 && count <= 20;
       },
-      `Calculated thumbnail count: ${iFrameController.calculateOptimalThumbnailCount(duration)}`,
-      "Failed to calculate optimal thumbnail count",
+      `Calculated thumbnail count: ${duration > 0 ? iFrameController.calculateOptimalThumbnailCount(duration) : "N/A"}`,
+      "Failed to calculate optimal thumbnail count (duration may not be ready)",
     );
 
     // Test 54: Timeline UI creation and preview generation
@@ -1861,6 +1839,14 @@ class DemoRunner {
       phase,
       async () => {
         try {
+          if (duration <= 0) {
+            Logger.warn(
+              "demo-runner",
+              "Cannot generate timeline previews: duration not available",
+            );
+            return false;
+          }
+
           // Create timeline container if not exists
           let timelineContainer = document.getElementById(
             "timeline-previews-container",
@@ -1885,7 +1871,7 @@ class DemoRunner {
           // Check if image player is available
           if (!player.hls.createImageIFramePlayer) {
             Logger.warn("demo-runner", "Image I-frame player not supported");
-            return true; // Soft pass
+            return false;
           }
 
           // Generate timeline previews
@@ -1894,7 +1880,12 @@ class DemoRunner {
             batchSize: 3,
           });
 
-          return true;
+          const success = iFrameController.timelinePreviews.length > 0;
+          Logger.info(
+            "demo-runner",
+            `Timeline preview generation ${success ? "succeeded" : "failed"}: ${iFrameController.timelinePreviews.length} previews`,
+          );
+          return success;
         } catch (error) {
           Logger.error(
             "demo-runner",
@@ -1904,7 +1895,7 @@ class DemoRunner {
           return false;
         }
       },
-      "Timeline preview generation initiated",
+      "Timeline preview generation completed",
       "Failed to generate timeline previews",
     );
 
@@ -1949,74 +1940,229 @@ class DemoRunner {
       "Failed to clear timeline previews",
     );
 
-    // Add floating control button for timeline previews (only if duration available)
-    this._addTimelineControlButton(iFrameController);
-  }
+    // Test 58: Get thumbnail URLs method exists
+    this._runTest(
+      "Get thumbnail URLs method",
+      phase,
+      () => {
+        return typeof iFrameController.getThumbnailUrls === "function";
+      },
+      "getThumbnailUrls() method available",
+      "getThumbnailUrls() method missing",
+    );
 
-  /**
-   * Safely check if video has valid duration
-   * @param {HTMLVideoElement} video - Video element
-   * @param {number} maxWaitMs - Maximum wait time in milliseconds
-   * @returns {Promise<boolean>} - True if valid duration available
-   */
-  async _safeCheckVideoDuration(video, maxWaitMs = 5000) {
-    return new Promise((resolve) => {
-      // Check immediately
-      if (
-        video &&
-        video.duration &&
-        !isNaN(video.duration) &&
-        video.duration > 0
-      ) {
-        resolve(true);
-        return;
-      }
+    // Test 59: Get thumbnail URL at specific timestamp
+    this._runTest(
+      "Get thumbnail URL at timestamp",
+      phase,
+      async () => {
+        try {
+          if (iFrameController.timelinePreviews.length === 0) {
+            Logger.info(
+              "demo-runner",
+              "No previews loaded, cannot test URL retrieval",
+            );
+            return false;
+          }
 
-      // Wait for durationchange event
-      let resolved = false;
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          Logger.warn("demo-runner", "Timeout waiting for video duration", {
-            currentDuration: video?.duration || 0,
-            readyState: video?.readyState || 0,
-            networkState: video?.networkState || 0,
+          const testTimestamp = duration / 2; // Middle of video
+          const url = iFrameController.getThumbnailUrlAt(testTimestamp);
+
+          // URL should be either a blob URL or null (if not loaded yet)
+          const isValid =
+            url === null ||
+            (typeof url === "string" && url.startsWith("blob:"));
+
+          Logger.info(
+            "demo-runner",
+            `Thumbnail URL at ${testTimestamp.toFixed(1)}s:`,
+            {
+              url: url ? url.substring(0, 50) + "..." : "null",
+              isValid,
+            },
+          );
+
+          return isValid;
+        } catch (error) {
+          Logger.error("demo-runner", "getThumbnailUrlAt error:", error);
+          return false;
+        }
+      },
+      "Thumbnail URL retrieval works",
+      "Failed to get thumbnail URL at timestamp",
+    );
+
+    // Test 60: Get all previews data
+    this._runTest(
+      "Get all previews data",
+      phase,
+      () => {
+        try {
+          const allPreviews = iFrameController.getAllPreviews();
+
+          // Validate structure
+          const isValid =
+            Array.isArray(allPreviews) &&
+            allPreviews.every(
+              (p) =>
+                typeof p.index === "number" &&
+                typeof p.timestamp === "number" &&
+                typeof p.formattedTime === "string" &&
+                typeof p.loaded === "boolean" &&
+                typeof p.error === "boolean",
+            );
+
+          Logger.info(
+            "demo-runner",
+            `All previews data: ${allPreviews.length} items`,
+          );
+          if (allPreviews.length > 0 && allPreviews[0].imageUrl) {
+            Logger.debug(
+              "demo-runner",
+              `First preview URL: ${allPreviews[0].imageUrl?.substring(0, 50)}...`,
+            );
+          }
+
+          return isValid;
+        } catch (error) {
+          Logger.error("demo-runner", "getAllPreviews error:", error);
+          return false;
+        }
+      },
+      "getAllPreviews() returns valid preview data",
+      "Failed to get all previews data",
+    );
+
+    // Test 61: Get thumbnail URLs only (without UI)
+    this._runTest(
+      "Get thumbnail URLs only (no UI)",
+      phase,
+      async () => {
+        try {
+          if (typeof iFrameController.getThumbnailUrlsOnly !== "function") {
+            Logger.warn(
+              "demo-runner",
+              "getThumbnailUrlsOnly method not available",
+            );
+            return false;
+          }
+
+          if (duration <= 0) {
+            Logger.warn(
+              "demo-runner",
+              "Cannot test getThumbnailUrlsOnly: duration not available",
+            );
+            return false;
+          }
+
+          // Test with small count to avoid too many requests
+          const testCount = Math.min(
+            3,
+            iFrameController.calculateOptimalThumbnailCount(duration),
+          );
+          const urlsOnly = await iFrameController.getThumbnailUrlsOnly(
+            duration,
+            testCount,
+          );
+
+          const isValid =
+            Array.isArray(urlsOnly) &&
+            urlsOnly.every(
+              (item) =>
+                typeof item.timestamp === "number" &&
+                (item.url === null || typeof item.url === "string"),
+            );
+
+          const successCount = urlsOnly.filter((u) => u.url !== null).length;
+          Logger.info(
+            "demo-runner",
+            `Thumbnail URLs only: ${successCount}/${urlsOnly.length} loaded`,
+          );
+
+          // Log first successful URL
+          const firstSuccess = urlsOnly.find((u) => u.url);
+          if (firstSuccess) {
+            Logger.debug(
+              "demo-runner",
+              `First URL: ${firstSuccess.formattedTime} -> ${firstSuccess.url?.substring(0, 50)}...`,
+            );
+          }
+
+          // Clean up blob URLs to prevent memory leaks
+          urlsOnly.forEach((item) => {
+            if (item.url && item.url.startsWith("blob:")) {
+              URL.revokeObjectURL(item.url);
+            }
           });
-          resolve(false);
-        }
-      }, maxWaitMs);
 
-      const onDurationChange = () => {
-        if (
-          !resolved &&
-          video.duration &&
-          !isNaN(video.duration) &&
-          video.duration > 0
-        ) {
-          resolved = true;
-          clearTimeout(timeout);
-          video.removeEventListener("durationchange", onDurationChange);
-          resolve(true);
+          return isValid && successCount > 0;
+        } catch (error) {
+          Logger.error("demo-runner", "getThumbnailUrlsOnly error:", error);
+          return false;
         }
-      };
+      },
+      "getThumbnailUrlsOnly() works without UI",
+      "Failed to get thumbnail URLs without UI",
+    );
 
-      const onLoadedMetadata = () => {
-        if (
-          !resolved &&
-          video.duration &&
-          !isNaN(video.duration) &&
-          video.duration > 0
-        ) {
-          resolved = true;
-          clearTimeout(timeout);
-          video.removeEventListener("loadedmetadata", onLoadedMetadata);
-          resolve(true);
+    // Test 62: Blob URL cleanup on destroy
+    this._runTest(
+      "Blob URL cleanup",
+      phase,
+      () => {
+        try {
+          // Store reference to thumbnailUrls array
+          const thumbnailUrls = iFrameController.thumbnailUrls || [];
+
+          // Check if URLs are being tracked
+          const hasTrackedUrls = Array.isArray(thumbnailUrls);
+
+          // Verify clearTimelinePreviews revokes URLs
+          const beforeCount = iFrameController.thumbnailUrls?.length || 0;
+          iFrameController.clearTimelinePreviews();
+          const afterCount = iFrameController.thumbnailUrls?.length || 0;
+
+          const urlsCleaned = beforeCount === 0 || afterCount === 0;
+
+          Logger.info("demo-runner", "Blob URL cleanup:", {
+            beforeCount,
+            afterCount,
+            urlsCleaned,
+            hasTrackedUrls,
+          });
+
+          return hasTrackedUrls && urlsCleaned;
+        } catch (error) {
+          Logger.error("demo-runner", "Blob URL cleanup error:", error);
+          return false;
         }
-      };
+      },
+      "Blob URLs properly cleaned up",
+      "Blob URL cleanup failed",
+    );
 
-      video.addEventListener("durationchange", onDurationChange);
-      video.addEventListener("loadedmetadata", onLoadedMetadata);
-    });
+    // Test 63: Timeline control button exists (UI test)
+    this._runTest(
+      "Timeline control button exists",
+      phase,
+      () => {
+        const button = document.getElementById("timeline-control-btn");
+        const exists = button !== null;
+
+        if (exists) {
+          Logger.info("demo-runner", "Timeline control button found in DOM");
+        } else {
+          Logger.warn("demo-runner", "Timeline control button not found");
+        }
+
+        return exists;
+      },
+      "Timeline control button UI element exists",
+      "Timeline control button not found",
+    );
+
+    // Add floating control button for timeline previews
+    this._addTimelineControlButton(iFrameController);
   }
 
   /**
@@ -2121,6 +2267,12 @@ class DemoRunner {
       "Timeline status monitoring",
       "Timeline seek functionality",
       "Clear timeline previews",
+      "Get thumbnail URLs method",
+      "Get thumbnail URL at timestamp",
+      "Get all previews data",
+      "Get thumbnail URLs only (no UI)",
+      "Blob URL cleanup",
+      "Timeline control button exists",
     ];
 
     testNames.forEach((name) => {
