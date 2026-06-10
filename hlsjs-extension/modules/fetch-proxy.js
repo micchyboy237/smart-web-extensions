@@ -95,6 +95,10 @@
         reject(new Error(`Proxy fetch timeout: ${url}`));
       }, CONFIG.FETCH_TIMEOUT);
 
+      // Get the original referer if available
+      const referer = window.__hlsOriginalReferer || window.location.href;
+      Logger.debug("proxyFetch", `🔑 Referer: ${referer}`);
+
       chrome.runtime.sendMessage(
         {
           action: "proxyFetch",
@@ -103,6 +107,7 @@
             method: options.method || "GET",
             headers: options.headers || {},
           },
+          referer: referer, // ← Pass the original page referer
         },
         (response) => {
           clearTimeout(timeout);

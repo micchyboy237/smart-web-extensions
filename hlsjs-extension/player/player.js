@@ -643,9 +643,8 @@ class PlayerApp {
   async _preloadCorsThenCreatePlayer(url) {
     Logger.info("app", "🔧 Step 1: Pre-loading CORS bypass rules...");
 
-    let corsPreloaded = false;
-
-    // ✅ NEW: Try to inject fetch-proxy manually for the player page
+    // ✅ NEW: Inject fetch-proxy manually for the player page
+    // Content scripts don't run on chrome-extension:// pages
     if (
       !window.FetchProxy ||
       !window.FetchProxy.isActive ||
@@ -653,12 +652,19 @@ class PlayerApp {
     ) {
       Logger.info("app", "📦 fetch-proxy not active, injecting now...");
       try {
-        // Dynamically inject the fetch-proxy script
         await this._injectFetchProxy();
       } catch (error) {
         Logger.warn("app", "Could not inject fetch-proxy: " + error.message);
       }
     }
+
+    // ✅ NEW: Capture the original page referer for CORS bypass
+    // When player is opened from popup with ?url= parameter,
+    // we need to know what page originally hosted the stream
+    this._captureOriginalReferer();
+
+    // Pre-load CORS rules
+    let corsPreloaded = false;
 
     if (
       window.FetchProxy &&
@@ -666,6 +672,7 @@ class PlayerApp {
     ) {
       corsPreloaded = await window.FetchProxy.preloadCorsRules(url);
     } else {
+      // Fall back to direct message to background
       corsPreloaded = await this._preloadCorsRulesDirect(url);
     }
 
@@ -686,28 +693,150 @@ class PlayerApp {
   }
 
   /**
-   * Inject fetch-proxy.js into the player page
+   * Capture the original page referer for CORS bypass.
+   * When player.html is opened from a popup on a page like missav.ws,
+   * we need the original page URL to send as Referer header.
+   *
+   * Sources (in priority order):
+   * 1. URL parameter 'ref' passed from popup
+   * 2. URL parameter 'url' - extract domain as referer hint
+   * 3. document.referrer - the page that opened this one
+   * 4. Extension page URL (fallback - least effective)
+   */
+  _captureOriginalReferer() {
+    const urlParams = new URLSearchParams(window.location.search);
+
+    // Source 1: Explicit referer passed from popup
+    const explicitRef = urlParams.get("ref");
+    if (explicitRef) {
+      try {
+        const refUrl = new URL(explicitRef);
+        window.__hlsOriginalReferer = explicitRef;
+        Logger.info(
+          "app",
+          `🔑 Original referer (from ref param): ${refUrl.origin}`,
+        );
+        return;
+      } catch (e) {
+        // Invalid URL, continue to next source
+      }
+    }
+
+    // Source 2: Extract from stream URL parameter
+    const streamUrl = urlParams.get("url");
+    if (streamUrl) {
+      try {
+        const urlObj = new URL(streamUrl);
+        // Use the stream domain itself as referer (helps for surrit.com type servers)
+        window.__hlsOriginalReferer = `https://${urlObj.hostname}/`;
+        Logger.info(
+          "app",
+          `🔑 Using stream domain as referer: https://${urlObj.hostname}/`,
+        );
+        return;
+      } catch (e) {
+        // Invalid URL
+      }
+    }
+
+    // Source 3: document.referrer (the page that opened this tab)
+    if (
+      document.referrer &&
+      !document.referrer.startsWith("chrome-extension://")
+    ) {
+      window.__hlsOriginalReferer = document.referrer;
+      Logger.info(
+        "app",
+        `🔑 Original referer (from document.referrer): ${document.referrer}`,
+      );
+      return;
+    }
+
+    // Source 4: Fallback to current location
+    window.__hlsOriginalReferer = window.location.href;
+    Logger.info("app", `⚠️ Using fallback referer: ${window.location.origin}`);
+  }
+
+  /**
+   * Inject fetch-proxy.js into the player page.
+   * Required because content scripts from manifest.json don't run
+   * on chrome-extension:// pages.
+   *
+   * @returns {Promise<void>}
    */
   async _injectFetchProxy() {
-    const scriptUrl = chrome.runtime.getURL("modules/fetch-proxy.js");
-
     return new Promise((resolve, reject) => {
+      // Check if already injected
+      if (
+        window.FetchProxy &&
+        window.FetchProxy.isActive &&
+        window.FetchProxy.isActive()
+      ) {
+        Logger.info("app", "fetch-proxy already active, skipping injection");
+        resolve();
+        return;
+      }
+
+      // Check if script tag already exists
+      if (document.querySelector('script[src*="fetch-proxy.js"]')) {
+        Logger.info(
+          "app",
+          "fetch-proxy script tag already exists, waiting for load...",
+        );
+        // Wait a moment for it to initialize
+        setTimeout(() => {
+          if (window.FetchProxy) {
+            resolve();
+          } else {
+            reject(
+              new Error("fetch-proxy script exists but did not initialize"),
+            );
+          }
+        }, 500);
+        return;
+      }
+
+      const scriptUrl = chrome.runtime.getURL("modules/fetch-proxy.js");
+      Logger.info("app", `📥 Injecting fetch-proxy from: ${scriptUrl}`);
+
       const script = document.createElement("script");
       script.src = scriptUrl;
+      script.async = false; // Load synchronously to ensure it's ready
+
       script.onload = () => {
         Logger.info("app", "✅ fetch-proxy injected into player page");
-        resolve();
+        // Verify it's active
+        if (
+          window.FetchProxy &&
+          window.FetchProxy.isActive &&
+          window.FetchProxy.isActive()
+        ) {
+          Logger.info("app", "✅ fetch-proxy verified active");
+          resolve();
+        } else {
+          Logger.warn("app", "⚠️ fetch-proxy loaded but may not be active");
+          resolve(); // Resolve anyway - it might work
+        }
       };
+
       script.onerror = (error) => {
-        Logger.warn("app", "❌ Failed to inject fetch-proxy: " + error);
-        reject(error);
+        Logger.error("app", "❌ Failed to inject fetch-proxy script", {
+          error,
+        });
+        reject(new Error("fetch-proxy injection failed"));
       };
+
+      // Add to document head (runs before body scripts)
       (document.head || document.documentElement).appendChild(script);
     });
   }
 
   /**
-   * Direct pre-load of CORS rules via background message
+   * Direct pre-load of CORS rules via background message.
+   * Fallback when FetchProxy is not available.
+   *
+   * @param {string} url - Stream URL to pre-load CORS rules for
+   * @returns {Promise<boolean>}
    */
   async _preloadCorsRulesDirect(url) {
     return new Promise((resolve) => {
@@ -721,33 +850,34 @@ class PlayerApp {
         return;
       }
 
-      chrome.runtime.sendMessage(
-        {
-          action: "preloadCorsRules",
-          url: url,
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            Logger.error("app", "Pre-load CORS rules error:", {
-              error: chrome.runtime.lastError.message,
-            });
-            resolve(false);
-            return;
-          }
+      // Pass the original referer if available for better CORS bypass
+      const message = {
+        action: "preloadCorsRules",
+        url: url,
+        referer: window.__hlsOriginalReferer || null,
+      };
 
-          if (response && response.success) {
-            Logger.info("app", "✅ CORS rules pre-loaded via background");
-            resolve(true);
-          } else {
-            Logger.warn(
-              "app",
-              "⚠️ CORS rules pre-load failed:",
-              response?.error || "unknown",
-            );
-            resolve(false);
-          }
-        },
-      );
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          Logger.error("app", "Pre-load CORS rules error:", {
+            error: chrome.runtime.lastError.message,
+          });
+          resolve(false);
+          return;
+        }
+
+        if (response && response.success) {
+          Logger.info("app", "✅ CORS rules pre-loaded via background");
+          resolve(true);
+        } else {
+          Logger.warn(
+            "app",
+            "⚠️ CORS rules pre-load failed:",
+            response?.error || "unknown",
+          );
+          resolve(false);
+        }
+      });
     });
   }
 

@@ -310,8 +310,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleCheckUrl(message.url, sendResponse);
       break;
     case "proxyFetch":
-      // NEW: Handle fetch proxy requests
-      handleProxyFetch(message.url, message.options, sendResponse);
+      handleProxyFetch(
+        message.url,
+        message.options,
+        message.referer,
+        sendResponse,
+      );
       break;
     case "preloadCorsRules":
       // NEW: Pre-load CORS rules before loading stream
@@ -426,10 +430,9 @@ function getDomain(url) {
  * Fetch a URL from the service worker (no CORS restrictions).
  * Adds browser-like headers to bypass 403 referer/origin checks.
  */
-async function proxyFetch(url, options = {}) {
+async function proxyFetch(url, options = {}, referer = null) {
   const domain = getDomain(url);
 
-  // Pre-add CORS rules for HLS resources before fetching
   if (isHlsResource(url) && !activeCorsRules.has(domain) && dnrAvailable) {
     console.log(`[Background] 🔧 Pre-adding CORS rules for: ${domain}`);
     await addCorsRuleForDomain(domain);
@@ -438,19 +441,20 @@ async function proxyFetch(url, options = {}) {
   try {
     console.log(`[Background] 🌐 Proxy fetching: ${url}`);
 
-    // Build headers that mimic a browser request from the stream's origin
+    // Use the original page referer if provided, otherwise use domain
+    const effectiveReferer = referer || `https://${domain}/`;
+
     const fetchHeaders = {
       "User-Agent": navigator.userAgent,
       Accept: "*/*",
       "Accept-Language": "en-US,en;q=0.9",
       "Cache-Control": "no-cache",
-      // KEY FIX: Add Referer and Origin from the stream domain itself
-      Referer: `https://${domain}/`,
-      Origin: `https://${domain}`,
+      Referer: effectiveReferer, // ← Use actual page referer
+      Origin: new URL(effectiveReferer).origin,
       ...(options.headers || {}),
     };
 
-    console.log(`[Background] 🔑 Using referer: https://${domain}/`);
+    console.log(`[Background] 🔑 Using referer: ${effectiveReferer}`);
 
     const fetchOptions = {
       method: options.method || "GET",
@@ -458,50 +462,47 @@ async function proxyFetch(url, options = {}) {
       credentials: "omit",
     };
 
-    const response = await fetch(url, fetchOptions);
+    let response = await fetch(url, fetchOptions);
 
-    // If still 403, retry with different header combination
+    // If 403, retry with different referer variations
     if (response.status === 403) {
-      console.log(
-        `[Background] ⚠️ 403 received, retrying with alternative headers...`,
-      );
+      console.log(`[Background] ⚠️ 403 received, retrying...`);
 
-      const retryHeaders = {
-        ...fetchHeaders,
-        Referer: `https://${domain}/`,
-        Origin: `https://${domain}`,
-        "Sec-Fetch-Site": "cross-site",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-      };
+      // Try without referer
+      const noRefererHeaders = { ...fetchHeaders };
+      delete noRefererHeaders["Referer"];
+      delete noRefererHeaders["Origin"];
 
-      const retryResponse = await fetch(url, {
+      response = await fetch(url, {
         ...fetchOptions,
-        headers: retryHeaders,
+        headers: noRefererHeaders,
       });
 
-      if (retryResponse.status !== 403) {
-        console.log(
-          `[Background] ✅ Retry succeeded with status: ${retryResponse.status}`,
-        );
-        return await serializeResponse(retryResponse, url);
+      if (
+        response.status === 403 &&
+        effectiveReferer !== `https://${domain}/`
+      ) {
+        // Try with domain-based referer
+        const domainHeaders = {
+          ...fetchHeaders,
+          Referer: `https://${domain}/`,
+          Origin: `https://${domain}`,
+        };
+        response = await fetch(url, {
+          ...fetchOptions,
+          headers: domainHeaders,
+        });
       }
-      console.log(
-        `[Background] ❌ Retry also returned 403 - server may require specific referer`,
-      );
+
+      if (response.status === 403) {
+        console.log(`[Background] ❌ All referer attempts returned 403`);
+      }
     }
 
     return await serializeResponse(response, url);
   } catch (error) {
-    console.error(
-      `[Background] ❌ Proxy fetch failed for ${url}:`,
-      error.message,
-    );
-    return {
-      success: false,
-      error: error.message,
-      url: url,
-    };
+    console.error(`[Background] ❌ Proxy fetch failed: ${error.message}`);
+    return { success: false, error: error.message, url };
   }
 }
 
@@ -572,8 +573,8 @@ async function preloadCorsRules(url) {
   return result;
 }
 
-async function handleProxyFetch(url, options, sendResponse) {
-  const result = await proxyFetch(url, options);
+async function handleProxyFetch(url, options, referer, sendResponse) {
+  const result = await proxyFetch(url, options, referer);
   sendResponse(result);
 }
 

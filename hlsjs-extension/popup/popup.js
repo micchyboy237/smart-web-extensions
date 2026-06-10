@@ -322,14 +322,34 @@ class PopupController {
   }
 
   /**
-   * Open the player in a new tab with the current stream URL
+   * Open the player in a new tab with the current stream URL and referer
    */
   async _openPlayerInNewTab() {
-    // NEW: Detect the best URL
+    // Detect the best stream URL
     const streamUrl = await this._detectStreamUrl();
 
+    // Get the original page URL to use as referer
+    let pageUrl = null;
+    if (this.activeTabId) {
+      try {
+        const tabs = await chrome.tabs.get(this.activeTabId);
+        if (tabs && tabs.url && !tabs.url.startsWith("chrome-extension://")) {
+          pageUrl = tabs.url;
+        }
+      } catch (error) {
+        this.logger.debug("popup", "Could not get page URL: " + error.message);
+      }
+    }
+
+    // Build player URL with stream URL and referer
     const playerBaseUrl = chrome.runtime.getURL("player/player.html");
-    const playerUrl = `${playerBaseUrl}?url=${encodeURIComponent(streamUrl)}&autorun=false`;
+    let playerUrl = `${playerBaseUrl}?url=${encodeURIComponent(streamUrl)}&autorun=false`;
+
+    // Add referer parameter if we have the original page URL
+    if (pageUrl) {
+      playerUrl += `&ref=${encodeURIComponent(pageUrl)}`;
+      this.logger.info("popup", `🔑 Passing referer: ${pageUrl}`);
+    }
 
     this.logger.info("popup", `Opening player in new tab: ${playerUrl}`);
     this.logger.info("popup", `📋 Stream URL passed: ${streamUrl}`);
@@ -345,7 +365,11 @@ class PopupController {
       // Pre-load CORS rules for the stream domain
       this.logger.info("popup", "🔧 Pre-loading CORS rules for player tab...");
       chrome.runtime.sendMessage(
-        { action: "preloadCorsRules", url: streamUrl },
+        {
+          action: "preloadCorsRules",
+          url: streamUrl,
+          referer: pageUrl || null,
+        },
         (response) => {
           if (chrome.runtime.lastError) {
             this.logger.error("popup", "CORS pre-load error for player tab", {
@@ -365,7 +389,6 @@ class PopupController {
         },
       );
 
-      // Enable controls since player page handles its own video
       this._enablePlayerControls(true);
       this._enableDemoControls(false);
     });
@@ -474,9 +497,12 @@ class PopupController {
       }
       this.logger.info("popup", `📹 Video info: ${JSON.stringify(videoInfo)}`);
 
+      // Before calling demoRunner.runAll(), get the referer
+      const pageInfo = await this._getOriginalReferer();
+
       const options = {
         videoElement: null,
-        streamUrl: streamUrl, // ← Now uses detected URL
+        streamUrl: streamUrl,
         verbose: true,
         stopOnFailure: false,
         skipLive: document.getElementById("demoSkipLive")?.checked || false,
@@ -485,7 +511,12 @@ class PopupController {
         skipIFrame: document.getElementById("demoSkipIFrame")?.checked || false,
         playerProxy: {
           tabId: this.activeTabId,
+          originalReferer: pageInfo?.url || null, // ← Pass original page URL
           executeDemoStep: async (step) => {
+            // Add referer to loadStream steps
+            if (step.action === "loadStream" && pageInfo) {
+              step.referer = pageInfo.url;
+            }
             return this._executeDemoStepOnPage(step);
           },
         },
@@ -545,18 +576,26 @@ class PopupController {
         throw new Error("Could not access video element on page");
       }
 
+      // Before calling demoRunner.runAll(), get the referer
+      const pageInfo = await this._getOriginalReferer();
+
       const options = {
         videoElement: null,
-        streamUrl: streamUrl, // ← Now uses detected URL
+        streamUrl: streamUrl,
         verbose: true,
         stopOnFailure: false,
-        skipLive: true,
-        skipDRM: true,
-        skipCMCD: true,
-        skipIFrame: true,
+        skipLive: document.getElementById("demoSkipLive")?.checked || false,
+        skipDRM: document.getElementById("demoSkipDRM")?.checked || true,
+        skipCMCD: document.getElementById("demoSkipCMCD")?.checked || false,
+        skipIFrame: document.getElementById("demoSkipIFrame")?.checked || false,
         playerProxy: {
           tabId: this.activeTabId,
+          originalReferer: pageInfo?.url || null, // ← Pass original page URL
           executeDemoStep: async (step) => {
+            // Add referer to loadStream steps
+            if (step.action === "loadStream" && pageInfo) {
+              step.referer = pageInfo.url;
+            }
             return this._executeDemoStepOnPage(step);
           },
         },
@@ -1269,6 +1308,38 @@ class PopupController {
     });
   }
 
+  /**
+   * Get the original page URL to use as referer
+   */
+  async _getOriginalReferer() {
+    if (!this.activeTabId) return null;
+
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: this.activeTabId },
+        func: () => {
+          return {
+            url: window.location.href,
+            referer: document.referrer || window.location.href,
+            origin: window.location.origin,
+          };
+        },
+      });
+
+      if (results && results[0] && results[0].result) {
+        const info = results[0].result;
+        this.logger.info("popup", `🌐 Original page: ${info.origin}`);
+        return info;
+      }
+    } catch (error) {
+      this.logger.debug(
+        "popup",
+        "Could not get page referer: " + error.message,
+      );
+    }
+    return null;
+  }
+
   // --------------------------------------------------------------------------
   // Cleanup
   // --------------------------------------------------------------------------
@@ -1509,44 +1580,30 @@ function executeDemoStepOnPage(step, videoSelector) {
         if (!url) {
           return { success: false, error: "No stream URL provided" };
         }
+
+        // Store the original referer for fetch-proxy to use
+        const referer = step.referer || window.location.href;
         console.log(`[ContentScript] 📥 Loading stream: ${url}`);
-        console.log(`[ContentScript] 🎯 Target video:`, videoEl);
+        console.log(`[ContentScript] 🔑 Using referer: ${referer}`);
 
-        // Check if HLS.js is available on the page
-        if (typeof Hls !== "undefined" && Hls.isSupported()) {
-          console.log(`[ContentScript] ✅ HLS.js available, creating instance`);
+        // Store referer globally so fetch-proxy can access it
+        window.__hlsOriginalReferer = referer;
+        window.__hlsStreamUrl = url;
 
-          // Destroy existing HLS instance if attached to this video
-          if (videoEl._hlsInstance) {
-            videoEl._hlsInstance.destroy();
-            console.log(`[ContentScript] 🗑️ Destroyed previous HLS instance`);
-          }
-
-          const hls = new Hls({
-            debug: false,
-            enableWorker: true,
-          });
-
-          hls.loadSource(url);
-          hls.attachMedia(videoEl);
-          videoEl._hlsInstance = hls;
-
-          // Store reference globally for cleanup
-          window.__hlsDemoInstance = hls;
-
-          console.log(`[ContentScript] ✅ HLS stream loaded via hls.js`);
-          return { success: true, method: "hlsjs" };
-        } else if (videoEl.canPlayType("application/vnd.apple.mpegurl")) {
-          // Native HLS support (Safari)
-          console.log(`[ContentScript] Using native HLS support`);
-          videoEl.src = url;
-          return { success: true, method: "native" };
-        } else {
+        const videoEl = document.querySelector(videoSelector);
+        if (!videoEl) {
           return {
             success: false,
-            error: "HLS playback not supported on this page",
+            error: `Video element not found: "${videoSelector}"`,
           };
         }
+
+        // Try native HLS first (works with proper referer)
+        console.log(`[ContentScript] Using native HLS support with referer`);
+        videoEl.src = url;
+        videoEl.crossOrigin = "anonymous";
+
+        return { success: true, method: "native" };
       }
 
       default:
