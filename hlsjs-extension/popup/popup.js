@@ -86,6 +86,12 @@ class PopupController {
       CONFIG.POLLING_INTERVAL * 2,
     );
 
+    // NEW: Detect and populate the stream URL after initialization
+    // Delay slightly to allow video observer to find elements first
+    setTimeout(() => {
+      this._populateStreamUrl();
+    }, 1500);
+
     this.logger.info(
       "popup",
       "✓ PopupController initialized (Independent Mode)",
@@ -94,6 +100,39 @@ class PopupController {
       "popup",
       "ℹ️  Looking for video element on current page...",
     );
+  }
+
+  /**
+   * Populate the stream URL input field with the detected URL.
+   * Updates the UI to show the detected stream.
+   */
+  async _populateStreamUrl() {
+    const detectedUrl = await this._detectStreamUrl();
+
+    if (detectedUrl && this.el.streamUrl) {
+      // Only update if the detected URL is different from current
+      const currentValue = this.el.streamUrl.value.trim();
+      if (
+        detectedUrl !== currentValue &&
+        detectedUrl !== "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+      ) {
+        this.el.streamUrl.value = detectedUrl;
+        this.logger.info(
+          "popup",
+          `📝 Stream URL input updated to: ${detectedUrl}`,
+        );
+
+        // Update the UI to reflect that a stream was detected
+        this._updatePlayerConnectionStatus("connected", this.activeTabId);
+      } else if (detectedUrl === currentValue) {
+        this.logger.debug(
+          "popup",
+          `Stream URL already matches: ${detectedUrl}`,
+        );
+      } else {
+        this.logger.debug("popup", `Using default stream URL: ${detectedUrl}`);
+      }
+    }
   }
 
   _cacheElements() {
@@ -316,29 +355,52 @@ class PopupController {
   }
 
   /**
-   * Open the player in a new tab (fallback for pages that can't be scripted)
+   * Open the player in a new tab with the current stream URL
    */
-  _openPlayerInNewTab() {
-    const playerUrl = chrome.runtime.getURL("player/player.html");
+  async _openPlayerInNewTab() {
+    // NEW: Detect the best URL
+    const streamUrl = await this._detectStreamUrl();
+
+    const playerBaseUrl = chrome.runtime.getURL("player/player.html");
+    const playerUrl = `${playerBaseUrl}?url=${encodeURIComponent(streamUrl)}&autorun=false`;
+
     this.logger.info("popup", `Opening player in new tab: ${playerUrl}`);
+    this.logger.info("popup", `📋 Stream URL passed: ${streamUrl}`);
 
     chrome.tabs.create({ url: playerUrl }, (tab) => {
       this.activeTabId = tab.id;
-      this.observerScriptInjected = false; // Will re-inject for new tab
+      this.observerScriptInjected = false;
       this.videoFound = false;
       this.videoElementInfo = null;
-
       this.logger.info("popup", `Player tab created: #${tab.id}`);
       this._updatePlayerConnectionStatus("connected", tab.id);
 
-      // Wait for page to load, then inject observer
-      setTimeout(async () => {
-        await this._injectVideoObserver();
-        this._checkVideoStatus();
-        // Enable controls since we're on player page
-        this._enablePlayerControls(true);
-        this._enableDemoControls(false); // Need video element first
-      }, 2000);
+      // Pre-load CORS rules for the stream domain
+      this.logger.info("popup", "🔧 Pre-loading CORS rules for player tab...");
+      chrome.runtime.sendMessage(
+        { action: "preloadCorsRules", url: streamUrl },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            this.logger.error("popup", "CORS pre-load error for player tab", {
+              error: chrome.runtime.lastError.message,
+            });
+          } else if (response?.success) {
+            this.logger.info(
+              "popup",
+              "✅ CORS rules pre-loaded for player tab",
+            );
+          } else {
+            this.logger.warn(
+              "popup",
+              "⚠️ CORS pre-load may have failed for player tab",
+            );
+          }
+        },
+      );
+
+      // Enable controls since player page handles its own video
+      this._enablePlayerControls(true);
+      this._enableDemoControls(false);
     });
   }
 
@@ -409,13 +471,11 @@ class PopupController {
       this.logger.warn("popup", "Demo is already running");
       return;
     }
-
     if (!this.videoFound) {
       this.logger.warn("popup", "No video element found. Waiting for video...");
       this._updateDemoStatus("❌ No video element found", "error");
       return;
     }
-
     if (!this.demoRunner) {
       this.logger.error("popup", "DemoRunner not available");
       this._updateDemoStatus("❌ DemoRunner not available", "error");
@@ -427,7 +487,8 @@ class PopupController {
     this._updateDemoStatus("🔄 Running all demos...", "running");
     this._clearDemoResults();
 
-    const streamUrl = this.el.streamUrl?.value?.trim() || "";
+    // NEW: Detect the best stream URL to use
+    const streamUrl = await this._detectStreamUrl();
 
     this.logger.info("popup", "=".repeat(50));
     this.logger.info(
@@ -436,28 +497,25 @@ class PopupController {
     );
     this.logger.info("popup", `📋 Video Selector: ${CONFIG.VIDEO_SELECTOR}`);
     this.logger.info("popup", `📋 Active Tab: #${this.activeTabId}`);
+    this.logger.info("popup", `📋 Stream URL: ${streamUrl}`);
     this.logger.info("popup", "=".repeat(50));
 
     try {
-      // Get video element info from the active tab
       const videoInfo = await this._getVideoElementInfo();
       if (!videoInfo) {
         throw new Error("Could not access video element on page");
       }
-
       this.logger.info("popup", `📹 Video info: ${JSON.stringify(videoInfo)}`);
 
-      // Build demo options
       const options = {
-        videoElement: null, // Will use proxy to interact with page
-        streamUrl: streamUrl,
+        videoElement: null,
+        streamUrl: streamUrl, // ← Now uses detected URL
         verbose: true,
         stopOnFailure: false,
         skipLive: document.getElementById("demoSkipLive")?.checked || false,
         skipDRM: document.getElementById("demoSkipDRM")?.checked || true,
         skipCMCD: document.getElementById("demoSkipCMCD")?.checked || false,
         skipIFrame: document.getElementById("demoSkipIFrame")?.checked || false,
-        // Independent mode: execute demos directly on the page via scripting
         playerProxy: {
           tabId: this.activeTabId,
           executeDemoStep: async (step) => {
@@ -469,7 +527,6 @@ class PopupController {
       const results = await this.demoRunner.runAll(options);
       this._displayDemoResults(results);
       this._updateDemoStatus("✅ Complete", "success");
-
       this.logger.info("popup", "=".repeat(50));
       this.logger.info("popup", "✅ DEMONSTRATION COMPLETE");
       this.logger.info(
@@ -494,13 +551,11 @@ class PopupController {
       this.logger.warn("popup", "Demo is already running");
       return;
     }
-
     if (!this.videoFound) {
       this.logger.warn("popup", "No video element found. Waiting for video...");
       this._updateDemoStatus("❌ No video element found", "error");
       return;
     }
-
     if (!this.demoRunner) {
       this._updateDemoStatus("❌ DemoRunner not available", "error");
       return;
@@ -511,9 +566,11 @@ class PopupController {
     this._updateDemoStatus("⚡ Running quick test...", "running");
     this._clearDemoResults();
 
-    const streamUrl = this.el.streamUrl?.value?.trim() || "";
+    // NEW: Detect the best stream URL to use
+    const streamUrl = await this._detectStreamUrl();
 
     this.logger.info("popup", "⚡ Running quick demo test...");
+    this.logger.info("popup", `📋 Stream URL: ${streamUrl}`);
 
     try {
       const videoInfo = await this._getVideoElementInfo();
@@ -523,7 +580,7 @@ class PopupController {
 
       const options = {
         videoElement: null,
-        streamUrl: streamUrl,
+        streamUrl: streamUrl, // ← Now uses detected URL
         verbose: true,
         stopOnFailure: false,
         skipLive: true,
@@ -642,15 +699,16 @@ class PopupController {
    * Send load stream command to the active tab WITH CORS pre-loading
    */
   async _sendLoadStreamCommand() {
-    const url = this.el.streamUrl?.value?.trim();
+    // NEW: Detect the best URL instead of just reading input
+    const url = await this._detectStreamUrl();
+
     if (!url) {
       this.logger.warn("popup", "No stream URL provided");
       return;
     }
 
     // Pre-load CORS rules before sending load command
-    this.logger.info("popup", "🔧 Pre-loading CORS rules...");
-
+    this.logger.info("popup", "🔧 Pre-loading CORS rules for: " + url);
     chrome.runtime.sendMessage(
       { action: "preloadCorsRules", url: url },
       (response) => {
@@ -663,7 +721,6 @@ class PopupController {
         } else {
           this.logger.warn("popup", "⚠️ CORS pre-load may have failed");
         }
-
         // Now send the load command
         this._sendLoadCommandToPage(url);
       },

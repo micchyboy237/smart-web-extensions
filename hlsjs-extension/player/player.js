@@ -56,24 +56,11 @@ class PlayerApp {
    */
   _checkAutoRun() {
     const urlParams = new URLSearchParams(window.location.search);
-    const autoRun = urlParams.get("autorun");
-    const autoUrl = urlParams.get("url");
+    const autoUrl = urlParams.get("url"); // ✅ Reads ?url= parameter
 
-    if (autoRun === "true") {
-      Logger.info("app", "🚀 Auto-run mode detected");
-
-      // If URL param provides a stream, use it
-      if (autoUrl) {
-        document.getElementById("streamUrl").value = autoUrl;
-        Logger.info("app", `Auto-run URL set: ${autoUrl}`);
-      }
-
-      // Wait a moment for everything to initialize, then load and run
-      setTimeout(() => {
-        this._loadStream();
-        // Wait for manifest to load, then run demos
-        this._autoRunOnManifestLoad();
-      }, 1000);
+    if (autoUrl) {
+      document.getElementById("streamUrl").value = autoUrl;
+      Logger.info("app", `Auto-run URL set: ${autoUrl}`);
     }
   }
 
