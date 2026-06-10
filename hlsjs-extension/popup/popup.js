@@ -1127,6 +1127,9 @@ function getVideoElementInfoFromPage(videoSelector) {
 
 /**
  * Execute a demo step on the page.
+ * This function is serialized and executed in the page context.
+ * ALL helper logic must be inline - no external function calls.
+ *
  * @param {Object} step - The demo step to execute
  * @param {string} videoSelector - CSS selector for the video element
  * @returns {Object} Result of the demo step execution
@@ -1143,20 +1146,24 @@ function executeDemoStepOnPage(step, videoSelector) {
         error: `Video element not found: "${videoSelector}"`,
       };
     }
+
     // Handle different step actions
     switch (step.action) {
       case "play":
         videoEl.play();
         return { success: true, action: "play" };
+
       case "pause":
         videoEl.pause();
         return { success: true, action: "pause" };
+
       case "seek":
         if (step.time !== undefined) {
           videoEl.currentTime = step.time;
           return { success: true, action: "seek", time: step.time };
         }
         return { success: false, error: "No time specified for seek" };
+
       case "getState":
         return {
           success: true,
@@ -1170,18 +1177,65 @@ function executeDemoStepOnPage(step, videoSelector) {
             videoHeight: videoEl.videoHeight,
           },
         };
+
       case "setVolume":
         if (step.volume !== undefined) {
           videoEl.volume = Math.max(0, Math.min(1, step.volume));
           return { success: true, action: "setVolume", volume: videoEl.volume };
         }
         return { success: false, error: "No volume specified" };
+
       case "getVolume":
         return { success: true, volume: videoEl.volume, muted: videoEl.muted };
 
-      // NEW: Handle loadStream action
-      case "loadStream":
-        return loadStreamOnPage(step.streamUrl, videoSelector);
+      // ====================================================================
+      // loadStream: ALL logic inline (no external function calls)
+      // because chrome.scripting.executeScript only serializes THIS function
+      // ====================================================================
+      case "loadStream": {
+        const url = step.streamUrl;
+        if (!url) {
+          return { success: false, error: "No stream URL provided" };
+        }
+        console.log(`[ContentScript] 📥 Loading stream: ${url}`);
+        console.log(`[ContentScript] 🎯 Target video:`, videoEl);
+
+        // Check if HLS.js is available on the page
+        if (typeof Hls !== "undefined" && Hls.isSupported()) {
+          console.log(`[ContentScript] ✅ HLS.js available, creating instance`);
+
+          // Destroy existing HLS instance if attached to this video
+          if (videoEl._hlsInstance) {
+            videoEl._hlsInstance.destroy();
+            console.log(`[ContentScript] 🗑️ Destroyed previous HLS instance`);
+          }
+
+          const hls = new Hls({
+            debug: false,
+            enableWorker: true,
+          });
+
+          hls.loadSource(url);
+          hls.attachMedia(videoEl);
+          videoEl._hlsInstance = hls;
+
+          // Store reference globally for cleanup
+          window.__hlsDemoInstance = hls;
+
+          console.log(`[ContentScript] ✅ HLS stream loaded via hls.js`);
+          return { success: true, method: "hlsjs" };
+        } else if (videoEl.canPlayType("application/vnd.apple.mpegurl")) {
+          // Native HLS support (Safari)
+          console.log(`[ContentScript] Using native HLS support`);
+          videoEl.src = url;
+          return { success: true, method: "native" };
+        } else {
+          return {
+            success: false,
+            error: "HLS playback not supported on this page",
+          };
+        }
+      }
 
       default:
         // For unknown actions, try to execute as a video method
