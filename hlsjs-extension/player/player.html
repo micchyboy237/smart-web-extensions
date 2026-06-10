@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HLS.js Feature Demonstrator</title>
+    <link rel="stylesheet" href="player.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Header -->
+      <header id="header">
+        <h1>🎬 HLS.js Feature Demonstrator</h1>
+        <div id="streamUrlContainer">
+          <input
+            type="text"
+            id="streamUrl"
+            placeholder="Enter HLS stream URL (.m3u8)"
+            value="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+          />
+          <button id="loadBtn">Load Stream</button>
+          <button id="destroyBtn" disabled>Destroy</button>
+        </div>
+      </header>
+
+      <!-- Main Content -->
+      <div id="mainContent">
+        <!-- Video Section -->
+        <div id="videoSection">
+          <!-- Video Container -->
+          <div id="videoContainer">
+            <video id="video" controls crossorigin="anonymous"></video>
+            <!-- I-Frame Preview -->
+            <video id="iframeVideo" muted style="display: none"></video>
+            <!-- Thumbnail Preview -->
+            <img id="thumbnailPreview" style="display: none" />
+            <!-- Error Overlay -->
+            <div id="errorOverlay" style="display: none">
+              <div id="errorBox">
+                <h3>⚠️ Playback Error</h3>
+                <p id="errorMessage"></p>
+                <button id="retryBtn">Retry</button>
+              </div>
+            </div>
+            <!-- Loading Overlay -->
+            <div id="loadingOverlay" style="display: none">
+              <div class="spinner"></div>
+              <p>Loading stream...</p>
+            </div>
+          </div>
+
+          <!-- Controls Bar -->
+          <div id="controlsBar">
+            <div class="control-group">
+              <button id="playBtn" disabled>▶ Play</button>
+              <button id="pauseBtn" disabled>⏸ Pause</button>
+              <button id="seekBackBtn" disabled>⏪ -10s</button>
+              <button id="seekForwardBtn" disabled>⏩ +10s</button>
+            </div>
+            <div class="control-group">
+              <label>Rate:</label>
+              <select id="playbackRateSelect" disabled>
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <label>Volume:</label>
+              <input
+                type="range"
+                id="volumeSlider"
+                min="0"
+                max="100"
+                value="100"
+                disabled
+              />
+              <button id="muteBtn" disabled>🔊</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Side Panel -->
+        <div id="sidePanel">
+          <!-- Feature Tabs -->
+          <div id="tabs">
+            <button class="tab active" data-tab="tab-quality">Quality</button>
+            <button class="tab" data-tab="tab-audio">Audio/Subs</button>
+            <button class="tab" data-tab="tab-playback">Playback</button>
+            <button class="tab" data-tab="tab-live">Live</button>
+            <button class="tab" data-tab="tab-iframe">I-Frame</button>
+            <button class="tab" data-tab="tab-drm">DRM</button>
+            <button class="tab" data-tab="tab-cmcd">CMCD</button>
+            <button class="tab" data-tab="tab-errors">Errors</button>
+            <button class="tab" data-tab="tab-logs">Logs</button>
+          </div>
+
+          <!-- Tab Contents -->
+          <div id="tabContents">
+            <!-- Quality Tab -->
+            <div id="tab-quality" class="tab-content active">
+              <h3>Quality & ABR</h3>
+              <div id="qualityInfo">
+                <p>Current: <span id="currentQuality">Auto</span></p>
+                <p>Bandwidth: <span id="bandwidthEstimate">--</span></p>
+              </div>
+              <select id="qualitySelect">
+                <option value="-1">Auto</option>
+              </select>
+              <div class="button-group">
+                <button id="enableAutoBtn">Auto Quality</button>
+                <button id="abrAggressiveBtn">ABR: Aggressive</button>
+                <button id="abrConservativeBtn">ABR: Conservative</button>
+              </div>
+            </div>
+
+            <!-- Audio Tab -->
+            <div id="tab-audio" class="tab-content">
+              <h3>Audio Tracks</h3>
+              <select id="audioTrackSelect">
+                <option value="-1">-- Select --</option>
+              </select>
+              <h3>Subtitle Tracks</h3>
+              <select id="subtitleTrackSelect">
+                <option value="-1">Off</option>
+              </select>
+              <button id="toggleSubtitlesBtn">Toggle Subtitles</button>
+            </div>
+
+            <!-- Playback Tab -->
+            <div id="tab-playback" class="tab-content">
+              <h3>Playback Control</h3>
+              <div id="playbackInfo">
+                <p>State: <span id="playbackState">Stopped</span></p>
+                <p>
+                  Position: <span id="playbackPosition">0:00</span> /
+                  <span id="playbackDuration">0:00</span>
+                </p>
+                <p>Buffer: <span id="bufferPercent">0%</span></p>
+              </div>
+              <div class="button-group">
+                <button id="pauseBufferBtn">Pause Buffering</button>
+                <button id="resumeBufferBtn">Resume Buffering</button>
+                <button id="seekToBtn">Seek to 60s</button>
+              </div>
+            </div>
+
+            <!-- Live Tab -->
+            <div id="tab-live" class="tab-content">
+              <h3>Live Stream</h3>
+              <div id="liveInfo">
+                <p>Type: <span id="streamType">Unknown</span></p>
+                <p>Latency: <span id="liveLatency">--</span></p>
+                <p>Target: <span id="targetLatency">--</span></p>
+              </div>
+              <div class="button-group">
+                <button id="goLiveBtn">Go To Live</button>
+                <button id="enableLLHLSBtn">Enable LL-HLS</button>
+              </div>
+            </div>
+
+            <!-- I-Frame Tab -->
+            <div id="tab-iframe" class="tab-content">
+              <h3>I-Frame Preview</h3>
+              <div id="iframeInfo">
+                <p>Available: <span id="iframeAvailable">Checking...</span></p>
+              </div>
+              <button id="showPreviewBtn">Show Preview at 30s</button>
+              <button id="hidePreviewBtn">Hide Preview</button>
+            </div>
+
+            <!-- DRM Tab -->
+            <div id="tab-drm" class="tab-content">
+              <h3>DRM Configuration</h3>
+              <div id="drmInfo">
+                <p>Status: <span id="drmStatus">Not configured</span></p>
+              </div>
+              <div class="button-group">
+                <button id="configWidevineBtn">Config Widevine</button>
+              </div>
+            </div>
+
+            <!-- CMCD Tab -->
+            <div id="tab-cmcd" class="tab-content">
+              <h3>CMCD Analytics</h3>
+              <div id="cmcdInfo">
+                <p>Status: <span id="cmcdStatus">Disabled</span></p>
+              </div>
+              <div class="button-group">
+                <button id="enableCMCDBtn">Enable CMCD v2</button>
+                <button id="trackActionBtn">Track Action</button>
+              </div>
+            </div>
+
+            <!-- Errors Tab -->
+            <div id="tab-errors" class="tab-content">
+              <h3>Error History</h3>
+              <div id="errorInfo">
+                <p>Total: <span id="totalErrors">0</span></p>
+                <p>Fatal: <span id="fatalErrors">0</span></p>
+              </div>
+              <div id="errorList"></div>
+              <button id="clearErrorsBtn">Clear Errors</button>
+            </div>
+
+            <!-- Logs Tab -->
+            <div id="tab-logs" class="tab-content">
+              <h3>Log Output</h3>
+              <div id="logControls">
+                <select id="logFilter">
+                  <option value="all">All</option>
+                  <option value="debug">Debug</option>
+                  <option value="info">Info</option>
+                  <option value="warn">Warning</option>
+                  <option value="error">Error</option>
+                </select>
+                <button id="clearLogsBtn">Clear</button>
+              </div>
+              <div id="logContainer"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- hls.js Library -->
+    <script src="../lib/hls.min.js"></script>
+
+    <!-- Feature Modules -->
+    <script src="../modules/logger.js"></script>
+    <script src="../modules/core.js"></script>
+    <script src="../modules/playback.js"></script>
+    <script src="../modules/quality.js"></script>
+    <script src="../modules/audio.js"></script>
+    <script src="../modules/live.js"></script>
+    <script src="../modules/error.js"></script>
+    <script src="../modules/iframe.js"></script>
+    <script src="../modules/drm.js"></script>
+    <script src="../modules/cmcd.js"></script>
+
+    <!-- Main Player Script -->
+    <script src="player.js"></script>
+  </body>
+</html>

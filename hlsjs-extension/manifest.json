@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "HLS.js Feature Demonstrator",
+  "version": "1.0.1",
+  "description": "Demonstrates all hls.js features with comprehensive logging. Uses declarativeNetRequest to bypass CORS for HLS streams.",
+  "permissions": [
+    "storage",
+    "tabs",
+    "webRequest",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback"
+  ],
+  "host_permissions": ["https://*/*", "http://*/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "HLS.js Features"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lib/hls.min.js",
+        "modules/*.js",
+        "player/player.html",
+        "player/player.css",
+        "player/player.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HLS.js Features</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div id="popup">
+      <header>
+        <h2>🎬 HLS.js Features</h2>
+        <p class="subtitle">CORS-Aware Extension Demo</p>
+      </header>
+
+      <div id="status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Checking...</span>
+      </div>
+
+      <div id="corsInfo">
+        <div class="cors-header">
+          <h4>🛡️ CORS Status</h4>
+          <span class="badge" id="corsModeBadge">Auto-Fix Active</span>
+        </div>
+        <div id="corsStats">
+          <div class="stat-row">
+            <span class="stat-label">Requests:</span>
+            <span class="stat-value" id="statRequests">0</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">CORS Fixed:</span>
+            <span class="stat-value" id="statCorsFixed">0</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Active Domains:</span>
+            <span class="stat-value" id="statDomains">0</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">Rules Active:</span>
+            <span class="stat-value" id="statRules">0</span>
+          </div>
+        </div>
+        <div id="domainList" style="display: none">
+          <h5>Recent Domains:</h5>
+          <div id="domainListContent"></div>
+        </div>
+      </div>
+
+      <button id="openPlayerBtn">🎬 Open Player</button>
+
+      <footer>
+        <p>v1.0.0 | Auto-CORS Bypass</p>
+      </footer>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
