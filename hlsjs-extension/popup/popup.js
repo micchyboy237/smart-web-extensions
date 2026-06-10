@@ -1127,7 +1127,6 @@ function getVideoElementInfoFromPage(videoSelector) {
 
 /**
  * Execute a demo step on the page.
- *
  * @param {Object} step - The demo step to execute
  * @param {string} videoSelector - CSS selector for the video element
  * @returns {Object} Result of the demo step execution
@@ -1136,7 +1135,6 @@ function executeDemoStepOnPage(step, videoSelector) {
   console.log(
     `[ContentScript] 🎬 Executing demo step: ${step.name || step.action}`,
   );
-
   try {
     const videoEl = document.querySelector(videoSelector);
     if (!videoEl) {
@@ -1145,24 +1143,20 @@ function executeDemoStepOnPage(step, videoSelector) {
         error: `Video element not found: "${videoSelector}"`,
       };
     }
-
     // Handle different step actions
     switch (step.action) {
       case "play":
         videoEl.play();
         return { success: true, action: "play" };
-
       case "pause":
         videoEl.pause();
         return { success: true, action: "pause" };
-
       case "seek":
         if (step.time !== undefined) {
           videoEl.currentTime = step.time;
           return { success: true, action: "seek", time: step.time };
         }
         return { success: false, error: "No time specified for seek" };
-
       case "getState":
         return {
           success: true,
@@ -1172,18 +1166,22 @@ function executeDemoStepOnPage(step, videoSelector) {
             paused: videoEl.paused,
             readyState: videoEl.readyState,
             networkState: videoEl.networkState,
+            videoWidth: videoEl.videoWidth,
+            videoHeight: videoEl.videoHeight,
           },
         };
-
       case "setVolume":
         if (step.volume !== undefined) {
           videoEl.volume = Math.max(0, Math.min(1, step.volume));
           return { success: true, action: "setVolume", volume: videoEl.volume };
         }
         return { success: false, error: "No volume specified" };
-
       case "getVolume":
         return { success: true, volume: videoEl.volume, muted: videoEl.muted };
+
+      // NEW: Handle loadStream action
+      case "loadStream":
+        return loadStreamOnPage(step.streamUrl, videoSelector);
 
       default:
         // For unknown actions, try to execute as a video method

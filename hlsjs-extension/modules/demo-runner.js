@@ -50,7 +50,7 @@ class DemoRunner {
   /**
    * Run all feature demonstrations automatically
    * @param {Object} options - Configuration options
-   * @param {HTMLVideoElement} options.videoElement - Target video element
+   * @param {HTMLVideoElement} options.videoElement - Target video element (null in independent mode)
    * @param {string} options.streamUrl - HLS stream URL to test
    * @param {boolean} options.verbose - Enable verbose logging (default: true)
    * @param {boolean} options.stopOnFailure - Stop on first failure (default: false)
@@ -76,6 +76,7 @@ class DemoRunner {
 
     this.verbose = verbose;
     this.stopOnFailure = stopOnFailure;
+    this.isIndependentMode = !videoElement && !!playerProxy; // NEW: Detect mode
 
     // Reset results
     this.results = {
@@ -101,6 +102,7 @@ class DemoRunner {
       skipCMCD,
       skipIFrame,
       hasProxy: !!playerProxy,
+      independentMode: this.isIndependentMode, // NEW
     });
 
     // ======================================================================
@@ -109,7 +111,6 @@ class DemoRunner {
     Logger.info("demo-runner", "\n" + "=".repeat(40));
     Logger.info("demo-runner", "🛡️ PHASE 0: CORS & FETCH PROXY VERIFICATION");
     Logger.info("demo-runner", "=".repeat(40));
-
     await this._testCORSProxySetup(streamUrl);
 
     // Validate prerequisites
@@ -117,42 +118,68 @@ class DemoRunner {
       Logger.error("demo-runner", "❌ No video element or proxy provided");
       return this._generateReport();
     }
-
     if (!streamUrl) {
       Logger.error("demo-runner", "❌ No stream URL provided");
       return this._generateReport();
     }
 
     // ======================================================================
-    // Phase 1: Core Infrastructure Tests
+    // Phase 1: Core Infrastructure Tests (UPDATED for independent mode)
     // ======================================================================
     Logger.info("demo-runner", "\n" + "=".repeat(40));
     Logger.info("demo-runner", "📦 PHASE 1: CORE INFRASTRUCTURE");
     Logger.info("demo-runner", "=".repeat(40));
+    await this._testCoreInfrastructure(videoElement, playerProxy);
 
-    await this._testCoreInfrastructure(videoElement);
+    // ======================================================================
+    // NEW: Independent Mode - Proxy-based tests
+    // ======================================================================
+    if (this.isIndependentMode) {
+      Logger.info("demo-runner", "\n" + "=".repeat(40));
+      Logger.info(
+        "demo-runner",
+        "🔄 PHASE 1.5: INDEPENDENT MODE - PROXY TESTS",
+      );
+      Logger.info("demo-runner", "=".repeat(40));
 
-    // Create HlsPlayer instance
+      const proxyWorks = await this._testIndependentModeProxy(
+        playerProxy,
+        streamUrl,
+      );
+      if (!proxyWorks) {
+        Logger.error(
+          "demo-runner",
+          "❌ Cannot proceed - proxy communication failed",
+        );
+        return this._generateReport();
+      }
+      // Skip player creation and stream loading tests in independent mode
+      // Jump to cleanup & report
+      Logger.info("demo-runner", "\n" + "=".repeat(40));
+      Logger.info("demo-runner", "🧹 CLEANUP & REPORT (Independent Mode)");
+      Logger.info("demo-runner", "=".repeat(40));
+      return this._generateReport();
+    }
+
+    // ======================================================================
+    // Phase 2: Player Creation (only in direct mode)
+    // ======================================================================
     const player = await this._testPlayerCreation(videoElement);
     if (!player) {
       Logger.error("demo-runner", "❌ Cannot proceed without HlsPlayer");
       return this._generateReport();
     }
 
+    // ... rest of the method stays the same ...
     // ======================================================================
-    // Phase 2: Manifest & Stream Loading
+    // Phase 3: Manifest & Stream Loading
     // ======================================================================
     Logger.info("demo-runner", "\n" + "=".repeat(40));
-    Logger.info("demo-runner", "📋 PHASE 2: MANIFEST & STREAM LOADING");
+    Logger.info("demo-runner", "📋 PHASE 3: MANIFEST & STREAM LOADING");
     Logger.info("demo-runner", "=".repeat(40));
-
     await this._testStreamLoading(player, streamUrl);
 
-    // ======================================================================
-    // Phases 3-11: All feature tests (unchanged)
-    // ======================================================================
-
-    // ... [Phases 3-11 remain the same as original] ...
+    // ... [Phases 4-11 remain the same as original] ...
 
     // ======================================================================
     // Cleanup & Report
@@ -160,10 +187,7 @@ class DemoRunner {
     Logger.info("demo-runner", "\n" + "=".repeat(40));
     Logger.info("demo-runner", "🧹 CLEANUP & REPORT");
     Logger.info("demo-runner", "=".repeat(40));
-
-    // Destroy player gracefully
     await this._testCleanup(player);
-
     return this._generateReport();
   }
 
@@ -173,8 +197,10 @@ class DemoRunner {
 
   /**
    * Test core infrastructure (HLS support, codecs, etc.)
+   * @param {HTMLVideoElement} videoElement - Video element (null in independent mode)
+   * @param {Object} playerProxy - Player proxy for independent mode
    */
-  async _testCoreInfrastructure(videoElement) {
+  async _testCoreInfrastructure(videoElement, playerProxy = null) {
     const phase = "Core Infrastructure";
 
     // Test 1: HLS.js availability
@@ -210,18 +236,31 @@ class DemoRunner {
       "MSE is not supported - HLS playback will not work",
     );
 
-    // Test 4: Video element validation
+    // Test 4: Video element validation (UPDATED for independent mode)
     this._runTest(
       "Video element validation",
       phase,
       () => {
+        // In independent mode, check if proxy is available instead
+        if (this.isIndependentMode && playerProxy) {
+          Logger.info(
+            "demo-runner",
+            "Independent mode: skipping direct video element check, using proxy",
+          );
+          return true; // Soft pass - proxy will handle video access
+        }
+        // Direct mode: validate the actual video element
         return (
           videoElement instanceof HTMLVideoElement &&
           typeof videoElement.play === "function"
         );
       },
-      "Valid video element provided",
-      "Invalid or missing video element",
+      this.isIndependentMode
+        ? "Independent mode: proxy-based video access"
+        : "Valid video element provided",
+      this.isIndependentMode
+        ? "No player proxy available"
+        : "Invalid or missing video element",
     );
 
     // Test 5: Logger availability
@@ -234,6 +273,213 @@ class DemoRunner {
       "Logger system operational",
       "Logger system not available",
     );
+  }
+
+  /**
+   * Test the proxy communication with the page in independent mode
+   * @param {Object} playerProxy - The player proxy object
+   * @param {string} streamUrl - The stream URL to test
+   * @returns {Promise<boolean>} Whether proxy works
+   */
+  async _testIndependentModeProxy(playerProxy, streamUrl) {
+    const phase = "Independent Mode Proxy";
+
+    // Test A: Proxy object validation
+    const proxyValid = this._runTest(
+      "Player proxy object valid",
+      phase,
+      () => {
+        return !!(
+          playerProxy &&
+          playerProxy.tabId &&
+          typeof playerProxy.executeDemoStep === "function"
+        );
+      },
+      `Player proxy connected to tab #${playerProxy?.tabId}`,
+      "Player proxy is invalid or missing required properties",
+    );
+    if (!proxyValid) return false;
+
+    // Test B: Proxy communication - get video state
+    const commWorks = await this._runTest(
+      "Proxy communication working",
+      phase,
+      async () => {
+        try {
+          const result = await playerProxy.executeDemoStep({
+            action: "getState",
+            name: "Get video state from page",
+          });
+          if (result && result.success) {
+            Logger.info(
+              "demo-runner",
+              `Video state from page: ${JSON.stringify(result.state)}`,
+            );
+            return true;
+          }
+          Logger.warn(
+            "demo-runner",
+            `Proxy returned error: ${JSON.stringify(result)}`,
+          );
+          return false;
+        } catch (error) {
+          Logger.error(
+            "demo-runner",
+            "Proxy communication error: " + error.message,
+          );
+          return false;
+        }
+      },
+      "Proxy communication successful",
+      "Failed to communicate with page via proxy",
+    );
+    if (!commWorks) return false;
+
+    // Test C: Proxy - check if video element is ready on page
+    await this._runTest(
+      "Video element ready on page",
+      phase,
+      async () => {
+        try {
+          const result = await playerProxy.executeDemoStep({
+            action: "getState",
+            name: "Check video readiness",
+          });
+          if (result && result.success && result.state) {
+            const state = result.state;
+            Logger.info(
+              "demo-runner",
+              `Page video state: readyState=${state.readyState}, paused=${state.paused}, duration=${state.duration}`,
+            );
+            return state.readyState >= 2; // HAVE_CURRENT_DATA or better
+          }
+          return false;
+        } catch (error) {
+          return false;
+        }
+      },
+      "Video element is ready on the page",
+      "Video element not ready on page",
+    );
+
+    // Test D: Proxy - attempt to load stream on page
+    await this._runTest(
+      "Stream loading via proxy",
+      phase,
+      async () => {
+        try {
+          const result = await playerProxy.executeDemoStep({
+            action: "loadStream",
+            name: "Load HLS stream",
+            streamUrl: streamUrl,
+          });
+          if (result && result.success) {
+            Logger.info(
+              "demo-runner",
+              `Stream loaded via proxy using method: ${result.method || "unknown"}`,
+            );
+            return true;
+          }
+          Logger.warn(
+            "demo-runner",
+            `Stream loading failed: ${JSON.stringify(result)}`,
+          );
+          return false;
+        } catch (error) {
+          Logger.error("demo-runner", "Stream loading error: " + error.message);
+          return false;
+        }
+      },
+      "Stream loaded on page via proxy",
+      "Failed to load stream on page via proxy",
+    );
+
+    // Test E: Proxy - verify playback can start
+    await this._runTest(
+      "Playback initiation via proxy",
+      phase,
+      async () => {
+        try {
+          const result = await playerProxy.executeDemoStep({
+            action: "play",
+            name: "Start playback",
+          });
+          return result && result.success;
+        } catch (error) {
+          return false;
+        }
+      },
+      "Playback initiated on page via proxy",
+      "Failed to initiate playback via proxy",
+    );
+
+    // Test F: Proxy - verify volume control
+    await this._runTest(
+      "Volume control via proxy",
+      phase,
+      async () => {
+        try {
+          // Set volume
+          await playerProxy.executeDemoStep({
+            action: "setVolume",
+            volume: 0.5,
+            name: "Set volume to 50%",
+          });
+          // Get volume to verify
+          const result = await playerProxy.executeDemoStep({
+            action: "getVolume",
+            name: "Get volume",
+          });
+          if (result && result.success) {
+            Logger.info(
+              "demo-runner",
+              `Volume: ${result.volume}, Muted: ${result.muted}`,
+            );
+            return result.volume === 0.5;
+          }
+          return false;
+        } catch (error) {
+          return false;
+        }
+      },
+      "Volume control works via proxy",
+      "Failed to control volume via proxy",
+    );
+
+    // Test G: Proxy - verify seek functionality
+    await this._runTest(
+      "Seek functionality via proxy",
+      phase,
+      async () => {
+        try {
+          // Get current state first
+          const stateResult = await playerProxy.executeDemoStep({
+            action: "getState",
+            name: "Get state before seek",
+          });
+          if (!stateResult?.success) return false;
+
+          const currentTime = stateResult.state.currentTime;
+          const seekTime = Math.min(
+            currentTime + 5,
+            stateResult.state.duration || Infinity,
+          );
+
+          const result = await playerProxy.executeDemoStep({
+            action: "seek",
+            time: seekTime,
+            name: `Seek to ${seekTime}s`,
+          });
+          return result && result.success;
+        } catch (error) {
+          return false;
+        }
+      },
+      "Seek works via proxy",
+      "Failed to seek via proxy",
+    );
+
+    return true;
   }
 
   // ==========================================================================
