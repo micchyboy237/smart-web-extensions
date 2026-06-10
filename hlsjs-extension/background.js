@@ -424,11 +424,7 @@ function getDomain(url) {
 
 /**
  * Fetch a URL from the service worker (no CORS restrictions).
- * Pre-adds DNR rules before fetching if needed.
- *
- * @param {string} url - The URL to fetch
- * @param {Object} options - Fetch options
- * @returns {Promise<Object>} Serialized response
+ * Adds browser-like headers to bypass 403 referer/origin checks.
  */
 async function proxyFetch(url, options = {}) {
   const domain = getDomain(url);
@@ -439,53 +435,63 @@ async function proxyFetch(url, options = {}) {
     await addCorsRuleForDomain(domain);
   }
 
-  // If DNR is available and we have rules, the direct fetch from the page
-  // might work now. But to be safe, we still proxy from the service worker.
-
   try {
     console.log(`[Background] 🌐 Proxy fetching: ${url}`);
 
+    // Build headers that mimic a browser request from the stream's origin
+    const fetchHeaders = {
+      "User-Agent": navigator.userAgent,
+      Accept: "*/*",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Cache-Control": "no-cache",
+      // KEY FIX: Add Referer and Origin from the stream domain itself
+      Referer: `https://${domain}/`,
+      Origin: `https://${domain}`,
+      ...(options.headers || {}),
+    };
+
+    console.log(`[Background] 🔑 Using referer: https://${domain}/`);
+
     const fetchOptions = {
       method: options.method || "GET",
-      headers: options.headers || {},
-      // No 'mode: cors' needed in service worker context
+      headers: fetchHeaders,
+      credentials: "omit",
     };
 
     const response = await fetch(url, fetchOptions);
 
-    // Read response based on type
-    let body = null;
-    const contentType = response.headers.get("content-type") || "";
+    // If still 403, retry with different header combination
+    if (response.status === 403) {
+      console.log(
+        `[Background] ⚠️ 403 received, retrying with alternative headers...`,
+      );
 
-    if (
-      contentType.includes("application/json") ||
-      contentType.includes("text/") ||
-      contentType.includes("application/x-mpegURL") || // .m3u8
-      contentType.includes("application/vnd.apple.mpegurl")
-    ) {
-      body = await response.text();
-    } else {
-      // For binary data (like .ts segments), convert to ArrayBuffer then to base64
-      const arrayBuffer = await response.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
-      // Convert to array of numbers for transfer
-      body = Array.from(uint8Array);
+      const retryHeaders = {
+        ...fetchHeaders,
+        Referer: `https://${domain}/`,
+        Origin: `https://${domain}`,
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+      };
+
+      const retryResponse = await fetch(url, {
+        ...fetchOptions,
+        headers: retryHeaders,
+      });
+
+      if (retryResponse.status !== 403) {
+        console.log(
+          `[Background] ✅ Retry succeeded with status: ${retryResponse.status}`,
+        );
+        return await serializeResponse(retryResponse, url);
+      }
+      console.log(
+        `[Background] ❌ Retry also returned 403 - server may require specific referer`,
+      );
     }
 
-    const result = {
-      success: true,
-      status: response.status,
-      statusText: response.statusText,
-      headers: Object.fromEntries(response.headers.entries()),
-      body: body,
-      isBinary: !(typeof body === "string"),
-      url: response.url,
-    };
-
-    console.log(
-      `[Background] ✅ Proxy fetch success: ${response.status} (${typeof body === "string" ? body.length : body.length} bytes)`,
-    );
-    return result;
+    return await serializeResponse(response, url);
   } catch (error) {
     console.error(
       `[Background] ❌ Proxy fetch failed for ${url}:`,
@@ -497,6 +503,41 @@ async function proxyFetch(url, options = {}) {
       url: url,
     };
   }
+}
+
+/**
+ * Serialize a fetch Response for transfer via chrome.runtime.sendMessage
+ */
+async function serializeResponse(response, url) {
+  let body = null;
+  const contentType = response.headers.get("content-type") || "";
+
+  if (
+    contentType.includes("application/json") ||
+    contentType.includes("text/") ||
+    contentType.includes("application/x-mpegURL") ||
+    contentType.includes("application/vnd.apple.mpegurl")
+  ) {
+    body = await response.text();
+  } else {
+    const arrayBuffer = await response.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+    body = Array.from(uint8Array);
+  }
+
+  console.log(
+    `[Background] ✅ Proxy fetch success: ${response.status} (${typeof body === "string" ? body.length + " chars" : body.length + " bytes"})`,
+  );
+
+  return {
+    success: true,
+    status: response.status,
+    statusText: response.statusText,
+    headers: Object.fromEntries(response.headers.entries()),
+    body: body,
+    isBinary: !(typeof body === "string"),
+    url: response.url,
+  };
 }
 
 /**

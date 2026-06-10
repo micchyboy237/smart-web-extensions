@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "HLS.js Feature Demonstrator",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Demonstrates all hls.js features with comprehensive logging. Uses fetch proxy + declarativeNetRequest to bypass CORS for HLS streams.",
   "permissions": [
     "storage",

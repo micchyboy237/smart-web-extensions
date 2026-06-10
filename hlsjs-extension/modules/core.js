@@ -7,6 +7,169 @@
  */
 
 // ============================================================================
+// Custom Fetch-Based Loader for hls.js
+//
+// Replaces the default XHR loader with a fetch()-based loader.
+// This allows fetch-proxy.js to intercept HLS requests and route them
+// through the background service worker for CORS/403 bypass.
+// ============================================================================
+class FetchLoader {
+  constructor(config) {
+    this.config = config;
+    this.loader = null;
+    this.abortController = null;
+  }
+
+  destroy() {
+    this.abortController = null;
+    this.loader = null;
+  }
+
+  abort() {
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
+  }
+
+  load(context, config, callbacks) {
+    const url = context.url;
+    const isHlsResource =
+      url.includes(".m3u8") ||
+      url.includes(".ts") ||
+      url.includes(".m4s") ||
+      url.includes(".m4a") ||
+      url.includes(".mp4") ||
+      url.includes(".aac") ||
+      url.includes(".vtt");
+
+    Logger.debug(
+      "core",
+      `📡 FetchLoader loading: ${context.type} - ${url.substring(0, 100)}`,
+    );
+
+    // Create abort controller for cancellation
+    this.abortController = new AbortController();
+
+    const fetchOptions = {
+      method: "GET",
+      headers: context.headers || {},
+      signal: this.abortController.signal,
+    };
+
+    // Track timing
+    const startTime = performance.now();
+
+    // This fetch() call WILL be intercepted by fetch-proxy.js!
+    window
+      .fetch(url, fetchOptions)
+      .then((response) => {
+        const loadTime = Math.round(performance.now() - startTime);
+
+        if (!response.ok) {
+          Logger.error(
+            "core",
+            `❌ FetchLoader HTTP ${response.status} for ${context.type}: ${url.substring(0, 100)}`,
+          );
+
+          const error = new Error(
+            `HTTP ${response.status}: ${response.statusText}`,
+          );
+          error.code = response.status;
+          error.url = url;
+
+          if (callbacks.onError) {
+            callbacks.onError(
+              { code: response.status, text: error.message },
+              context,
+              null,
+              { url: url, httpCode: response.status },
+            );
+          }
+          return;
+        }
+
+        // Read response based on content type
+        const contentType = response.headers.get("content-type") || "";
+        const isText =
+          contentType.includes("text/") ||
+          contentType.includes("application/x-mpegURL") ||
+          contentType.includes("application/vnd.apple.mpegurl") ||
+          contentType.includes("application/json");
+
+        if (isText) {
+          return response.text().then((text) => {
+            Logger.debug(
+              "core",
+              `✅ FetchLoader loaded ${context.type} (${text.length} chars, ${loadTime}ms)`,
+            );
+
+            const stats = {
+              url: response.url,
+              size: text.length,
+              loading: {
+                start: startTime,
+                first: startTime + loadTime / 2,
+                end: startTime + loadTime,
+              },
+              total: loadTime,
+            };
+
+            if (callbacks.onSuccess) {
+              callbacks.onSuccess(text, stats, context, null);
+            }
+          });
+        } else {
+          return response.arrayBuffer().then((buffer) => {
+            Logger.debug(
+              "core",
+              `✅ FetchLoader loaded ${context.type} (${buffer.byteLength} bytes, ${loadTime}ms)`,
+            );
+
+            const stats = {
+              url: response.url,
+              size: buffer.byteLength,
+              loading: {
+                start: startTime,
+                first: startTime + loadTime / 2,
+                end: startTime + loadTime,
+              },
+              total: loadTime,
+            };
+
+            if (callbacks.onSuccess) {
+              callbacks.onSuccess(buffer, stats, context, null);
+            }
+          });
+        }
+      })
+      .catch((error) => {
+        const loadTime = Math.round(performance.now() - startTime);
+
+        // Don't log aborted requests as errors (they're intentional)
+        if (error.name === "AbortError") {
+          Logger.debug("core", `🛑 FetchLoader aborted: ${context.type}`);
+          return;
+        }
+
+        Logger.error(
+          "core",
+          `❌ FetchLoader error for ${context.type} (${loadTime}ms): ${error.message}`,
+          {
+            url: url.substring(0, 100),
+          },
+        );
+
+        if (callbacks.onError) {
+          callbacks.onError({ code: 0, text: error.message }, context, null, {
+            url: url,
+          });
+        }
+      });
+  }
+}
+
+// ============================================================================
 // HlsPlayer Core Class
 // ============================================================================
 class HlsPlayer {
@@ -148,6 +311,10 @@ class HlsPlayer {
       enableDateRangeMetadataCues: true,
       enableEmsgMetadataCues: true,
       enableID3MetadataCues: true,
+
+      // ⬇️ ADD THIS LINE: Use fetch-based loader instead of XHR
+      // This allows fetch-proxy.js to intercept and route through background.js
+      loader: FetchLoader,
     };
 
     // Merge configs
