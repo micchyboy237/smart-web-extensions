@@ -13,11 +13,13 @@
         <p class="subtitle">CORS-Aware Extension Demo</p>
       </header>
 
+      <!-- Status Section -->
       <div id="status">
         <div class="status-dot" id="statusDot"></div>
         <span id="statusText">Checking...</span>
       </div>
 
+      <!-- CORS Info Section -->
       <div id="corsInfo">
         <div class="cors-header">
           <h4>🛡️ CORS Status</h4>
@@ -47,13 +49,110 @@
         </div>
       </div>
 
-      <button id="openPlayerBtn">🎬 Open Player</button>
+      <!-- Player Section -->
+      <div id="playerSection">
+        <div id="playerStatus">
+          <span id="playerStatusIcon">⚪</span>
+          <span id="playerStatusText">No player connected</span>
+        </div>
+        <input
+          type="text"
+          id="streamUrl"
+          placeholder="Enter HLS stream URL (.m3u8)"
+          value="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
+        />
+        <div class="button-row">
+          <button id="openPlayerBtn">🎬 Open Player</button>
+          <button id="loadStreamBtn" disabled>📥 Load Stream</button>
+        </div>
+      </div>
+
+      <!-- Demo Runner Section -->
+      <div id="demoSection">
+        <div class="section-header">
+          <h4>🧪 Demo Runner</h4>
+          <span class="badge" id="demoStatusBadge">Ready</span>
+        </div>
+
+        <!-- Demo Controls -->
+        <div class="button-row">
+          <button id="demoRunBtn" class="demo-btn" disabled>▶ Run All</button>
+          <button id="demoQuickBtn" class="demo-btn" disabled>⚡ Quick</button>
+          <button id="demoStopBtn" class="demo-btn-stop" style="display: none">
+            ⏹ Stop
+          </button>
+        </div>
+
+        <!-- Demo Progress Bar -->
+        <div id="demoProgress" style="display: none">
+          <div id="demoProgressFill"></div>
+          <span id="demoProgressText">Running demos...</span>
+        </div>
+
+        <!-- Demo Options -->
+        <div id="demoOptions">
+          <label><input type="checkbox" id="demoSkipLive" /> Skip Live</label>
+          <label
+            ><input type="checkbox" id="demoSkipDRM" checked /> Skip DRM</label
+          >
+          <label><input type="checkbox" id="demoSkipCMCD" /> Skip CMCD</label>
+          <label
+            ><input type="checkbox" id="demoSkipIFrame" /> Skip I-Frame</label
+          >
+        </div>
+
+        <!-- Demo Summary -->
+        <div id="demoSummary">
+          <div class="demo-stat-row">
+            <span>Total:</span>
+            <span id="demoTotal">--</span>
+          </div>
+          <div class="demo-stat-row">
+            <span>Passed:</span>
+            <span id="demoPassed" class="text-success">--</span>
+          </div>
+          <div class="demo-stat-row">
+            <span>Failed:</span>
+            <span id="demoFailed" class="text-danger">--</span>
+          </div>
+          <div class="demo-stat-row">
+            <span>Skipped:</span>
+            <span id="demoSkipped">--</span>
+          </div>
+          <div class="demo-stat-row">
+            <span>Rate:</span>
+            <span id="demoRate">--</span>
+          </div>
+          <div class="demo-stat-row">
+            <span>Duration:</span>
+            <span id="demoDuration">--</span>
+          </div>
+        </div>
+
+        <!-- Test Details -->
+        <div id="demoResultsDetail"></div>
+      </div>
 
       <footer>
-        <p>v1.0.0 | Auto-CORS Bypass</p>
+        <p>v1.0.2 | Auto-CORS Bypass + Demo Runner</p>
       </footer>
     </div>
-
+    <!-- hls.js Library (for DemoRunner class) -->
+    <script src="../lib/hls.min.js"></script>
+    <!-- Feature Modules (needed by DemoRunner) -->
+    <script src="../modules/logger.js"></script>
+    <script src="../modules/core.js"></script>
+    <script src="../modules/playback.js"></script>
+    <script src="../modules/quality.js"></script>
+    <script src="../modules/audio.js"></script>
+    <script src="../modules/live.js"></script>
+    <script src="../modules/error.js"></script>
+    <script src="../modules/iframe.js"></script>
+    <script src="../modules/drm.js"></script>
+    <script src="../modules/cmcd.js"></script>
+    <!-- Demo Runner Module -->
+    <script src="../modules/demo-runner.js"></script>
+    <!-- Popup Controller -->
     <script src="popup.js"></script>
   </body>
 </html>

@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "HLS.js Feature Demonstrator",
-  "version": "1.0.1",
-  "description": "Demonstrates all hls.js features with comprehensive logging. Uses declarativeNetRequest to bypass CORS for HLS streams.",
+  "version": "1.0.4",
+  "description": "Demonstrates all hls.js features with comprehensive logging. Uses fetch proxy + declarativeNetRequest to bypass CORS for HLS streams.",
   "permissions": [
     "storage",
     "tabs",
     "webRequest",
+    "scripting",
+    "activeTab",
     "declarativeNetRequest",
     "declarativeNetRequestFeedback"
   ],
@@ -14,7 +16,14 @@
   "background": {
     "service_worker": "background.js"
   },
-
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["modules/fetch-proxy.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "HLS.js Features"

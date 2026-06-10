@@ -1,31 +1,31 @@
+/* ==========================================================================
+   popup.css - HLS.js Feature Demonstrator Popup Styles
+   ========================================================================== */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
-
 body {
-  width: 320px;
+  width: 380px;
+  max-height: 600px;
+  overflow-y: auto;
   font-family: "Segoe UI", sans-serif;
   background: #1a1a2e;
   color: #e0e0e0;
 }
-
 #popup {
   padding: 16px;
 }
-
 header {
   text-align: center;
   margin-bottom: 12px;
 }
-
 header h2 {
   font-size: 1.2rem;
   color: #00d4ff;
   margin-bottom: 2px;
 }
-
 .subtitle {
   font-size: 0.7rem;
   color: #888;
@@ -42,7 +42,6 @@ header h2 {
   margin-bottom: 12px;
   font-size: 0.8rem;
 }
-
 .status-dot {
   width: 8px;
   height: 8px;
@@ -50,32 +49,22 @@ header h2 {
   background: #666;
   flex-shrink: 0;
 }
-
 .status-dot.active {
   background: #00ff88;
   box-shadow: 0 0 8px #00ff8888;
 }
 
-/* CORS Info */
-#corsInfo {
-  background: #16213e;
-  border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
-}
-
-.cors-header {
+/* Section Header */
+.section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
 }
-
-.cors-header h4 {
+.section-header h4 {
   font-size: 0.85rem;
   color: #00d4ff;
 }
-
 .badge {
   font-size: 0.65rem;
   padding: 2px 8px;
@@ -85,34 +74,46 @@ header h2 {
   border: 1px solid #00ff8844;
 }
 
+/* CORS Info */
+#corsInfo {
+  background: #16213e;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.cors-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.cors-header h4 {
+  font-size: 0.85rem;
+  color: #00d4ff;
+}
 .stat-row {
   display: flex;
   justify-content: space-between;
   padding: 3px 0;
   font-size: 0.75rem;
 }
-
 .stat-label {
   color: #888;
 }
-
 .stat-value {
   color: #fff;
   font-weight: 500;
 }
-
 #domainList {
   margin-top: 8px;
   border-top: 1px solid #333;
   padding-top: 8px;
 }
-
 #domainList h5 {
   font-size: 0.75rem;
   color: #888;
   margin-bottom: 4px;
 }
-
 .domain-item {
   display: flex;
   justify-content: space-between;
@@ -123,52 +124,229 @@ header h2 {
   margin-bottom: 3px;
   font-size: 0.7rem;
 }
-
 .domain-item .domain-name {
   color: #aaa;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 180px;
+  max-width: 200px;
 }
-
 .domain-item .cors-badge {
   font-size: 0.6rem;
   padding: 1px 6px;
   border-radius: 8px;
 }
-
 .cors-badge.ok {
   background: #00ff8822;
   color: #00ff88;
 }
-
 .cors-badge.fixed {
   background: #ffaa0022;
   color: #ffaa00;
 }
-
 .cors-badge.error {
   background: #ff444422;
   color: #ff4444;
 }
 
-/* Button */
-#openPlayerBtn {
+/* Player Section */
+#playerSection {
+  background: #16213e;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+#playerStatus {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 0.75rem;
+  color: #888;
+}
+#playerStatusIcon {
+  font-size: 1rem;
+}
+#playerStatus.connected #playerStatusIcon {
+  color: #00ff88;
+}
+#streamUrl {
   width: 100%;
-  padding: 10px;
-  background: #e94560;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  transition: background 0.2s;
+  padding: 8px;
+  background: #0f3460;
+  color: #e0e0e0;
+  border: 1px solid #333;
+  border-radius: 4px;
+  font-size: 0.8rem;
   margin-bottom: 8px;
 }
+#streamUrl::placeholder {
+  color: #666;
+}
 
-#openPlayerBtn:hover {
+/* Button Rows */
+.button-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.button-row button {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: background 0.2s;
+}
+#openPlayerBtn,
+#loadStreamBtn {
+  background: #e94560;
+  color: white;
+}
+#openPlayerBtn:hover,
+#loadStreamBtn:hover {
   background: #c73e54;
+}
+#openPlayerBtn:disabled,
+#loadStreamBtn:disabled {
+  background: #555;
+  cursor: not-allowed;
+}
+
+/* Demo Section */
+#demoSection {
+  background: #16213e;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.demo-btn {
+  background: #00d4ff !important;
+  color: #0a0a1a !important;
+  font-weight: 600 !important;
+}
+.demo-btn:hover {
+  background: #00b8e0 !important;
+}
+.demo-btn:disabled {
+  background: #555 !important;
+  color: #888 !important;
+}
+.demo-btn-stop {
+  background: #ff4444 !important;
+  color: white !important;
+}
+.demo-btn-stop:hover {
+  background: #cc0000 !important;
+}
+
+/* Demo Progress Bar */
+#demoProgress {
+  margin-bottom: 8px;
+  background: #0a0a1a;
+  border-radius: 4px;
+  height: 22px;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #333;
+}
+#demoProgressFill {
+  height: 100%;
+  background: linear-gradient(90deg, #00d4ff, #00ff88);
+  border-radius: 3px;
+  width: 0%;
+  transition: width 0.5s ease;
+}
+#demoProgressText {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Demo Options */
+#demoOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+#demoOptions label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  color: #aaa;
+  font-size: 0.7rem;
+}
+#demoOptions input[type="checkbox"] {
+  accent-color: #00d4ff;
+}
+
+/* Demo Summary */
+#demoSummary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.demo-stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 6px;
+  background: #0f3460;
+  border-radius: 4px;
+  font-size: 0.7rem;
+}
+.demo-stat-row span:first-child {
+  color: #888;
+}
+.demo-stat-row span:last-child {
+  font-weight: 600;
+  color: #fff;
+}
+.text-success {
+  color: #00ff88 !important;
+}
+.text-danger {
+  color: #ff4444 !important;
+}
+
+/* Demo Results Detail */
+#demoResultsDetail {
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 0.7rem;
+}
+.demo-test-item {
+  display: flex;
+  gap: 4px;
+  padding: 2px 4px;
+  border-bottom: 1px solid #ffffff08;
+  align-items: baseline;
+}
+.demo-test-pass {
+  color: #00ff88;
+}
+.demo-test-fail {
+  color: #ff4444;
+  background: #ff000010;
+}
+.demo-test-name {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.demo-test-msg {
+  color: #888;
+  font-size: 0.65rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Footer */
@@ -177,4 +355,16 @@ footer {
   margin-top: 4px;
   font-size: 0.65rem;
   color: #555;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0a1a;
+}
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
 }

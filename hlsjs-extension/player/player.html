@@ -19,10 +19,17 @@
             value="https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"
           />
           <button id="loadBtn">Load Stream</button>
+          <button id="runDemoBtn" class="demo-btn" disabled>
+            ▶ Run All Demos
+          </button>
           <button id="destroyBtn" disabled>Destroy</button>
         </div>
+        <!-- Demo Progress Bar -->
+        <div id="demoProgress" style="display: none">
+          <div id="demoProgressFill"></div>
+          <span id="demoProgressText">Running demos...</span>
+        </div>
       </header>
-
       <!-- Main Content -->
       <div id="mainContent">
         <!-- Video Section -->
@@ -48,7 +55,6 @@
               <p>Loading stream...</p>
             </div>
           </div>
-
           <!-- Controls Bar -->
           <div id="controlsBar">
             <div class="control-group">
@@ -82,7 +88,6 @@
             </div>
           </div>
         </div>
-
         <!-- Side Panel -->
         <div id="sidePanel">
           <!-- Feature Tabs -->
@@ -95,9 +100,9 @@
             <button class="tab" data-tab="tab-drm">DRM</button>
             <button class="tab" data-tab="tab-cmcd">CMCD</button>
             <button class="tab" data-tab="tab-errors">Errors</button>
+            <button class="tab" data-tab="tab-demo">Demo Results</button>
             <button class="tab" data-tab="tab-logs">Logs</button>
           </div>
-
           <!-- Tab Contents -->
           <div id="tabContents">
             <!-- Quality Tab -->
@@ -116,7 +121,6 @@
                 <button id="abrConservativeBtn">ABR: Conservative</button>
               </div>
             </div>
-
             <!-- Audio Tab -->
             <div id="tab-audio" class="tab-content">
               <h3>Audio Tracks</h3>
@@ -129,7 +133,6 @@
               </select>
               <button id="toggleSubtitlesBtn">Toggle Subtitles</button>
             </div>
-
             <!-- Playback Tab -->
             <div id="tab-playback" class="tab-content">
               <h3>Playback Control</h3>
@@ -147,7 +150,6 @@
                 <button id="seekToBtn">Seek to 60s</button>
               </div>
             </div>
-
             <!-- Live Tab -->
             <div id="tab-live" class="tab-content">
               <h3>Live Stream</h3>
@@ -161,7 +163,6 @@
                 <button id="enableLLHLSBtn">Enable LL-HLS</button>
               </div>
             </div>
-
             <!-- I-Frame Tab -->
             <div id="tab-iframe" class="tab-content">
               <h3>I-Frame Preview</h3>
@@ -171,7 +172,6 @@
               <button id="showPreviewBtn">Show Preview at 30s</button>
               <button id="hidePreviewBtn">Hide Preview</button>
             </div>
-
             <!-- DRM Tab -->
             <div id="tab-drm" class="tab-content">
               <h3>DRM Configuration</h3>
@@ -182,7 +182,6 @@
                 <button id="configWidevineBtn">Config Widevine</button>
               </div>
             </div>
-
             <!-- CMCD Tab -->
             <div id="tab-cmcd" class="tab-content">
               <h3>CMCD Analytics</h3>
@@ -194,7 +193,6 @@
                 <button id="trackActionBtn">Track Action</button>
               </div>
             </div>
-
             <!-- Errors Tab -->
             <div id="tab-errors" class="tab-content">
               <h3>Error History</h3>
@@ -205,7 +203,59 @@
               <div id="errorList"></div>
               <button id="clearErrorsBtn">Clear Errors</button>
             </div>
-
+            <!-- Demo Results Tab -->
+            <div id="tab-demo" class="tab-content">
+              <h3>📊 Demo Runner Results</h3>
+              <div id="demoSummary">
+                <div class="demo-stat-row">
+                  <span>Total Tests:</span>
+                  <span id="demoTotal">--</span>
+                </div>
+                <div class="demo-stat-row">
+                  <span>Passed:</span>
+                  <span id="demoPassed" class="text-success">--</span>
+                </div>
+                <div class="demo-stat-row">
+                  <span>Failed:</span>
+                  <span id="demoFailed" class="text-danger">--</span>
+                </div>
+                <div class="demo-stat-row">
+                  <span>Skipped:</span>
+                  <span id="demoSkipped">--</span>
+                </div>
+                <div class="demo-stat-row">
+                  <span>Success Rate:</span>
+                  <span id="demoRate">--</span>
+                </div>
+                <div class="demo-stat-row">
+                  <span>Duration:</span>
+                  <span id="demoDuration">--</span>
+                </div>
+              </div>
+              <div class="button-group" style="margin-top: 8px">
+                <button id="demoRunBtn">▶ Run All Demos</button>
+                <button id="demoQuickBtn">⚡ Quick Test</button>
+                <button id="demoStopBtn">⏹ Stop</button>
+              </div>
+              <div id="demoOptions" style="margin-top: 8px; font-size: 0.8rem">
+                <label
+                  ><input type="checkbox" id="demoSkipLive" /> Skip Live</label
+                >
+                <label
+                  ><input type="checkbox" id="demoSkipDRM" checked /> Skip
+                  DRM</label
+                >
+                <label
+                  ><input type="checkbox" id="demoSkipCMCD" /> Skip CMCD</label
+                >
+                <label
+                  ><input type="checkbox" id="demoSkipIFrame" /> Skip
+                  I-Frame</label
+                >
+              </div>
+              <h3 style="margin-top: 12px">Test Details</h3>
+              <div id="demoResultsDetail"></div>
+            </div>
             <!-- Logs Tab -->
             <div id="tab-logs" class="tab-content">
               <h3>Log Output</h3>
@@ -225,10 +275,8 @@
         </div>
       </div>
     </div>
-
     <!-- hls.js Library -->
     <script src="../lib/hls.min.js"></script>
-
     <!-- Feature Modules -->
     <script src="../modules/logger.js"></script>
     <script src="../modules/core.js"></script>
@@ -240,7 +288,8 @@
     <script src="../modules/iframe.js"></script>
     <script src="../modules/drm.js"></script>
     <script src="../modules/cmcd.js"></script>
-
+    <!-- Demo Runner -->
+    <script src="../modules/demo-runner.js"></script>
     <!-- Main Player Script -->
     <script src="player.js"></script>
   </body>

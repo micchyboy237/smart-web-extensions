@@ -309,13 +309,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "checkUrl":
       handleCheckUrl(message.url, sendResponse);
       break;
+    case "proxyFetch":
+      // NEW: Handle fetch proxy requests
+      handleProxyFetch(message.url, message.options, sendResponse);
+      break;
+    case "preloadCorsRules":
+      // NEW: Pre-load CORS rules before loading stream
+      handlePreloadCorsRules(message.url, sendResponse);
+      break;
     default:
       sendResponse({
         success: false,
         error: `Unknown action: ${message.action}`,
       });
   }
-  return true;
+  return true; // Keep channel open for async response
 });
 
 async function handleGetStats(sendResponse) {
@@ -408,6 +416,129 @@ function getDomain(url) {
   } catch {
     return "unknown";
   }
+}
+
+// ============================================================================
+// FETCH PROXY - Bypass CORS by fetching from service worker
+// ============================================================================
+
+/**
+ * Fetch a URL from the service worker (no CORS restrictions).
+ * Pre-adds DNR rules before fetching if needed.
+ *
+ * @param {string} url - The URL to fetch
+ * @param {Object} options - Fetch options
+ * @returns {Promise<Object>} Serialized response
+ */
+async function proxyFetch(url, options = {}) {
+  const domain = getDomain(url);
+
+  // Pre-add CORS rules for HLS resources before fetching
+  if (isHlsResource(url) && !activeCorsRules.has(domain) && dnrAvailable) {
+    console.log(`[Background] 🔧 Pre-adding CORS rules for: ${domain}`);
+    await addCorsRuleForDomain(domain);
+  }
+
+  // If DNR is available and we have rules, the direct fetch from the page
+  // might work now. But to be safe, we still proxy from the service worker.
+
+  try {
+    console.log(`[Background] 🌐 Proxy fetching: ${url}`);
+
+    const fetchOptions = {
+      method: options.method || "GET",
+      headers: options.headers || {},
+      // No 'mode: cors' needed in service worker context
+    };
+
+    const response = await fetch(url, fetchOptions);
+
+    // Read response based on type
+    let body = null;
+    const contentType = response.headers.get("content-type") || "";
+
+    if (
+      contentType.includes("application/json") ||
+      contentType.includes("text/") ||
+      contentType.includes("application/x-mpegURL") || // .m3u8
+      contentType.includes("application/vnd.apple.mpegurl")
+    ) {
+      body = await response.text();
+    } else {
+      // For binary data (like .ts segments), convert to ArrayBuffer then to base64
+      const arrayBuffer = await response.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+      // Convert to array of numbers for transfer
+      body = Array.from(uint8Array);
+    }
+
+    const result = {
+      success: true,
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      body: body,
+      isBinary: !(typeof body === "string"),
+      url: response.url,
+    };
+
+    console.log(
+      `[Background] ✅ Proxy fetch success: ${response.status} (${typeof body === "string" ? body.length : body.length} bytes)`,
+    );
+    return result;
+  } catch (error) {
+    console.error(
+      `[Background] ❌ Proxy fetch failed for ${url}:`,
+      error.message,
+    );
+    return {
+      success: false,
+      error: error.message,
+      url: url,
+    };
+  }
+}
+
+/**
+ * Pre-load CORS rules for all HLS extensions on a domain.
+ * Call this BEFORE loading a stream to ensure rules are active.
+ */
+async function preloadCorsRules(url) {
+  if (!dnrAvailable) {
+    console.log(
+      `[Background] ℹ️ DNR not available, skipping CORS rule preload`,
+    );
+    return false;
+  }
+
+  const domain = getDomain(url);
+  if (activeCorsRules.has(domain)) {
+    console.log(`[Background] ✅ CORS rules already active for: ${domain}`);
+    return true;
+  }
+
+  console.log(`[Background] 🔧 Pre-loading CORS rules for domain: ${domain}`);
+  const result = await addCorsRuleForDomain(domain);
+
+  if (result) {
+    // Verify rules were added
+    const rules = await getActiveCorsRules();
+    console.log(
+      `[Background] 📋 Active CORS rules: ${rules.totalRules} total, domains: ${rules.domains.join(", ")}`,
+    );
+  }
+
+  return result;
+}
+
+async function handleProxyFetch(url, options, sendResponse) {
+  const result = await proxyFetch(url, options);
+  sendResponse(result);
+}
+
+async function handlePreloadCorsRules(url, sendResponse) {
+  const result = await preloadCorsRules(url);
+  sendResponse({ success: result, url });
 }
 
 // ============================================================================
