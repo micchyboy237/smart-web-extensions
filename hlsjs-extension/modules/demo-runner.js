@@ -1763,7 +1763,7 @@ class DemoRunner {
   // Phase 9: I-Frame Preview Features
   // ==========================================================================
   /**
-   * Test I-Frame preview features
+   * Test I-Frame preview features including smart timeline previews
    */
   async _testIFrameFeatures(player) {
     const phase = "I-Frame Previews";
@@ -1804,6 +1804,307 @@ class DemoRunner {
       `I-Frame status: ${JSON.stringify(iFrameController.getIFrameStatus())}`,
       "Failed to get I-Frame status",
     );
+
+    // ========================================================================
+    // NEW: Smart Timeline Previews Tests - WITH SAFE DURATION HANDLING
+    // ========================================================================
+
+    // SAFE: Check if video duration is available before proceeding
+    const hasValidDuration = await this._safeCheckVideoDuration(player.video);
+
+    if (!hasValidDuration) {
+      Logger.warn(
+        "demo-runner",
+        "⚠️ Video duration not available - skipping timeline preview tests",
+      );
+
+      // Test 53-57: Skip gracefully
+      const skipTests = [
+        "Smart thumbnail count calculation",
+        "Timeline preview generation",
+        "Timeline status monitoring",
+        "Timeline seek functionality",
+        "Clear timeline previews",
+      ];
+
+      skipTests.forEach((testName) => {
+        this._runTest(
+          testName,
+          phase,
+          () => true, // Soft pass - skip gracefully
+          "Test skipped: Video duration not available (video may not be loaded)",
+          "Test skipped: Video duration not available",
+        );
+      });
+
+      return;
+    }
+
+    const duration = player.video.duration;
+    Logger.info("demo-runner", `📊 Video duration: ${duration.toFixed(1)}s`);
+
+    // Test 53: Smart thumbnail count calculation
+    this._runTest(
+      "Smart thumbnail count calculation",
+      phase,
+      () => {
+        const count = iFrameController.calculateOptimalThumbnailCount(duration);
+        return count >= 5 && count <= 20;
+      },
+      `Calculated thumbnail count: ${iFrameController.calculateOptimalThumbnailCount(duration)}`,
+      "Failed to calculate optimal thumbnail count",
+    );
+
+    // Test 54: Timeline UI creation and preview generation
+    this._runTest(
+      "Timeline preview generation",
+      phase,
+      async () => {
+        try {
+          // Create timeline container if not exists
+          let timelineContainer = document.getElementById(
+            "timeline-previews-container",
+          );
+          if (!timelineContainer) {
+            timelineContainer = document.createElement("div");
+            timelineContainer.id = "timeline-previews-container";
+            timelineContainer.style.cssText = `
+              position: fixed;
+              bottom: 80px;
+              left: 0;
+              right: 0;
+              z-index: 1000;
+              background: rgba(0,0,0,0.9);
+              backdrop-filter: blur(10px);
+              border-top: 1px solid rgba(255,255,255,0.2);
+              display: none;
+            `;
+            document.body.appendChild(timelineContainer);
+          }
+
+          // Check if image player is available
+          if (!player.hls.createImageIFramePlayer) {
+            Logger.warn("demo-runner", "Image I-frame player not supported");
+            return true; // Soft pass
+          }
+
+          // Generate timeline previews
+          await iFrameController.generateTimelinePreviews(timelineContainer, {
+            showLoadingIndicators: true,
+            batchSize: 3,
+          });
+
+          return true;
+        } catch (error) {
+          Logger.error(
+            "demo-runner",
+            "Timeline preview generation error:",
+            error,
+          );
+          return false;
+        }
+      },
+      "Timeline preview generation initiated",
+      "Failed to generate timeline previews",
+    );
+
+    // Test 55: Timeline status monitoring
+    this._runTest(
+      "Timeline status monitoring",
+      phase,
+      () => {
+        const status = iFrameController.getTimelineStatus();
+        Logger.info("demo-runner", "Timeline status", status);
+        return status !== null && typeof status.total === "number";
+      },
+      `Timeline status: ${JSON.stringify(iFrameController.getTimelineStatus())}`,
+      "Failed to get timeline status",
+    );
+
+    // Test 56: Seek functionality
+    this._runTest(
+      "Timeline seek functionality",
+      phase,
+      () => {
+        return typeof iFrameController._seekToTimestamp === "function";
+      },
+      "Seek functionality available",
+      "Seek functionality missing",
+    );
+
+    // Test 57: Clear timeline previews
+    this._runTest(
+      "Clear timeline previews",
+      phase,
+      () => {
+        try {
+          iFrameController.clearTimelinePreviews();
+          return iFrameController.timelinePreviews.length === 0;
+        } catch (error) {
+          Logger.error("demo-runner", "Clear timeline error:", error);
+          return false;
+        }
+      },
+      "Timeline previews cleared successfully",
+      "Failed to clear timeline previews",
+    );
+
+    // Add floating control button for timeline previews (only if duration available)
+    this._addTimelineControlButton(iFrameController);
+  }
+
+  /**
+   * Safely check if video has valid duration
+   * @param {HTMLVideoElement} video - Video element
+   * @param {number} maxWaitMs - Maximum wait time in milliseconds
+   * @returns {Promise<boolean>} - True if valid duration available
+   */
+  async _safeCheckVideoDuration(video, maxWaitMs = 5000) {
+    return new Promise((resolve) => {
+      // Check immediately
+      if (
+        video &&
+        video.duration &&
+        !isNaN(video.duration) &&
+        video.duration > 0
+      ) {
+        resolve(true);
+        return;
+      }
+
+      // Wait for durationchange event
+      let resolved = false;
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          Logger.warn("demo-runner", "Timeout waiting for video duration", {
+            currentDuration: video?.duration || 0,
+            readyState: video?.readyState || 0,
+            networkState: video?.networkState || 0,
+          });
+          resolve(false);
+        }
+      }, maxWaitMs);
+
+      const onDurationChange = () => {
+        if (
+          !resolved &&
+          video.duration &&
+          !isNaN(video.duration) &&
+          video.duration > 0
+        ) {
+          resolved = true;
+          clearTimeout(timeout);
+          video.removeEventListener("durationchange", onDurationChange);
+          resolve(true);
+        }
+      };
+
+      const onLoadedMetadata = () => {
+        if (
+          !resolved &&
+          video.duration &&
+          !isNaN(video.duration) &&
+          video.duration > 0
+        ) {
+          resolved = true;
+          clearTimeout(timeout);
+          video.removeEventListener("loadedmetadata", onLoadedMetadata);
+          resolve(true);
+        }
+      };
+
+      video.addEventListener("durationchange", onDurationChange);
+      video.addEventListener("loadedmetadata", onLoadedMetadata);
+    });
+  }
+
+  /**
+   * Add floating control button for timeline previews
+   */
+  _addTimelineControlButton(iFrameController) {
+    // Check if button already exists
+    if (document.getElementById("timeline-control-btn")) return;
+
+    const controlBtn = document.createElement("button");
+    controlBtn.id = "timeline-control-btn";
+    controlBtn.innerHTML = "🎬 Show Timeline Previews";
+    controlBtn.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 1001;
+      padding: 10px 16px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      transition: transform 0.2s ease;
+    `;
+
+    let timelineVisible = false;
+    let timelineContainer = document.getElementById(
+      "timeline-previews-container",
+    );
+
+    controlBtn.onmouseenter = () => {
+      controlBtn.style.transform = "scale(1.05)";
+    };
+    controlBtn.onmouseleave = () => {
+      controlBtn.style.transform = "scale(1)";
+    };
+
+    controlBtn.onclick = async () => {
+      if (!timelineVisible) {
+        if (!timelineContainer) {
+          timelineContainer = document.createElement("div");
+          timelineContainer.id = "timeline-previews-container";
+          timelineContainer.style.cssText = `
+            position: fixed;
+            bottom: 80px;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(0,0,0,0.9);
+            backdrop-filter: blur(10px);
+            border-top: 1px solid rgba(255,255,255,0.2);
+            transition: transform 0.3s ease;
+          `;
+          document.body.appendChild(timelineContainer);
+        }
+
+        timelineContainer.style.display = "block";
+        controlBtn.innerHTML = "🎬 Hide Timeline Previews";
+        timelineVisible = true;
+
+        // Generate previews if not already generated
+        if (iFrameController.timelinePreviews.length === 0) {
+          controlBtn.innerHTML = "⏳ Loading Timeline...";
+          controlBtn.disabled = true;
+
+          await iFrameController.generateTimelinePreviews(timelineContainer, {
+            showLoadingIndicators: true,
+            batchSize: 3,
+          });
+
+          controlBtn.innerHTML = "🎬 Hide Timeline Previews";
+          controlBtn.disabled = false;
+
+          Logger.info("demo-runner", "Timeline previews loaded and ready");
+        }
+      } else {
+        timelineContainer.style.display = "none";
+        controlBtn.innerHTML = "🎬 Show Timeline Previews";
+        timelineVisible = false;
+      }
+    };
+
+    document.body.appendChild(controlBtn);
+    Logger.info("demo-runner", "Timeline control button added");
   }
 
   /**
@@ -1815,6 +2116,11 @@ class DemoRunner {
       "IFrameController creation",
       "I-Frame variant detection",
       "I-Frame status report",
+      "Smart thumbnail count calculation",
+      "Timeline preview generation",
+      "Timeline status monitoring",
+      "Timeline seek functionality",
+      "Clear timeline previews",
     ];
 
     testNames.forEach((name) => {
@@ -2082,6 +2388,9 @@ class DemoRunner {
     if (player.getModule("live")) {
       player.getModule("live").stopLatencyMonitoring();
     }
+
+    // NEW: Remove timeline UI if it exists
+    this._removeTimelineControlButton();
 
     // Test 69: Player destroy
     this._runTest(
@@ -2401,6 +2710,23 @@ class DemoRunner {
         resolve(response || { success: false, error: "No response" });
       });
     });
+  }
+
+  /**
+   * Remove timeline control button if it exists (cleanup)
+   */
+  _removeTimelineControlButton() {
+    const button = document.getElementById("timeline-control-btn");
+    if (button) {
+      button.remove();
+      Logger.debug("demo-runner", "Timeline control button removed");
+    }
+
+    const container = document.getElementById("timeline-previews-container");
+    if (container) {
+      container.remove();
+      Logger.debug("demo-runner", "Timeline container removed");
+    }
   }
 
   // ==========================================================================

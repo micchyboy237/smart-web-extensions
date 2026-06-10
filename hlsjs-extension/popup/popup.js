@@ -1054,10 +1054,8 @@ function loadStreamOnPage(url, videoSelector) {
  * ========================================================================
  * MAIN DEMO FUNCTION - Runs ALL demos in the page's MAIN world
  * ========================================================================
- * This runs in MAIN world and has access to window.Hls, window.HlsPlayer, etc.
- * that were set by the injected scripts.
  */
-function runAllDemosOnPage(videoSelector, streamUrl, originalReferer) {
+async function runAllDemosOnPage(videoSelector, streamUrl, originalReferer) {
   console.log(
     "[PageDemo] ==========================================================",
   );
@@ -1076,13 +1074,89 @@ function runAllDemosOnPage(videoSelector, streamUrl, originalReferer) {
     }
     console.log(`[PageDemo] ✅ Video element: ${videoEl.tagName}`);
 
-    // Step 2: Set referer
+    // Step 2: Check if video has source, if not, try to load stream
+    const hasSource = videoEl.currentSrc && videoEl.currentSrc !== "";
+    if (!hasSource && streamUrl) {
+      console.log(
+        `[PageDemo] 📥 Video has no source, attempting to load stream...`,
+      );
+
+      // Try to load stream using HLS.js or native
+      if (typeof Hls !== "undefined" && Hls.isSupported()) {
+        // Clean up existing HLS instance
+        if (videoEl._hlsInstance) {
+          videoEl._hlsInstance.destroy();
+        }
+        const hls = new Hls({ debug: false, enableWorker: true });
+        hls.loadSource(streamUrl);
+        hls.attachMedia(videoEl);
+        videoEl._hlsInstance = hls;
+        console.log(`[PageDemo] ✅ HLS.js loaded stream: ${streamUrl}`);
+
+        // Wait for manifest to load (give it some time)
+        await new Promise((resolve) => {
+          const timeout = setTimeout(resolve, 5000);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            clearTimeout(timeout);
+            console.log(
+              "[PageDemo] ✅ Manifest parsed, video should have duration soon",
+            );
+            resolve();
+          });
+        });
+      } else if (videoEl.canPlayType("application/vnd.apple.mpegurl")) {
+        videoEl.src = streamUrl;
+        console.log(`[PageDemo] ✅ Native HLS loaded: ${streamUrl}`);
+      } else {
+        console.warn("[PageDemo] ⚠️ Cannot load stream - HLS not supported");
+      }
+    }
+
+    // Step 3: Wait for video to have duration (with timeout)
+    console.log("[PageDemo] ⏳ Waiting for video to have duration...");
+    const durationAvailable = await new Promise((resolve) => {
+      let resolved = false;
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          console.warn("[PageDemo] ⚠️ Timeout waiting for video duration");
+          resolve(false);
+        }
+      }, 10000);
+
+      const checkDuration = () => {
+        if (
+          videoEl.duration &&
+          !isNaN(videoEl.duration) &&
+          videoEl.duration > 0
+        ) {
+          resolved = true;
+          clearTimeout(timeout);
+          console.log(`[PageDemo] ✅ Video duration: ${videoEl.duration}s`);
+          resolve(true);
+        }
+      };
+
+      // Check immediately
+      checkDuration();
+
+      // Listen for events
+      videoEl.addEventListener("durationchange", checkDuration);
+      videoEl.addEventListener("loadedmetadata", checkDuration);
+    });
+
+    if (!durationAvailable) {
+      console.warn(
+        "[PageDemo] ⚠️ Video duration not available - some features may be limited",
+      );
+    }
+
+    // Step 4: Set referer
     if (originalReferer) {
       window.__hlsOriginalReferer = originalReferer;
       console.log(`[PageDemo] 🔑 Referer: ${originalReferer}`);
     }
 
-    // Step 3: Verify modules (using window.* since we're in MAIN world)
+    // Step 5: Verify modules
     const requiredModules = [
       "Hls",
       "HlsPlayer",
@@ -1104,25 +1178,15 @@ function runAllDemosOnPage(videoSelector, streamUrl, originalReferer) {
 
     if (missingModules.length > 0) {
       console.error("[PageDemo] ❌ Missing modules:", missingModules);
-      console.log(
-        "[PageDemo] Available on window:",
-        Object.keys(window)
-          .filter(
-            (k) =>
-              typeof window[k] === "function" && k[0] === k[0].toUpperCase(),
-          )
-          .join(", "),
-      );
       return {
         success: false,
-        error:
-          `Missing modules: ${missingModules.join(", ")}. ` +
-          `Check that scripts were injected into MAIN world.`,
+        error: `Missing modules: ${missingModules.join(", ")}`,
       };
     }
+
     console.log(`[PageDemo] ✅ All ${requiredModules.length} modules verified`);
 
-    // Step 4: Pre-load CORS rules
+    // Step 6: Pre-load CORS rules
     if (
       window.FetchProxy &&
       typeof window.FetchProxy.preloadCorsRules === "function"
@@ -1131,10 +1195,9 @@ function runAllDemosOnPage(videoSelector, streamUrl, originalReferer) {
       window.FetchProxy.preloadCorsRules(streamUrl);
     }
 
-    // Step 5: Create DemoRunner and run ALL tests
+    // Step 7: Create DemoRunner and run ALL tests
     console.log("[PageDemo] 🏃 Creating DemoRunner...");
     const demoRunner = new DemoRunner();
-
     console.log("[PageDemo] ▶️ Running all demos (this may take a while)...");
 
     return demoRunner
