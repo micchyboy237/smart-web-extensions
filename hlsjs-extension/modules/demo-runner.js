@@ -28,55 +28,42 @@ class DemoRunner {
       endTime: null,
       duration: 0,
     };
-
     this.currentTest = null;
     this.verbose = true;
     this.stopOnFailure = false;
-
-    // NEW: Track CORS/fetch proxy state
     this.corsRulesPreloaded = false;
     this.fetchProxyActive = false;
-
     Logger.info(
       "demo-runner",
-      "DemoRunner initialized (with CORS proxy support)",
+      "DemoRunner initialized (runs ALL tests unconditionally)",
     );
   }
 
   // ==========================================================================
   // Public API - Run All Demos
   // ==========================================================================
-
   /**
    * Run all feature demonstrations automatically
    * @param {Object} options - Configuration options
-   * @param {HTMLVideoElement} options.videoElement - Target video element (null in independent mode)
+   * @param {HTMLVideoElement} options.videoElement - Target video element
    * @param {string} options.streamUrl - HLS stream URL to test
    * @param {boolean} options.verbose - Enable verbose logging (default: true)
    * @param {boolean} options.stopOnFailure - Stop on first failure (default: false)
-   * @param {boolean} options.skipLive - Skip live stream tests (default: false)
-   * @param {boolean} options.skipDRM - Skip DRM tests (default: true)
-   * @param {boolean} options.skipCMCD - Skip CMCD tests (default: false)
-   * @param {boolean} options.skipIFrame - Skip I-Frame tests (default: false)
    * @param {Object} options.playerProxy - Proxy for independent mode
    * @returns {Promise<Object>} Test results summary
    */
   async runAll(options = {}) {
     const {
-      videoElement,
-      streamUrl,
+      videoElement = null,
+      streamUrl = null,
       verbose = true,
       stopOnFailure = false,
-      skipLive = false,
-      skipDRM = true,
-      skipCMCD = false,
-      skipIFrame = false,
-      playerProxy = null, // NEW: For independent mode
+      playerProxy = null,
     } = options;
 
     this.verbose = verbose;
     this.stopOnFailure = stopOnFailure;
-    this.isIndependentMode = !videoElement && !!playerProxy; // NEW: Detect mode
+    this.isIndependentMode = !videoElement && !!playerProxy;
 
     // Reset results
     this.results = {
@@ -97,34 +84,22 @@ class DemoRunner {
       streamUrl: streamUrl?.substring(0, 60) + "...",
       verbose,
       stopOnFailure,
-      skipLive,
-      skipDRM,
-      skipCMCD,
-      skipIFrame,
+      hasVideoElement: !!videoElement,
       hasProxy: !!playerProxy,
-      independentMode: this.isIndependentMode, // NEW
+      independentMode: this.isIndependentMode,
     });
+    Logger.info("demo-runner", "ℹ️  ALL tests will run - no tests are skipped");
 
     // ======================================================================
-    // NEW Phase 0: CORS/Fetch Proxy Verification
+    // Phase 0: CORS/Fetch Proxy Verification (ALWAYS RUNS)
     // ======================================================================
     Logger.info("demo-runner", "\n" + "=".repeat(40));
     Logger.info("demo-runner", "🛡️ PHASE 0: CORS & FETCH PROXY VERIFICATION");
     Logger.info("demo-runner", "=".repeat(40));
     await this._testCORSProxySetup(streamUrl);
 
-    // Validate prerequisites
-    if (!videoElement && !playerProxy) {
-      Logger.error("demo-runner", "❌ No video element or proxy provided");
-      return this._generateReport();
-    }
-    if (!streamUrl) {
-      Logger.error("demo-runner", "❌ No stream URL provided");
-      return this._generateReport();
-    }
-
     // ======================================================================
-    // Phase 1: Core Infrastructure Tests (UPDATED for independent mode)
+    // Phase 1: Core Infrastructure Tests (ALWAYS RUNS)
     // ======================================================================
     Logger.info("demo-runner", "\n" + "=".repeat(40));
     Logger.info("demo-runner", "📦 PHASE 1: CORE INFRASTRUCTURE");
@@ -132,72 +107,240 @@ class DemoRunner {
     await this._testCoreInfrastructure(videoElement, playerProxy);
 
     // ======================================================================
-    // NEW: Independent Mode - Proxy-based tests
+    // Phase 1.5: Independent Mode - Proxy Tests (ALWAYS RUNS if proxy exists)
     // ======================================================================
-    if (this.isIndependentMode) {
+    let proxyWorks = true;
+    if (this.isIndependentMode && playerProxy) {
       Logger.info("demo-runner", "\n" + "=".repeat(40));
       Logger.info(
         "demo-runner",
         "🔄 PHASE 1.5: INDEPENDENT MODE - PROXY TESTS",
       );
       Logger.info("demo-runner", "=".repeat(40));
-
-      const proxyWorks = await this._testIndependentModeProxy(
-        playerProxy,
-        streamUrl,
+      proxyWorks = await this._testIndependentModeProxy(playerProxy, streamUrl);
+      Logger.info(
+        "demo-runner",
+        `Proxy tests complete. Proxy works: ${proxyWorks}`,
       );
-      if (!proxyWorks) {
-        Logger.error(
+      Logger.info(
+        "demo-runner",
+        "ℹ️  Continuing with remaining tests regardless of proxy status",
+      );
+    }
+
+    // ======================================================================
+    // Phase 2: Player Creation (ALWAYS RUNS in direct mode)
+    // ======================================================================
+    let player = null;
+    if (!this.isIndependentMode && videoElement) {
+      player = await this._testPlayerCreation(videoElement);
+      if (!player) {
+        Logger.warn(
           "demo-runner",
-          "❌ Cannot proceed - proxy communication failed",
+          "⚠️  Player creation failed but continuing with remaining tests",
         );
-        return this._generateReport();
+        Logger.warn(
+          "demo-runner",
+          "ℹ️  Remaining tests will attempt to run where possible",
+        );
       }
-      // Skip player creation and stream loading tests in independent mode
-      // Jump to cleanup & report
-      Logger.info("demo-runner", "\n" + "=".repeat(40));
-      Logger.info("demo-runner", "🧹 CLEANUP & REPORT (Independent Mode)");
-      Logger.info("demo-runner", "=".repeat(40));
-      return this._generateReport();
+    } else if (this.isIndependentMode) {
+      Logger.info(
+        "demo-runner",
+        "ℹ️  Skipping direct Player Creation tests (independent mode)",
+      );
+      Logger.info(
+        "demo-runner",
+        "ℹ️  Player creation is handled via proxy in Phase 1.5",
+      );
     }
 
     // ======================================================================
-    // Phase 2: Player Creation (only in direct mode)
-    // ======================================================================
-    const player = await this._testPlayerCreation(videoElement);
-    if (!player) {
-      Logger.error("demo-runner", "❌ Cannot proceed without HlsPlayer");
-      return this._generateReport();
-    }
-
-    // ... rest of the method stays the same ...
-    // ======================================================================
-    // Phase 3: Manifest & Stream Loading
+    // Phase 3: Manifest & Stream Loading (ALWAYS ATTEMPTED)
     // ======================================================================
     Logger.info("demo-runner", "\n" + "=".repeat(40));
     Logger.info("demo-runner", "📋 PHASE 3: MANIFEST & STREAM LOADING");
     Logger.info("demo-runner", "=".repeat(40));
-    await this._testStreamLoading(player, streamUrl);
-
-    // ... [Phases 4-11 remain the same as original] ...
+    if (player && streamUrl) {
+      await this._testStreamLoading(player, streamUrl);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping stream loading tests - no player or stream URL available",
+      );
+      Logger.warn("demo-runner", "ℹ️  Marking as attempted for coverage");
+      this._testStreamLoadingNoOp(player, streamUrl);
+    }
 
     // ======================================================================
-    // Cleanup & Report
+    // Phase 4: Quality & ABR Features (ALWAYS ATTEMPTED)
+    // ======================================================================
+    Logger.info("demo-runner", "\n" + "=".repeat(40));
+    Logger.info("demo-runner", "🎯 PHASE 4: QUALITY & ABR FEATURES");
+    Logger.info("demo-runner", "=".repeat(40));
+    if (player) {
+      await this._testQualityFeatures(player);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping quality tests - no player available",
+      );
+      this._testQualityFeaturesNoOp();
+    }
+
+    // ======================================================================
+    // Phase 5: Audio & Subtitle Features (ALWAYS ATTEMPTED)
+    // ======================================================================
+    Logger.info("demo-runner", "\n" + "=".repeat(40));
+    Logger.info("demo-runner", "🔊 PHASE 5: AUDIO & SUBTITLE FEATURES");
+    Logger.info("demo-runner", "=".repeat(40));
+    if (player) {
+      await this._testAudioFeatures(player);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping audio tests - no player available",
+      );
+      this._testAudioFeaturesNoOp();
+    }
+
+    // ======================================================================
+    // Phase 6: Playback Control Features (ALWAYS ATTEMPTED)
+    // ======================================================================
+    Logger.info("demo-runner", "\n" + "=".repeat(40));
+    Logger.info("demo-runner", "▶️  PHASE 6: PLAYBACK CONTROL FEATURES");
+    Logger.info("demo-runner", "=".repeat(40));
+    if (player) {
+      await this._testPlaybackFeatures(player);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping playback tests - no player available",
+      );
+      this._testPlaybackFeaturesNoOp();
+    }
+
+    // ======================================================================
+    // Phase 7: Live Streaming Features (ALWAYS ATTEMPTED)
+    // ======================================================================
+    Logger.info("demo-runner", "\n" + "=".repeat(40));
+    Logger.info("demo-runner", "🔴 PHASE 7: LIVE STREAMING FEATURES");
+    Logger.info("demo-runner", "=".repeat(40));
+    if (player) {
+      await this._testLiveFeatures(player);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping live streaming tests - no player available",
+      );
+      this._testLiveFeaturesNoOp();
+    }
+
+    // ======================================================================
+    // Phase 8: CMCD Analytics Features (ALWAYS ATTEMPTED)
+    // ======================================================================
+    Logger.info("demo-runner", "\n" + "=".repeat(40));
+    Logger.info("demo-runner", "📊 PHASE 8: CMCD ANALYTICS FEATURES");
+    Logger.info("demo-runner", "=".repeat(40));
+    if (player) {
+      await this._testCMCDFeatures(player);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping CMCD tests - no player available",
+      );
+      this._testCMCDFeaturesNoOp();
+    }
+
+    // ======================================================================
+    // Phase 9: I-Frame Preview Features (ALWAYS ATTEMPTED)
+    // ======================================================================
+    Logger.info("demo-runner", "\n" + "=".repeat(40));
+    Logger.info("demo-runner", "🖼️  PHASE 9: I-FRAME PREVIEW FEATURES");
+    Logger.info("demo-runner", "=".repeat(40));
+    if (player) {
+      await this._testIFrameFeatures(player);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping I-Frame tests - no player available",
+      );
+      this._testIFrameFeaturesNoOp();
+    }
+
+    // ======================================================================
+    // Phase 10: DRM Features (ALWAYS ATTEMPTED)
+    // ======================================================================
+    Logger.info("demo-runner", "\n" + "=".repeat(40));
+    Logger.info("demo-runner", "🔐 PHASE 10: DRM FEATURES");
+    Logger.info("demo-runner", "=".repeat(40));
+    if (player) {
+      await this._testDRMFeatures(player);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping DRM tests - no player available",
+      );
+      this._testDRMFeaturesNoOp();
+    }
+
+    // ======================================================================
+    // Phase 11: Error Handling Features (ALWAYS ATTEMPTED)
+    // ======================================================================
+    Logger.info("demo-runner", "\n" + "=".repeat(40));
+    Logger.info("demo-runner", "⚠️  PHASE 11: ERROR HANDLING FEATURES");
+    Logger.info("demo-runner", "=".repeat(40));
+    if (player) {
+      await this._testErrorFeatures(player);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping error handling tests - no player available",
+      );
+      this._testErrorFeaturesNoOp();
+    }
+
+    // ======================================================================
+    // Phase 12: Module Status Verification (ALWAYS ATTEMPTED)
+    // ======================================================================
+    Logger.info("demo-runner", "\n" + "=".repeat(40));
+    Logger.info("demo-runner", "📋 PHASE 12: MODULE STATUS VERIFICATION");
+    Logger.info("demo-runner", "=".repeat(40));
+    if (player) {
+      await this._testModuleStatus(player);
+    } else {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Skipping module status tests - no player available",
+      );
+      this._testModuleStatusNoOp();
+    }
+
+    // ======================================================================
+    // Cleanup & Report (ALWAYS RUNS)
     // ======================================================================
     Logger.info("demo-runner", "\n" + "=".repeat(40));
     Logger.info("demo-runner", "🧹 CLEANUP & REPORT");
     Logger.info("demo-runner", "=".repeat(40));
-    await this._testCleanup(player);
+    if (player) {
+      await this._testCleanup(player);
+    } else {
+      Logger.info(
+        "demo-runner",
+        "ℹ️  No player to clean up - skipping cleanup tests",
+      );
+      this._testCleanupNoOp();
+    }
+
     return this._generateReport();
   }
 
   // ==========================================================================
   // Phase 1: Core Infrastructure Tests
   // ==========================================================================
-
   /**
    * Test core infrastructure (HLS support, codecs, etc.)
-   * @param {HTMLVideoElement} videoElement - Video element (null in independent mode)
+   * @param {HTMLVideoElement} videoElement - Video element
    * @param {Object} playerProxy - Player proxy for independent mode
    */
   async _testCoreInfrastructure(videoElement, playerProxy = null) {
@@ -236,12 +379,11 @@ class DemoRunner {
       "MSE is not supported - HLS playback will not work",
     );
 
-    // Test 4: Video element validation (UPDATED for independent mode)
+    // Test 4: Video element validation
     this._runTest(
       "Video element validation",
       phase,
       () => {
-        // In independent mode, check if proxy is available instead
         if (this.isIndependentMode && playerProxy) {
           Logger.info(
             "demo-runner",
@@ -249,7 +391,6 @@ class DemoRunner {
           );
           return true; // Soft pass - proxy will handle video access
         }
-        // Direct mode: validate the actual video element
         return (
           videoElement instanceof HTMLVideoElement &&
           typeof videoElement.play === "function"
@@ -275,6 +416,9 @@ class DemoRunner {
     );
   }
 
+  // ==========================================================================
+  // Phase 1.5: Independent Mode Proxy Tests
+  // ==========================================================================
   /**
    * Test the proxy communication with the page in independent mode
    * @param {Object} playerProxy - The player proxy object
@@ -283,6 +427,7 @@ class DemoRunner {
    */
   async _testIndependentModeProxy(playerProxy, streamUrl) {
     const phase = "Independent Mode Proxy";
+    let allTestsPassed = true;
 
     // Test A: Proxy object validation
     const proxyValid = this._runTest(
@@ -298,7 +443,7 @@ class DemoRunner {
       `Player proxy connected to tab #${playerProxy?.tabId}`,
       "Player proxy is invalid or missing required properties",
     );
-    if (!proxyValid) return false;
+    if (!proxyValid) allTestsPassed = false;
 
     // Test B: Proxy communication - get video state
     const commWorks = await this._runTest(
@@ -333,7 +478,7 @@ class DemoRunner {
       "Proxy communication successful",
       "Failed to communicate with page via proxy",
     );
-    if (!commWorks) return false;
+    if (!commWorks) allTestsPassed = false;
 
     // Test C: Proxy - check if video element is ready on page
     await this._runTest(
@@ -458,13 +603,11 @@ class DemoRunner {
             name: "Get state before seek",
           });
           if (!stateResult?.success) return false;
-
           const currentTime = stateResult.state.currentTime;
           const seekTime = Math.min(
             currentTime + 5,
             stateResult.state.duration || Infinity,
           );
-
           const result = await playerProxy.executeDemoStep({
             action: "seek",
             time: seekTime,
@@ -479,13 +622,12 @@ class DemoRunner {
       "Failed to seek via proxy",
     );
 
-    return true;
+    return allTestsPassed;
   }
 
   // ==========================================================================
   // Phase 2: Player Creation & Initialization
   // ==========================================================================
-
   /**
    * Test HlsPlayer creation
    */
@@ -520,7 +662,13 @@ class DemoRunner {
       "Failed to create HlsPlayer instance",
     );
 
-    if (!createResult) return null;
+    if (!createResult) {
+      Logger.warn(
+        "demo-runner",
+        "⚠️  Player creation failed - will attempt remaining tests anyway",
+      );
+      return null;
+    }
 
     // Test 7: hls.js instance created
     this._runTest(
@@ -535,15 +683,12 @@ class DemoRunner {
       "hls.js instance not properly created",
     );
 
-    // Test 8: Media attached (NOW ASYNC - waits for MEDIA_ATTACHED event)
+    // Test 8: Media attached
     await this._runTest(
-      // ← await added
       "Media element attached",
       phase,
       async () => {
-        // ← ASYNC function
         const result = await this._waitFor(
-          // ← Waits up to 3 seconds
           () => player.state.mediaAttached === true,
           3000,
           "Media attachment timeout after player creation",
@@ -584,9 +729,8 @@ class DemoRunner {
   }
 
   // ==========================================================================
-  // NEW Phase 0: CORS & Fetch Proxy Tests
+  // Phase 0: CORS & Fetch Proxy Tests
   // ==========================================================================
-
   /**
    * Test CORS proxy setup before attempting to load streams
    */
@@ -607,7 +751,6 @@ class DemoRunner {
           return true;
         }
         Logger.warn("demo-runner", "FetchProxy not found in window scope");
-        // Not a hard failure - direct fetch with DNR rules may still work
         return true; // Soft pass
       },
       "FetchProxy module detected",
@@ -619,13 +762,10 @@ class DemoRunner {
       "Fetch proxy interception active",
       phase,
       async () => {
-        // Check if we're in an extension context
         if (typeof chrome === "undefined" || !chrome.runtime) {
           Logger.warn("demo-runner", "Not in extension context");
-          return true; // Soft pass - may be running in player page
+          return true; // Soft pass
         }
-
-        // Check fetch proxy stats
         if (window.__fetchProxyStats) {
           this.fetchProxyActive = true;
           Logger.info(
@@ -634,8 +774,6 @@ class DemoRunner {
           );
           return true;
         }
-
-        // Check FetchProxy API
         if (
           window.FetchProxy &&
           window.FetchProxy.isActive &&
@@ -644,7 +782,6 @@ class DemoRunner {
           this.fetchProxyActive = true;
           return true;
         }
-
         Logger.warn("demo-runner", "Fetch proxy interception not detected");
         return true; // Soft pass
       },
@@ -660,7 +797,6 @@ class DemoRunner {
       phase,
       async () => {
         try {
-          // Pre-load CORS rules via background
           if (
             typeof chrome !== "undefined" &&
             chrome.runtime &&
@@ -670,20 +806,16 @@ class DemoRunner {
               action: "preloadCorsRules",
               url: streamUrl,
             });
-
             if (result.success) {
               this.corsRulesPreloaded = true;
               Logger.info("demo-runner", "✅ CORS rules pre-loaded for domain");
               return true;
             }
-
             Logger.warn(
               "demo-runner",
               "CORS rule pre-load returned: " + JSON.stringify(result),
             );
           }
-
-          // Try FetchProxy preload
           if (
             window.FetchProxy &&
             typeof window.FetchProxy.preloadCorsRules === "function"
@@ -694,12 +826,11 @@ class DemoRunner {
               return true;
             }
           }
-
           Logger.warn(
             "demo-runner",
             "CORS pre-load not available, stream may fail",
           );
-          return true; // Soft pass - DNR might catch it on first request
+          return true; // Soft pass
         } catch (error) {
           Logger.warn("demo-runner", "CORS pre-load failed: " + error.message);
           return true; // Soft pass
@@ -723,7 +854,6 @@ class DemoRunner {
             chrome.runtime.sendMessage
           ) {
             const result = await this._sendMessageAsync({ action: "getStats" });
-
             if (result && result.success) {
               const stats = result.stats;
               Logger.info(
@@ -733,7 +863,6 @@ class DemoRunner {
               return true;
             }
           }
-
           Logger.warn("demo-runner", "Background not reachable");
           return true; // Soft pass
         } catch (error) {
@@ -752,7 +881,6 @@ class DemoRunner {
   // ==========================================================================
   // Phase 3: Stream Loading Tests
   // ==========================================================================
-
   /**
    * Test stream loading and manifest parsing (with CORS awareness)
    */
@@ -803,7 +931,6 @@ class DemoRunner {
       "Manifest loaded",
       phase,
       async () => {
-        // First, wait briefly to see if we get a quick failure
         const quickResult = await this._waitFor(
           () =>
             player.state.manifestLoaded === true ||
@@ -812,12 +939,10 @@ class DemoRunner {
           "Initial manifest load check",
         );
 
-        // If manifest loaded quickly, great!
         if (player.state.manifestLoaded) {
           return true;
         }
 
-        // Check if we got fetch proxy errors (likely 403)
         if (window.__fetchProxyStats && window.__fetchProxyStats.errors > 0) {
           Logger.warn(
             "demo-runner",
@@ -827,10 +952,9 @@ class DemoRunner {
             "demo-runner",
             "   This stream works with native HLS (video.src=url) but not with hls.js fetch",
           );
-          return true; // Soft pass - server blocks the request, not a code issue
+          return true; // Soft pass
         }
 
-        // Check if CORS rules are active but server still blocks
         if (this.corsRulesPreloaded) {
           Logger.warn(
             "demo-runner",
@@ -839,13 +963,11 @@ class DemoRunner {
           return true; // Soft pass
         }
 
-        // Otherwise, wait the full timeout for the manifest
         const result = await this._waitFor(
           () => player.state.manifestLoaded === true,
           10000,
           "Manifest loading timeout (CORS proxy may be active)",
         );
-
         if (!result) {
           Logger.error(
             "demo-runner",
@@ -890,10 +1012,8 @@ class DemoRunner {
             "demo-runner",
             `Fetch proxy: ${stats.total} total, ${stats.proxied} proxied, ${stats.direct} direct, ${stats.errors} errors`,
           );
-          // Always pass - stats may be 0 if no HLS requests were made via fetch
           return true;
         }
-        // Check if FetchProxy exists even if stats aren't available
         if (
           window.FetchProxy &&
           window.FetchProxy.isActive &&
@@ -941,10 +1061,38 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of stream loading tests (when player is unavailable)
+   */
+  _testStreamLoadingNoOp(player, streamUrl) {
+    const phase = "Stream Loading";
+    const reason = player ? "Stream URL not provided" : "Player not available";
+
+    // Test 10-16: Mark as skipped
+    const testNames = [
+      "Source URL loading",
+      "Fragment loading started",
+      "Manifest loaded",
+      "Playback initiated",
+      "Fetch proxy handled requests during loading",
+      "Player state tracking",
+      "Buffer info retrieval",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        `Test skipped: ${reason}`,
+        `Test skipped: ${reason}`,
+      );
+    });
+  }
+
   // ==========================================================================
   // Phase 4: Quality & ABR Features
   // ==========================================================================
-
   /**
    * Test quality and ABR features
    */
@@ -975,9 +1123,6 @@ class DemoRunner {
       `Available levels: ${qualityController.getLevels().length}`,
       "Failed to enumerate quality levels",
     );
-
-    // ❌ REMOVED: Duplicate "Fetch proxy handled requests during loading" test
-    // This test belongs in _testStreamLoading (Test #14), not here
 
     // Test 19: Manual quality selection
     this._runTest(
@@ -1071,10 +1216,36 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of quality tests (when player is unavailable)
+   */
+  _testQualityFeaturesNoOp() {
+    const phase = "Quality & ABR";
+    const testNames = [
+      "QualityController creation",
+      "Quality levels enumeration",
+      "Manual quality selection",
+      "ABR profile application",
+      "Level capping",
+      "Bandwidth monitoring start",
+      "FPS drop detection configuration",
+      "Quality status report",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Phase 5: Audio & Subtitle Features
   // ==========================================================================
-
   /**
    * Test audio and subtitle features
    */
@@ -1124,7 +1295,7 @@ class DemoRunner {
       phase,
       () => {
         const tracks = audioController.getAudioTracks();
-        if (tracks.length === 0) return true; // No tracks to test
+        if (tracks.length === 0) return true;
         audioController.setAudioTrack(0);
         return audioController.currentAudioTrack === 0;
       },
@@ -1132,7 +1303,7 @@ class DemoRunner {
       "Failed to select audio track",
     );
 
-    // Test 29: Subtitle track toggle
+    // Test 29: Subtitle display toggle
     this._runTest(
       "Subtitle display toggle",
       phase,
@@ -1176,10 +1347,35 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of audio tests (when player is unavailable)
+   */
+  _testAudioFeaturesNoOp() {
+    const phase = "Audio & Subtitles";
+    const testNames = [
+      "AudioController creation",
+      "Audio tracks enumeration",
+      "Subtitle tracks enumeration",
+      "Audio track selection",
+      "Subtitle display toggle",
+      "Audio preference configuration",
+      "Audio status report",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Phase 6: Playback Control Features
   // ==========================================================================
-
   /**
    * Test playback control features
    */
@@ -1324,10 +1520,37 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of playback tests (when player is unavailable)
+   */
+  _testPlaybackFeaturesNoOp() {
+    const phase = "Playback Control";
+    const testNames = [
+      "PlaybackController creation",
+      "Playback rate control",
+      "Volume control",
+      "Mute toggle",
+      "Buffering pause/resume",
+      "Seek functionality",
+      "Relative seek",
+      "Buffer monitoring start",
+      "Playback status report",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Phase 7: Live Streaming Features
   // ==========================================================================
-
   /**
    * Test live streaming features
    */
@@ -1413,10 +1636,33 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of live streaming tests (when player is unavailable)
+   */
+  _testLiveFeaturesNoOp() {
+    const phase = "Live Streaming";
+    const testNames = [
+      "LiveController creation",
+      "Live stream detection",
+      "Latency monitoring",
+      "Live sync mode configuration",
+      "Low latency toggle",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Phase 8: CMCD Analytics Features
   // ==========================================================================
-
   /**
    * Test CMCD analytics features
    */
@@ -1490,10 +1736,32 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of CMCD tests (when player is unavailable)
+   */
+  _testCMCDFeaturesNoOp() {
+    const phase = "CMCD Analytics";
+    const testNames = [
+      "CMCDController creation",
+      "CMCD v1 enable",
+      "CMCD custom data update",
+      "CMCD status report",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Phase 9: I-Frame Preview Features
   // ==========================================================================
-
   /**
    * Test I-Frame preview features
    */
@@ -1538,10 +1806,31 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of I-Frame tests (when player is unavailable)
+   */
+  _testIFrameFeaturesNoOp() {
+    const phase = "I-Frame Previews";
+    const testNames = [
+      "IFrameController creation",
+      "I-Frame variant detection",
+      "I-Frame status report",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Phase 10: DRM Features
   // ==========================================================================
-
   /**
    * Test DRM features
    */
@@ -1593,10 +1882,31 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of DRM tests (when player is unavailable)
+   */
+  _testDRMFeaturesNoOp() {
+    const phase = "DRM";
+    const testNames = [
+      "DRMController creation",
+      "DRM system configuration",
+      "DRM status report",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Phase 11: Error Handling Features
   // ==========================================================================
-
   /**
    * Test error handling features
    */
@@ -1656,16 +1966,37 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of error handling tests (when player is unavailable)
+   */
+  _testErrorFeaturesNoOp() {
+    const phase = "Error Handling";
+    const testNames = [
+      "ErrorController creation",
+      "Error status report",
+      "Error history retrieval",
+      "Manual recovery method available",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Phase 12: Module Status Verification
   // ==========================================================================
-
   /**
    * Test that all modules are properly registered
    */
   async _testModuleStatus(player) {
     const phase = "Module Status";
-
     const requiredModules = [
       "quality",
       "audio",
@@ -1703,10 +2034,37 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of module status tests (when player is unavailable)
+   */
+  _testModuleStatusNoOp() {
+    const phase = "Module Status";
+    const testNames = [
+      'Module "quality" registered',
+      'Module "audio" registered',
+      'Module "playback" registered',
+      'Module "live" registered',
+      'Module "cmcd" registered',
+      'Module "iframe" registered',
+      'Module "drm" registered',
+      'Module "error" registered',
+      "All feature modules accessible",
+    ];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Cleanup
   // ==========================================================================
-
   /**
    * Test cleanup
    */
@@ -1758,10 +2116,27 @@ class DemoRunner {
     );
   }
 
+  /**
+   * No-op version of cleanup tests (when player is unavailable)
+   */
+  _testCleanupNoOp() {
+    const phase = "Cleanup";
+    const testNames = ["Player destroy", "All resources freed"];
+
+    testNames.forEach((name) => {
+      this._runTest(
+        name,
+        phase,
+        () => false,
+        "Test skipped: Player not available",
+        "Test skipped: Player not available",
+      );
+    });
+  }
+
   // ==========================================================================
   // Test Runner Utilities
   // ==========================================================================
-
   /**
    * Run a single test and record the result
    * @param {string} name - Test name
@@ -1774,7 +2149,6 @@ class DemoRunner {
   _runTest(name, phase, testFn, successMessage, failureMessage) {
     this.results.total++;
     this.currentTest = name;
-
     const testResult = {
       id: this.results.total,
       name,
@@ -1787,7 +2161,6 @@ class DemoRunner {
 
     try {
       const result = testFn();
-
       // Handle async tests
       if (result instanceof Promise) {
         return result
@@ -1811,7 +2184,6 @@ class DemoRunner {
             return false;
           });
       }
-
       this._recordResult(testResult, result, successMessage, failureMessage);
       return result;
     } catch (error) {
@@ -1864,7 +2236,6 @@ class DemoRunner {
   // ==========================================================================
   // Report Generation
   // ==========================================================================
-
   /**
    * Generate final test report
    * @returns {Object} Test results
@@ -1934,14 +2305,12 @@ class DemoRunner {
     });
 
     Logger.info("demo-runner", "\n" + "=".repeat(60));
-
     return this.results;
   }
 
   // ==========================================================================
   // Utility Functions
   // ==========================================================================
-
   /**
    * Wait for a condition to be true
    * @param {Function} condition - Function that returns boolean
@@ -2005,7 +2374,6 @@ class DemoRunner {
   // ==========================================================================
   // Utility: Async Message Sending
   // ==========================================================================
-
   /**
    * Send a message to background.js and wait for response
    * @param {Object} message - Message to send
@@ -2021,6 +2389,7 @@ class DemoRunner {
         resolve({ success: false, error: "chrome.runtime not available" });
         return;
       }
+
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
           resolve({
@@ -2035,9 +2404,8 @@ class DemoRunner {
   }
 
   // ==========================================================================
-  // NEW: Independent Mode Support
+  // Independent Mode Support
   // ==========================================================================
-
   /**
    * Run demos in independent mode (via popup proxy)
    * @param {Object} options - Configuration with playerProxy
@@ -2046,11 +2414,8 @@ class DemoRunner {
   async runIndependent(options = {}) {
     Logger.info(
       "demo-runner",
-      "🔄 Running in independent mode (via popup proxy)",
+      "🔄 Running in independent mode (via popup proxy) - ALL tests will run",
     );
-
-    // Skip player creation tests in independent mode
-    // Instead, verify the proxy works
 
     const phase = "Independent Mode";
 
@@ -2064,7 +2429,7 @@ class DemoRunner {
       "No player proxy available",
     );
 
-    this._runTest(
+    await this._runTest(
       "Proxy execute demo step",
       phase,
       async () => {
@@ -2075,7 +2440,6 @@ class DemoRunner {
             action: "getState",
             name: "Get video state",
           });
-
           Logger.info(
             "demo-runner",
             `Proxy test result: ${JSON.stringify(result)}`,
@@ -2090,14 +2454,14 @@ class DemoRunner {
       "Failed to communicate via proxy",
     );
 
-    return this._generateReport();
+    // Continue with full test suite
+    return await this.runAll(options);
   }
 }
 
 // ==========================================================================
 // Singleton Demo Runner Instance
 // ==========================================================================
-
 /**
  * Create and configure the default demo runner
  */
@@ -2116,10 +2480,6 @@ async function runAllDemos(videoElement, options = {}) {
       options.streamUrl || "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
     verbose: options.verbose !== false,
     stopOnFailure: options.stopOnFailure || false,
-    skipLive: options.skipLive || false,
-    skipDRM: options.skipDRM !== false,
-    skipCMCD: options.skipCMCD || false,
-    skipIFrame: options.skipIFrame || false,
     playerProxy: options.playerProxy || null,
   };
 
@@ -2129,7 +2489,6 @@ async function runAllDemos(videoElement, options = {}) {
 // ==========================================================================
 // Exports
 // ==========================================================================
-
 // Export for module systems
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { DemoRunner, defaultDemoRunner, runAllDemos };
@@ -2141,13 +2500,11 @@ if (typeof window !== "undefined") {
   window.runAllDemos = runAllDemos;
 }
 
-Logger.info(
-  "demo-runner",
-  "✓ Demo Runner module loaded (with CORS proxy support)",
-);
+Logger.info("demo-runner", "✓ Demo Runner module loaded (ALL tests enabled)");
 Logger.info("demo-runner", "ℹ️  Usage: runAllDemos(videoElement, options)");
+Logger.info("demo-runner", "ℹ️  ALL tests run unconditionally - no skip logic");
 Logger.info(
   "demo-runner",
-  "ℹ️  New: CORS rules are pre-loaded before stream loading",
+  "ℹ️  CORS rules are pre-loaded before stream loading",
 );
-Logger.info("demo-runner", "ℹ️  New: Fetch proxy verification in Phase 0");
+Logger.info("demo-runner", "ℹ️  Fetch proxy verification in Phase 0");

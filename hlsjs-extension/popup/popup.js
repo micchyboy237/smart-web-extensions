@@ -1,27 +1,23 @@
 /**
  * popup.js - Extension Popup Controller
  *
- * INDEPENDENT MODE: Uses MutationObserver to find video elements on the current page.
- * No longer requires a separate player tab. Works directly with any page containing
- * a video element matching VIDEO_SELECTOR = ".plyr__video-wrapper video".
- *
- * Uses chrome.scripting.executeScript to inject a content script that:
- * 1. Observes DOM for the target video element
- * 2. Returns video element info once found
- * 3. Executes demo steps directly on the page
+ * FULLY INDEPENDENT MODE: Injects HlsPlayer + all modules + DemoRunner
+ * directly into the active page's MAIN world, then runs ALL demos.
+ * No player.html tab needed. Fully self-contained.
  */
+
 // ============================================================================
 // Configuration
 // ============================================================================
 const CONFIG = {
   VIDEO_SELECTOR: ".plyr__video-wrapper video",
-  OBSERVER_TIMEOUT: 30000, // 30 seconds max wait
-  POLLING_INTERVAL: 500, // Check every 500ms
+  OBSERVER_TIMEOUT: 30000,
+  POLLING_INTERVAL: 500,
   STATS_REFRESH_INTERVAL: 3000,
 };
 
 // ============================================================================
-// PopupController Class - INDEPENDENT MODE
+// PopupController Class - FULLY INDEPENDENT MODE
 // ============================================================================
 class PopupController {
   constructor() {
@@ -31,13 +27,11 @@ class PopupController {
     this.videoFound = false;
     this.videoElementInfo = null;
     this.observerScriptInjected = false;
+    this.scriptsInjected = false;
     this.logger = this._createLogger();
     this._init();
   }
 
-  // --------------------------------------------------------------------------
-  // Logger (lightweight, since we can't import modules directly in popup context)
-  // --------------------------------------------------------------------------
   _createLogger() {
     const prefix = "[Popup]";
     return {
@@ -52,53 +46,37 @@ class PopupController {
     };
   }
 
-  // --------------------------------------------------------------------------
-  // Initialization
-  // --------------------------------------------------------------------------
   _init() {
     this.logger.info(
       "popup",
-      "🚀 PopupController (Independent Mode) initializing...",
+      "🚀 PopupController (Fully Independent Mode) initializing...",
     );
     this.logger.info("popup", `📋 VIDEO_SELECTOR: ${CONFIG.VIDEO_SELECTOR}`);
+    this.logger.info("popup", "📋 ALL 79 tests will run on the current page");
 
-    // Cache DOM elements
     this._cacheElements();
-
-    // Setup DemoRunner
     this._setupDemoRunner();
-
-    // Setup event listeners
     this._setupEventListeners();
-
-    // Get active tab and start video observer
     this._initializeActiveTab();
 
-    // Get background stats periodically
     this._statsInterval = setInterval(
       () => this._getBackgroundStats(),
       CONFIG.STATS_REFRESH_INTERVAL,
     );
 
-    // Refresh video status periodically (in case DOM changes)
     this._videoCheckInterval = setInterval(
       () => this._checkVideoStatus(),
       CONFIG.POLLING_INTERVAL * 2,
     );
 
-    // NEW: Detect and populate the stream URL after initialization
-    // Delay slightly to allow video observer to find elements first
     setTimeout(() => {
       this._populateStreamUrl();
     }, 1500);
 
+    this.logger.info("popup", "✓ PopupController initialized");
     this.logger.info(
       "popup",
-      "✓ PopupController initialized (Independent Mode)",
-    );
-    this.logger.info(
-      "popup",
-      "ℹ️  Looking for video element on current page...",
+      "ℹ️  All demos run on the current page - no new tabs",
     );
   }
 
@@ -140,48 +118,38 @@ class PopupController {
     this.logger.debug("popup", `Cached ${ids.length} DOM elements`);
   }
 
-  // --------------------------------------------------------------------------
-  // Demo Runner Setup
-  // --------------------------------------------------------------------------
   _setupDemoRunner() {
     if (typeof DemoRunner !== "undefined") {
       this.demoRunner = new DemoRunner();
-      this.logger.info("popup", "✓ DemoRunner instance created");
-    } else {
-      this.logger.warn(
+      this.logger.info(
         "popup",
-        "DemoRunner class not available - demo features disabled",
+        "✓ DemoRunner instance created (popup fallback)",
       );
+    } else {
+      this.logger.warn("popup", "DemoRunner class not available");
       this._updateDemoStatus("DemoRunner unavailable", "error");
     }
   }
 
-  // --------------------------------------------------------------------------
-  // Event Listeners
-  // --------------------------------------------------------------------------
   _setupEventListeners() {
-    // Open player button - now opens a new tab with player.html
     this.el.openPlayerBtn?.addEventListener("click", () => {
       this._openPlayerInNewTab();
     });
 
-    // Load stream button
     this.el.loadStreamBtn?.addEventListener("click", () => {
       this._sendLoadStreamCommand();
     });
 
-    // Demo control buttons
     this.el.demoRunBtn?.addEventListener("click", () => {
       this._runAllDemos();
     });
     this.el.demoQuickBtn?.addEventListener("click", () => {
-      this._runQuickDemo();
+      this._runAllDemos(); // Same - all tests run every time
     });
     this.el.demoStopBtn?.addEventListener("click", () => {
       this._stopDemo();
     });
 
-    // Stream URL enter key
     this.el.streamUrl?.addEventListener("keydown", (e) => {
       if (e.key === "Enter") this._sendLoadStreamCommand();
     });
@@ -190,12 +158,8 @@ class PopupController {
   }
 
   // ==========================================================================
-  // Active Tab Management & Video Observer (NEW - INDEPENDENT MODE)
+  // Active Tab Management
   // ==========================================================================
-
-  /**
-   * Get the active tab and start watching for video element
-   */
   async _initializeActiveTab() {
     try {
       const tabs = await chrome.tabs.query({
@@ -207,17 +171,12 @@ class PopupController {
         this._updatePlayerConnectionStatus("disconnected");
         return;
       }
-
       this.activeTabId = tabs[0].id;
       this.logger.info(
         "popup",
         `📍 Active tab: #${this.activeTabId} - ${tabs[0].url}`,
       );
-
-      // Inject the video observer script
       await this._injectVideoObserver();
-
-      // Start checking for video element
       this._checkVideoStatus();
     } catch (error) {
       this.logger.error("popup", "Failed to initialize active tab", {
@@ -227,87 +186,52 @@ class PopupController {
     }
   }
 
-  /**
-   * Inject the MutationObserver content script into the active tab
-   */
   async _injectVideoObserver() {
-    if (this.observerScriptInjected) {
-      this.logger.debug("popup", "Video observer already injected");
-      return;
-    }
-
-    if (!this.activeTabId) {
-      this.logger.warn("popup", "No active tab to inject observer into");
-      return;
-    }
+    if (this.observerScriptInjected) return;
+    if (!this.activeTabId) return;
 
     try {
       this.logger.info(
         "popup",
-        `💉 Injecting video observer script into tab #${this.activeTabId}`,
+        `💉 Injecting video observer into tab #${this.activeTabId}`,
       );
-
       await chrome.scripting.executeScript({
         target: { tabId: this.activeTabId },
+        world: "MAIN", // ← Run in MAIN world so we can see the page's variables
         func: setupVideoObserver,
         args: [CONFIG.VIDEO_SELECTOR, CONFIG.OBSERVER_TIMEOUT],
       });
-
       this.observerScriptInjected = true;
-      this.logger.info(
-        "popup",
-        "✅ Video observer script injected successfully",
-      );
+      this.logger.info("popup", "✅ Video observer script injected");
     } catch (error) {
       this.logger.error("popup", "Failed to inject video observer", {
         error: error.message,
       });
-      // Some URLs (like chrome://) can't be scripted
-      if (error.message.includes("Cannot access")) {
-        this.logger.warn(
-          "popup",
-          "⚠️ Cannot access this page. Try opening the player instead.",
-        );
-      }
     }
   }
 
-  /**
-   * Check if video element has been found by the observer
-   */
   async _checkVideoStatus() {
     if (!this.activeTabId || !this.observerScriptInjected) return;
-
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId: this.activeTabId },
+        world: "MAIN", // ← MAIN world
         func: getVideoElementStatus,
         args: [CONFIG.VIDEO_SELECTOR],
       });
-
       if (results && results[0] && results[0].result) {
         const status = results[0].result;
-
         if (status.found && !this.videoFound) {
           this.videoFound = true;
           this.videoElementInfo = status.info;
-          this.logger.info(
-            "popup",
-            `🎯 Video element FOUND! Selector: ${CONFIG.VIDEO_SELECTOR}`,
-          );
-          this.logger.info(
-            "popup",
-            `   Tag: ${status.info.tagName}, Src: ${status.info.currentSrc || "none"}`,
-          );
+          this.logger.info("popup", `🎯 Video element FOUND!`);
           this._updatePlayerConnectionStatus("connected", this.activeTabId);
           this._enablePlayerControls(true);
           this._enableDemoControls(true);
           this._updateDemoStatus("Video found - ready for demo", "ready");
         } else if (!status.found && this.videoFound) {
-          // Video was found but now disappeared
           this.videoFound = false;
           this.videoElementInfo = null;
-          this.logger.warn("popup", "⚠️ Video element no longer available");
           this._updatePlayerConnectionStatus("disconnected");
           this._enablePlayerControls(false);
           this._enableDemoControls(false);
@@ -321,100 +245,18 @@ class PopupController {
     }
   }
 
-  /**
-   * Open the player in a new tab with the current stream URL and referer
-   */
-  async _openPlayerInNewTab() {
-    // Detect the best stream URL
-    const streamUrl = await this._detectStreamUrl();
-
-    // Get the original page URL to use as referer
-    let pageUrl = null;
-    if (this.activeTabId) {
-      try {
-        const tabs = await chrome.tabs.get(this.activeTabId);
-        if (tabs && tabs.url && !tabs.url.startsWith("chrome-extension://")) {
-          pageUrl = tabs.url;
-        }
-      } catch (error) {
-        this.logger.debug("popup", "Could not get page URL: " + error.message);
-      }
-    }
-
-    // Build player URL with stream URL and referer
-    const playerBaseUrl = chrome.runtime.getURL("player/player.html");
-    let playerUrl = `${playerBaseUrl}?url=${encodeURIComponent(streamUrl)}&autorun=false`;
-
-    // Add referer parameter if we have the original page URL
-    if (pageUrl) {
-      playerUrl += `&ref=${encodeURIComponent(pageUrl)}`;
-      this.logger.info("popup", `🔑 Passing referer: ${pageUrl}`);
-    }
-
-    this.logger.info("popup", `Opening player in new tab: ${playerUrl}`);
-    this.logger.info("popup", `📋 Stream URL passed: ${streamUrl}`);
-
-    chrome.tabs.create({ url: playerUrl }, (tab) => {
-      this.activeTabId = tab.id;
-      this.observerScriptInjected = false;
-      this.videoFound = false;
-      this.videoElementInfo = null;
-      this.logger.info("popup", `Player tab created: #${tab.id}`);
-      this._updatePlayerConnectionStatus("connected", tab.id);
-
-      // Pre-load CORS rules for the stream domain
-      this.logger.info("popup", "🔧 Pre-loading CORS rules for player tab...");
-      chrome.runtime.sendMessage(
-        {
-          action: "preloadCorsRules",
-          url: streamUrl,
-          referer: pageUrl || null,
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            this.logger.error("popup", "CORS pre-load error for player tab", {
-              error: chrome.runtime.lastError.message,
-            });
-          } else if (response?.success) {
-            this.logger.info(
-              "popup",
-              "✅ CORS rules pre-loaded for player tab",
-            );
-          } else {
-            this.logger.warn(
-              "popup",
-              "⚠️ CORS pre-load may have failed for player tab",
-            );
-          }
-        },
-      );
-
-      this._enablePlayerControls(true);
-      this._enableDemoControls(false);
-    });
-  }
-
-  // --------------------------------------------------------------------------
-  // Player Connection Status UI
-  // --------------------------------------------------------------------------
   _updatePlayerConnectionStatus(state, tabId = null) {
-    const statusDiv = this.el.playerStatusText?.parentElement;
-
     if (state === "connected") {
       if (this.el.playerStatusIcon) this.el.playerStatusIcon.textContent = "🟢";
       if (this.el.playerStatusText) {
         this.el.playerStatusText.textContent = this.videoFound
-          ? `Video found (Tab #${tabId})`
+          ? `Video found (Tab #${tabId}) - Demos run on page`
           : `Tab connected (Tab #${tabId}) - waiting for video...`;
       }
-      if (statusDiv) statusDiv.className = "connected";
-
-      if (this.el.statusDot) {
-        this.el.statusDot.className = "status-dot active";
-      }
+      if (this.el.statusDot) this.el.statusDot.className = "status-dot active";
       if (this.el.statusText) {
         this.el.statusText.textContent = this.videoFound
-          ? "Video element ready"
+          ? "Video ready - click Run All Demos"
           : "Waiting for video element...";
       }
     } else {
@@ -422,11 +264,7 @@ class PopupController {
       if (this.el.playerStatusText) {
         this.el.playerStatusText.textContent = "No video element found";
       }
-      if (statusDiv) statusDiv.className = "";
-
-      if (this.el.statusDot) {
-        this.el.statusDot.className = "status-dot";
-      }
+      if (this.el.statusDot) this.el.statusDot.className = "status-dot";
       if (this.el.statusText) {
         this.el.statusText.textContent = "Open a page with video player";
       }
@@ -442,96 +280,281 @@ class PopupController {
       this.el.demoRunBtn.disabled = !enabled || this.isDemoRunning;
     if (this.el.demoQuickBtn)
       this.el.demoQuickBtn.disabled = !enabled || this.isDemoRunning;
-
-    this.logger.debug(
-      "popup",
-      `Demo controls ${enabled ? "enabled" : "disabled"} (videoFound: ${this.videoFound})`,
-    );
   }
 
   // ==========================================================================
-  // Demo Runner Methods (INDEPENDENT MODE)
+  // Script Injection - FIXED: Inject ALL scripts as ONE combined script
+  // into the MAIN world so modules can reference each other
   // ==========================================================================
-
   /**
-   * Run all feature demonstrations
+   * Fetch all required scripts, combine them into ONE script string,
+   * and inject it into the page's MAIN world.
+   *
+   * This ensures:
+   * 1. All modules execute in order in the same context
+   * 2. Later scripts can see variables from earlier scripts
+   * 3. Everything runs in MAIN world (not isolated)
    */
+  async _injectAllScriptsIntoPage() {
+    if (this.scriptsInjected) {
+      this.logger.info("popup", "ℹ️ Scripts already injected into page");
+      return true;
+    }
+
+    if (!this.activeTabId) {
+      this.logger.error("popup", "No active tab for script injection");
+      return false;
+    }
+
+    this.logger.info(
+      "popup",
+      "📥 Fetching and injecting all modules into the page (MAIN world)...",
+    );
+
+    // List of scripts in dependency order
+    const scriptsToInject = [
+      "lib/hls.min.js",
+      "modules/logger.js",
+      "modules/core.js",
+      "modules/playback.js",
+      "modules/quality.js",
+      "modules/audio.js",
+      "modules/live.js",
+      "modules/error.js",
+      "modules/iframe.js",
+      "modules/drm.js",
+      "modules/cmcd.js",
+      "modules/demo-runner.js",
+    ];
+
+    try {
+      // Step 1: Fetch all scripts in parallel
+      this.logger.info("popup", "  Fetching all scripts...");
+      const scriptContents = [];
+
+      for (const scriptPath of scriptsToInject) {
+        const url = chrome.runtime.getURL(scriptPath);
+        const response = await fetch(url);
+        if (!response.ok) {
+          this.logger.error(
+            "popup",
+            `  ❌ Failed to fetch ${scriptPath}: ${response.status}`,
+          );
+          return false;
+        }
+        const content = await response.text();
+        scriptContents.push({
+          path: scriptPath,
+          content: content,
+        });
+        this.logger.debug(
+          "popup",
+          `  📄 Fetched: ${scriptPath} (${content.length} chars)`,
+        );
+      }
+
+      // Step 2: Combine all scripts into one, with separators and logging
+      this.logger.info("popup", "  Combining scripts...");
+      const combinedScript = scriptContents
+        .map((sc, index) => {
+          return `
+// ================================================================
+// Script ${index + 1}/${scriptContents.length}: ${sc.path}
+// ================================================================
+console.log("[HLS-Inject] Loading: ${sc.path} (${sc.content.length} chars)");
+${sc.content}
+console.log("[HLS-Inject] ✓ Loaded: ${sc.path}");
+`;
+        })
+        .join("\n");
+
+      // Step 3: Add verification code at the end
+      const verifyScript = `
+// ================================================================
+// Verification: Check all modules loaded
+// ================================================================
+(function() {
+  const requiredModules = [
+    "Hls", "HlsPlayer", "Logger", "DemoRunner",
+    "PlaybackController", "QualityController", "AudioController",
+    "LiveController", "ErrorController", "IFrameController",
+    "DRMController", "CMCDController"
+  ];
+  
+  const missing = [];
+  const found = [];
+  
+  requiredModules.forEach(name => {
+    if (typeof window[name] !== "undefined" && window[name] !== null) {
+      found.push(name);
+      console.log("[HLS-Inject] ✅ Found: " + name);
+    } else {
+      missing.push(name);
+      console.error("[HLS-Inject] ❌ MISSING: " + name);
+    }
+  });
+  
+  window.__hlsModulesInjected = {
+    success: missing.length === 0,
+    found: found,
+    missing: missing,
+    totalRequired: requiredModules.length,
+    totalFound: found.length,
+    timestamp: Date.now()
+  };
+  
+  console.log("[HLS-Inject] =========================================");
+  console.log("[HLS-Inject] Injection complete: " + found.length + "/" + requiredModules.length + " modules found");
+  if (missing.length > 0) {
+    console.error("[HLS-Inject] MISSING: " + missing.join(", "));
+  }
+  console.log("[HLS-Inject] =========================================");
+})();
+`;
+
+      const finalScript = combinedScript + "\n" + verifyScript;
+
+      // Step 4: Inject the combined script into the MAIN world
+      this.logger.info(
+        "popup",
+        `  💉 Injecting combined script (${finalScript.length} chars) into MAIN world...`,
+      );
+
+      await chrome.scripting.executeScript({
+        target: { tabId: this.activeTabId },
+        world: "MAIN", // ← CRITICAL: Run in MAIN world so scripts can set window.Hls, etc.
+        func: injectCombinedScript,
+        args: [finalScript],
+      });
+
+      // Step 5: Wait a moment and verify injection
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const verifyResults = await chrome.scripting.executeScript({
+        target: { tabId: this.activeTabId },
+        world: "MAIN",
+        func: () => {
+          return (
+            window.__hlsModulesInjected || {
+              success: false,
+              error: "Verification not found",
+            }
+          );
+        },
+      });
+
+      if (verifyResults && verifyResults[0] && verifyResults[0].result) {
+        const status = verifyResults[0].result;
+        if (status.success) {
+          this.scriptsInjected = true;
+          this.logger.info(
+            "popup",
+            `✅ All ${status.totalFound}/${status.totalRequired} modules loaded successfully!`,
+          );
+          return true;
+        } else {
+          this.logger.error(
+            "popup",
+            `❌ Module injection failed: ${status.found.length}/${status.totalRequired} found`,
+          );
+          this.logger.error(
+            "popup",
+            `   Missing: ${status.missing.join(", ")}`,
+          );
+          return false;
+        }
+      }
+
+      this.logger.error("popup", "❌ Could not verify script injection");
+      return false;
+    } catch (error) {
+      this.logger.error(
+        "popup",
+        "❌ Script injection failed: " + error.message,
+      );
+      return false;
+    }
+  }
+
+  // ==========================================================================
+  // Demo Runner Methods
+  // ==========================================================================
   async _runAllDemos() {
     if (this.isDemoRunning) {
       this.logger.warn("popup", "Demo is already running");
       return;
     }
     if (!this.videoFound) {
-      this.logger.warn("popup", "No video element found. Waiting for video...");
+      this.logger.warn("popup", "No video element found.");
       this._updateDemoStatus("❌ No video element found", "error");
-      return;
-    }
-    if (!this.demoRunner) {
-      this.logger.error("popup", "DemoRunner not available");
-      this._updateDemoStatus("❌ DemoRunner not available", "error");
       return;
     }
 
     this.isDemoRunning = true;
     this._setDemoRunningState(true);
-    this._updateDemoStatus("🔄 Running all demos...", "running");
+    this._updateDemoStatus("🔄 Injecting scripts...", "running");
     this._clearDemoResults();
+    this._updateDemoProgress(5, "Injecting modules into page...");
 
-    // NEW: Detect the best stream URL to use
     const streamUrl = await this._detectStreamUrl();
+    const pageInfo = await this._getOriginalReferer();
 
     this.logger.info("popup", "=".repeat(50));
     this.logger.info(
       "popup",
-      "🚀 STARTING FULL FEATURE DEMONSTRATION (Independent Mode)",
+      "🚀 STARTING FULL FEATURE DEMONSTRATION (On Page)",
     );
-    this.logger.info("popup", `📋 Video Selector: ${CONFIG.VIDEO_SELECTOR}`);
-    this.logger.info("popup", `📋 Active Tab: #${this.activeTabId}`);
     this.logger.info("popup", `📋 Stream URL: ${streamUrl}`);
+    this.logger.info("popup", `📋 Referer: ${pageInfo?.url || "none"}`);
+    this.logger.info("popup", "📋 ALL 79 tests will run on the page");
     this.logger.info("popup", "=".repeat(50));
 
     try {
-      const videoInfo = await this._getVideoElementInfo();
-      if (!videoInfo) {
-        throw new Error("Could not access video element on page");
+      // Step 1: Inject all scripts into the page's MAIN world
+      this._updateDemoProgress(10, "Injecting modules...");
+      const injected = await this._injectAllScriptsIntoPage();
+      if (!injected) {
+        throw new Error("Failed to inject required scripts into page");
       }
-      this.logger.info("popup", `📹 Video info: ${JSON.stringify(videoInfo)}`);
 
-      // Before calling demoRunner.runAll(), get the referer
-      const pageInfo = await this._getOriginalReferer();
+      // Step 2: Pre-load CORS rules
+      this._updateDemoProgress(15, "Pre-loading CORS rules...");
+      await this._preloadCorsRules(streamUrl, pageInfo);
 
-      const options = {
-        videoElement: null,
-        streamUrl: streamUrl,
-        verbose: true,
-        stopOnFailure: false,
-        skipLive: document.getElementById("demoSkipLive")?.checked || false,
-        skipDRM: document.getElementById("demoSkipDRM")?.checked || true,
-        skipCMCD: document.getElementById("demoSkipCMCD")?.checked || false,
-        skipIFrame: document.getElementById("demoSkipIFrame")?.checked || false,
-        playerProxy: {
-          tabId: this.activeTabId,
-          originalReferer: pageInfo?.url || null, // ← Pass original page URL
-          executeDemoStep: async (step) => {
-            // Add referer to loadStream steps
-            if (step.action === "loadStream" && pageInfo) {
-              step.referer = pageInfo.url;
-            }
-            return this._executeDemoStepOnPage(step);
-          },
-        },
-      };
+      // Step 3: Run ALL demos on the page (in MAIN world)
+      this._updateDemoProgress(20, "Running all demos on page...");
 
-      const results = await this.demoRunner.runAll(options);
-      this._displayDemoResults(results);
-      this._updateDemoStatus("✅ Complete", "success");
-      this.logger.info("popup", "=".repeat(50));
-      this.logger.info("popup", "✅ DEMONSTRATION COMPLETE");
-      this.logger.info(
-        "popup",
-        `   ${results.passed}/${results.total} tests passed (${results.total > 0 ? ((results.passed / results.total) * 100).toFixed(1) : 0}%)`,
-      );
-      this.logger.info("popup", "=".repeat(50));
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: this.activeTabId },
+        world: "MAIN", // ← CRITICAL: Run in MAIN world to access window.HlsPlayer, etc.
+        func: runAllDemosOnPage,
+        args: [CONFIG.VIDEO_SELECTOR, streamUrl, pageInfo?.url || null],
+      });
+
+      if (results && results[0] && results[0].result) {
+        const demoResults = results[0].result;
+
+        if (demoResults.success) {
+          this._displayDemoResults(demoResults.results);
+          this._updateDemoStatus("✅ Complete", "success");
+          this._updateDemoProgress(
+            100,
+            `Complete: ${demoResults.results.passed}/${demoResults.results.total} passed`,
+          );
+
+          this.logger.info("popup", "=".repeat(50));
+          this.logger.info("popup", "✅ ALL DEMOS COMPLETE");
+          this.logger.info(
+            "popup",
+            `   ${demoResults.results.passed}/${demoResults.results.total} passed`,
+          );
+          this.logger.info("popup", "=".repeat(50));
+        } else {
+          throw new Error(demoResults.error || "Unknown error on page");
+        }
+      } else {
+        throw new Error("No response from page");
+      }
     } catch (error) {
       this.logger.error("popup", "Demo run failed", { error: error.message });
       this._updateDemoStatus("❌ Failed: " + error.message, "error");
@@ -541,292 +564,190 @@ class PopupController {
     }
   }
 
-  /**
-   * Run a quick demo (core + quality + playback only)
-   */
-  async _runQuickDemo() {
-    if (this.isDemoRunning) {
-      this.logger.warn("popup", "Demo is already running");
-      return;
-    }
-    if (!this.videoFound) {
-      this.logger.warn("popup", "No video element found. Waiting for video...");
-      this._updateDemoStatus("❌ No video element found", "error");
-      return;
-    }
-    if (!this.demoRunner) {
-      this._updateDemoStatus("❌ DemoRunner not available", "error");
-      return;
-    }
-
-    this.isDemoRunning = true;
-    this._setDemoRunningState(true);
-    this._updateDemoStatus("⚡ Running quick test...", "running");
-    this._clearDemoResults();
-
-    // NEW: Detect the best stream URL to use
-    const streamUrl = await this._detectStreamUrl();
-
-    this.logger.info("popup", "⚡ Running quick demo test...");
-    this.logger.info("popup", `📋 Stream URL: ${streamUrl}`);
-
-    try {
-      const videoInfo = await this._getVideoElementInfo();
-      if (!videoInfo) {
-        throw new Error("Could not access video element on page");
-      }
-
-      // Before calling demoRunner.runAll(), get the referer
-      const pageInfo = await this._getOriginalReferer();
-
-      const options = {
-        videoElement: null,
-        streamUrl: streamUrl,
-        verbose: true,
-        stopOnFailure: false,
-        skipLive: document.getElementById("demoSkipLive")?.checked || false,
-        skipDRM: document.getElementById("demoSkipDRM")?.checked || true,
-        skipCMCD: document.getElementById("demoSkipCMCD")?.checked || false,
-        skipIFrame: document.getElementById("demoSkipIFrame")?.checked || false,
-        playerProxy: {
-          tabId: this.activeTabId,
-          originalReferer: pageInfo?.url || null, // ← Pass original page URL
-          executeDemoStep: async (step) => {
-            // Add referer to loadStream steps
-            if (step.action === "loadStream" && pageInfo) {
-              step.referer = pageInfo.url;
-            }
-            return this._executeDemoStepOnPage(step);
-          },
-        },
-      };
-
-      const results = await this.demoRunner.runAll(options);
-      this._displayDemoResults(results);
-      this._updateDemoStatus("✅ Quick test complete", "success");
-    } catch (error) {
-      this.logger.error("popup", "Quick demo failed", { error: error.message });
-      this._updateDemoStatus("❌ Failed: " + error.message, "error");
-    } finally {
-      this.isDemoRunning = false;
-      this._setDemoRunningState(false);
-    }
-  }
-
-  /**
-   * Stop the currently running demo
-   */
-  _stopDemo() {
+  async _stopDemo() {
     if (this.isDemoRunning) {
       this.logger.info("popup", "⏹️ Stopping demo...");
       this.isDemoRunning = false;
       this._setDemoRunningState(false);
       this._updateDemoStatus("⏹️ Stopped by user", "stopped");
+
+      if (this.activeTabId) {
+        chrome.scripting
+          .executeScript({
+            target: { tabId: this.activeTabId },
+            world: "MAIN",
+            func: () => {
+              window.__stopDemo = true;
+            },
+          })
+          .catch(() => {});
+      }
     }
   }
 
   // --------------------------------------------------------------------------
-  // Page Communication Helpers (INDEPENDENT MODE)
+  // Helpers
   // --------------------------------------------------------------------------
-
-  /**
-   * Get video element information from the active tab
-   */
   async _getVideoElementInfo() {
-    if (!this.activeTabId) {
-      this.logger.warn("popup", "No active tab to query");
-      return null;
-    }
-
+    if (!this.activeTabId) return null;
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId: this.activeTabId },
+        world: "MAIN",
         func: getVideoElementInfoFromPage,
         args: [CONFIG.VIDEO_SELECTOR],
       });
-
-      if (results && results[0] && results[0].result) {
-        this.logger.debug(
-          "popup",
-          `Video info retrieved: ${JSON.stringify(results[0].result)}`,
-        );
-        return results[0].result;
-      }
-
-      this.logger.warn("popup", "No video info returned from page");
-      return null;
+      return results?.[0]?.result || null;
     } catch (error) {
-      this.logger.error("popup", "Failed to get video info", {
-        error: error.message,
-      });
       return null;
     }
   }
 
-  /**
-   * Execute a single demo step on the active tab page
-   */
-  async _executeDemoStepOnPage(step) {
-    if (!this.activeTabId) {
-      return { success: false, error: "No active tab" };
-    }
-
-    this.logger.debug(
-      "popup",
-      `Executing demo step on page: ${step.name || step.action}`,
-    );
-
+  async _getOriginalReferer() {
+    if (!this.activeTabId) return null;
     try {
       const results = await chrome.scripting.executeScript({
         target: { tabId: this.activeTabId },
-        func: executeDemoStepOnPage,
-        args: [step, CONFIG.VIDEO_SELECTOR],
+        world: "MAIN",
+        func: () => ({
+          url: window.location.href,
+          referer: document.referrer || window.location.href,
+          origin: window.location.origin,
+        }),
       });
-
-      if (results && results[0] && results[0].result) {
-        const response = results[0].result;
-        this.logger.debug(
-          "popup",
-          `Demo step result: ${JSON.stringify(response)}`,
-        );
-        return response;
-      }
-
-      return { success: false, error: "No response from page" };
+      return results?.[0]?.result || null;
     } catch (error) {
-      this.logger.error("popup", "Failed to execute demo step on page", {
-        error: error.message,
-      });
-      return { success: false, error: error.message };
+      return null;
     }
   }
 
-  /**
-   * Send load stream command to the active tab WITH CORS pre-loading
-   */
+  async _preloadCorsRules(url, pageInfo) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        {
+          action: "preloadCorsRules",
+          url: url,
+          referer: pageInfo?.url || null,
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            this.logger.error("popup", "CORS pre-load error", {
+              error: chrome.runtime.lastError.message,
+            });
+            resolve(false);
+          } else {
+            resolve(response?.success || false);
+          }
+        },
+      );
+    });
+  }
+
   async _sendLoadStreamCommand() {
-    // NEW: Detect the best URL instead of just reading input
     const url = await this._detectStreamUrl();
+    if (!url) return;
 
-    if (!url) {
-      this.logger.warn("popup", "No stream URL provided");
-      return;
-    }
-
-    // Pre-load CORS rules before sending load command
-    this.logger.info("popup", "🔧 Pre-loading CORS rules for: " + url);
+    // Pre-load CORS rules
     chrome.runtime.sendMessage(
       { action: "preloadCorsRules", url: url },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          this.logger.error("popup", "CORS pre-load error", {
-            error: chrome.runtime.lastError.message,
-          });
-        } else if (response?.success) {
-          this.logger.info("popup", "✅ CORS rules pre-loaded");
-        } else {
-          this.logger.warn("popup", "⚠️ CORS pre-load may have failed");
+      async (response) => {
+        // Inject scripts
+        await this._injectAllScriptsIntoPage();
+
+        if (this.activeTabId) {
+          try {
+            const results = await chrome.scripting.executeScript({
+              target: { tabId: this.activeTabId },
+              world: "MAIN",
+              func: loadStreamOnPage,
+              args: [url, CONFIG.VIDEO_SELECTOR],
+            });
+            if (results?.[0]?.result?.success) {
+              this._updateDemoStatus("Stream loaded - ready for demo", "ready");
+            }
+          } catch (error) {
+            this.logger.error("popup", "Failed to load stream", {
+              error: error.message,
+            });
+          }
         }
-        // Now send the load command
-        this._sendLoadCommandToPage(url);
       },
     );
   }
 
-  async _sendLoadCommandToPage(url) {
-    if (!this.activeTabId) {
-      this.logger.warn("popup", "No active tab. Opening player in new tab...");
-      this._openPlayerInNewTab();
-      setTimeout(() => this._sendLoadCommandToPage(url), 2000);
-      return;
-    }
-
-    this.logger.info("popup", `📥 Sending load stream command: ${url}`);
-
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: this.activeTabId },
-        func: loadStreamOnPage,
-        args: [url, CONFIG.VIDEO_SELECTOR],
-      });
-
-      if (results && results[0] && results[0].result) {
-        const response = results[0].result;
-        if (response.success) {
-          this.logger.info("popup", "✓ Load stream command executed");
-          this._updateDemoStatus("Stream loading...", "loading");
-          setTimeout(() => {
-            this._checkVideoStatus();
-          }, 2000);
-        } else {
-          this.logger.error("popup", "Load stream failed", {
-            error: response.error,
-          });
-          this._updateDemoStatus("❌ Load failed: " + response.error, "error");
+  async _openPlayerInNewTab() {
+    const streamUrl = await this._detectStreamUrl();
+    let pageUrl = null;
+    if (this.activeTabId) {
+      try {
+        const tabs = await chrome.tabs.get(this.activeTabId);
+        if (tabs?.url && !tabs.url.startsWith("chrome-extension://")) {
+          pageUrl = tabs.url;
         }
+      } catch (error) {
+        /* ignore */
       }
-    } catch (error) {
-      this.logger.error("popup", "Failed to send load command", {
-        error: error.message,
-      });
-      this._updateDemoStatus("❌ Cannot execute on this page", "error");
     }
+
+    const playerBaseUrl = chrome.runtime.getURL("player/player.html");
+    let playerUrl = `${playerBaseUrl}?url=${encodeURIComponent(streamUrl)}&autorun=true`;
+    if (pageUrl) {
+      playerUrl += `&ref=${encodeURIComponent(pageUrl)}`;
+    }
+    chrome.tabs.create({ url: playerUrl });
   }
 
-  /**
-   * Populate the stream URL input field with the detected URL.
-   * Updates the UI to show the detected stream.
-   */
   async _populateStreamUrl() {
     const detectedUrl = await this._detectStreamUrl();
-
     if (detectedUrl && this.el.streamUrl) {
       const currentValue = this.el.streamUrl.value.trim();
       const defaultUrl = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
-
       if (detectedUrl !== currentValue && detectedUrl !== defaultUrl) {
         this.el.streamUrl.value = detectedUrl;
-        this.logger.info(
-          "popup",
-          `📝 Stream URL input updated to: ${detectedUrl}`,
-        );
-        this._updatePlayerConnectionStatus("connected", this.activeTabId);
-      } else if (detectedUrl === currentValue) {
-        this.logger.debug(
-          "popup",
-          `Stream URL already matches: ${detectedUrl}`,
-        );
-      } else {
-        this.logger.debug("popup", `Using default stream URL: ${detectedUrl}`);
       }
     }
   }
 
   // ==========================================================================
-  // ⬇️ ADD THE TWO NEW METHODS HERE (inside the class, before _setDemoRunningState)
+  // Stream URL Detection
   // ==========================================================================
+  async _detectStreamUrl() {
+    // Source 1: Background request history (most reliable for blob URLs)
+    try {
+      const response = await this._sendMessageAsync({ action: "getStats" });
+      if (response?.success && response.stats?.recentRequests) {
+        const recentM3u8 = response.stats.recentRequests
+          .filter((req) => req.url && req.url.endsWith(".m3u8"))
+          .sort((a, b) => b.timestamp - a.timestamp);
+        if (recentM3u8.length > 0) {
+          this.logger.info(
+            "popup",
+            `✅ Stream URL from background: ${recentM3u8[0].url}`,
+          );
+          return recentM3u8[0].url;
+        }
+      }
+    } catch (error) {
+      /* ignore */
+    }
 
-  /**
-   * Send a message to background.js and wait for response
-   * @param {Object} message - Message to send
-   * @returns {Promise<Object>} Response
-   */
+    // Source 2: Current input value
+    const currentValue = this.el.streamUrl?.value?.trim();
+    if (currentValue) return currentValue;
+
+    // Fallback
+    return "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+  }
+
   _sendMessageAsync(message) {
-    return new Promise((resolve, reject) => {
-      if (
-        typeof chrome === "undefined" ||
-        !chrome.runtime ||
-        !chrome.runtime.sendMessage
-      ) {
+    return new Promise((resolve) => {
+      if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
         resolve({ success: false, error: "chrome.runtime not available" });
         return;
       }
       chrome.runtime.sendMessage(message, (response) => {
         if (chrome.runtime.lastError) {
-          resolve({
-            success: false,
-            error: chrome.runtime.lastError.message,
-          });
+          resolve({ success: false, error: chrome.runtime.lastError.message });
           return;
         }
         resolve(response || { success: false, error: "No response" });
@@ -834,109 +755,9 @@ class PopupController {
     });
   }
 
-  /**
-   * Detect the stream URL from multiple sources:
-   * 1. Video element's src on the active page
-   * 2. Background's request history (recent .m3u8 URLs)
-   * 3. Keep current popup input value as fallback
-   *
-   * @returns {Promise<string>} Detected stream URL
-   */
-  async _detectStreamUrl() {
-    this.logger.info("popup", "🔍 Detecting stream URL...");
-
-    // Source 1: Try to get the video element's source from the page
-    if (this.activeTabId && this.videoFound) {
-      try {
-        const videoInfo = await this._getVideoElementInfo();
-        if (videoInfo && videoInfo.currentSrc) {
-          const src = videoInfo.currentSrc;
-          // Filter out blob URLs (these are temporary MSE URLs, not the actual stream)
-          if (src && !src.startsWith("blob:")) {
-            this.logger.info(
-              "popup",
-              `✅ Stream URL from video element: ${src}`,
-            );
-            return src;
-          } else if (src && src.startsWith("blob:")) {
-            this.logger.info(
-              "popup",
-              `⚠️ Video src is blob URL, checking other sources...`,
-            );
-          }
-        }
-      } catch (error) {
-        this.logger.debug(
-          "popup",
-          `Could not get URL from video element: ${error.message}`,
-        );
-      }
-    }
-
-    // Source 2: Try to get the stream URL from background request history
-    try {
-      const response = await this._sendMessageAsync({ action: "getStats" });
-      if (response && response.success && response.stats) {
-        const stats = response.stats;
-
-        // Look for recent .m3u8 requests
-        if (stats.recentRequests && stats.recentRequests.length > 0) {
-          // Find the most recent .m3u8 URL
-          const recentM3u8 = stats.recentRequests
-            .filter((req) => req.url && req.url.endsWith(".m3u8"))
-            .sort((a, b) => b.timestamp - a.timestamp);
-
-          if (recentM3u8.length > 0) {
-            const streamUrl = recentM3u8[0].url;
-            this.logger.info(
-              "popup",
-              `✅ Stream URL from background history: ${streamUrl}`,
-            );
-            return streamUrl;
-          }
-        }
-
-        // Check active streams (domains only, but better than nothing)
-        if (stats.activeStreams && stats.activeStreams.length > 0) {
-          this.logger.info(
-            "popup",
-            `⚠️ Active domains from background: ${stats.activeStreams.join(", ")}`,
-          );
-        }
-      }
-    } catch (error) {
-      this.logger.debug(
-        "popup",
-        `Could not get URL from background: ${error.message}`,
-      );
-    }
-
-    // Source 3: Keep current popup input value (fallback)
-    const currentValue = this.el.streamUrl?.value?.trim();
-    if (currentValue) {
-      this.logger.info(
-        "popup",
-        `ℹ️ Using existing popup input value: ${currentValue}`,
-      );
-      return currentValue;
-    }
-
-    // Ultimate fallback
-    const fallback = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
-    this.logger.info(
-      "popup",
-      `⚠️ No stream URL detected, using fallback: ${fallback}`,
-    );
-    return fallback;
-  }
-
   // ==========================================================================
   // UI Update Methods
   // ==========================================================================
-
-  /**
-   * Set UI state for demo running/stopped
-   */
   _setDemoRunningState(running) {
     if (this.el.demoRunBtn)
       this.el.demoRunBtn.disabled = running || !this.videoFound;
@@ -948,59 +769,28 @@ class PopupController {
     if (this.el.demoProgress) {
       this.el.demoProgress.style.display = running ? "block" : "none";
     }
-    this.logger.debug("popup", `Demo running state: ${running}`);
   }
 
-  /**
-   * Update demo status text and badge
-   */
   _updateDemoStatus(message, type = "info") {
     if (this.el.demoStatusBadge) {
       this.el.demoStatusBadge.textContent = message;
-      // Update badge styling based on type
-      switch (type) {
-        case "success":
-          this.el.demoStatusBadge.style.background = "#00ff8822";
-          this.el.demoStatusBadge.style.color = "#00ff88";
-          this.el.demoStatusBadge.style.border = "1px solid #00ff8844";
-          break;
-        case "error":
-          this.el.demoStatusBadge.style.background = "#ff444422";
-          this.el.demoStatusBadge.style.color = "#ff4444";
-          this.el.demoStatusBadge.style.border = "1px solid #ff444444";
-          break;
-        case "running":
-          this.el.demoStatusBadge.style.background = "#ffaa0022";
-          this.el.demoStatusBadge.style.color = "#ffaa00";
-          this.el.demoStatusBadge.style.border = "1px solid #ffaa0044";
-          break;
-        case "ready":
-          this.el.demoStatusBadge.style.background = "#00d4ff22";
-          this.el.demoStatusBadge.style.color = "#00d4ff";
-          this.el.demoStatusBadge.style.border = "1px solid #00d4ff44";
-          break;
-        case "loading":
-          this.el.demoStatusBadge.style.background = "#ffaa0022";
-          this.el.demoStatusBadge.style.color = "#ffaa00";
-          this.el.demoStatusBadge.style.border = "1px solid #ffaa0044";
-          break;
-        case "stopped":
-          this.el.demoStatusBadge.style.background = "#88888822";
-          this.el.demoStatusBadge.style.color = "#888";
-          this.el.demoStatusBadge.style.border = "1px solid #88888844";
-          break;
-        default:
-          this.el.demoStatusBadge.style.background = "#00ff8822";
-          this.el.demoStatusBadge.style.color = "#00ff88";
-          this.el.demoStatusBadge.style.border = "1px solid #00ff8844";
-      }
+      const colors = {
+        success: { bg: "#00ff8822", color: "#00ff88", border: "#00ff8844" },
+        error: { bg: "#ff444422", color: "#ff4444", border: "#ff444444" },
+        running: { bg: "#ffaa0022", color: "#ffaa00", border: "#ffaa0044" },
+        ready: { bg: "#00d4ff22", color: "#00d4ff", border: "#00d4ff44" },
+        loading: { bg: "#ffaa0022", color: "#ffaa00", border: "#ffaa0044" },
+        stopped: { bg: "#88888822", color: "#888", border: "#88888844" },
+      };
+      const style = colors[type] || colors.ready;
+      Object.assign(this.el.demoStatusBadge.style, {
+        background: style.bg,
+        color: style.color,
+        border: `1px solid ${style.border}`,
+      });
     }
-    this.logger.info("popup", `Demo status: ${message} (${type})`);
   }
 
-  /**
-   * Update demo progress bar
-   */
   _updateDemoProgress(percent, text) {
     if (this.el.demoProgressFill) {
       this.el.demoProgressFill.style.width = `${percent}%`;
@@ -1013,39 +803,30 @@ class PopupController {
     }
   }
 
-  /**
-   * Clear previous demo results
-   */
   _clearDemoResults() {
-    if (this.el.demoTotal) this.el.demoTotal.textContent = "--";
-    if (this.el.demoPassed) this.el.demoPassed.textContent = "--";
-    if (this.el.demoFailed) this.el.demoFailed.textContent = "--";
-    if (this.el.demoSkipped) this.el.demoSkipped.textContent = "--";
-    if (this.el.demoRate) this.el.demoRate.textContent = "--";
-    if (this.el.demoDuration) this.el.demoDuration.textContent = "--";
+    const els = [
+      "demoTotal",
+      "demoPassed",
+      "demoFailed",
+      "demoSkipped",
+      "demoRate",
+      "demoDuration",
+    ];
+    els.forEach((id) => {
+      if (this.el[id]) this.el[id].textContent = "--";
+    });
     if (this.el.demoResultsDetail) this.el.demoResultsDetail.innerHTML = "";
     this._updateDemoProgress(0, "Starting...");
-    this.logger.debug("popup", "Demo results cleared");
   }
 
-  /**
-   * Display demo results in the UI
-   */
   _displayDemoResults(results) {
-    if (!results) {
-      this.logger.warn("popup", "No results to display");
-      return;
-    }
+    if (!results) return;
 
     if (this.el.demoTotal) this.el.demoTotal.textContent = results.total || 0;
-    if (this.el.demoPassed) {
+    if (this.el.demoPassed)
       this.el.demoPassed.textContent = results.passed || 0;
-      this.el.demoPassed.className = results.passed > 0 ? "text-success" : "";
-    }
-    if (this.el.demoFailed) {
+    if (this.el.demoFailed)
       this.el.demoFailed.textContent = results.failed || 0;
-      this.el.demoFailed.className = results.failed > 0 ? "text-danger" : "";
-    }
     if (this.el.demoSkipped)
       this.el.demoSkipped.textContent = results.skipped || 0;
 
@@ -1054,13 +835,12 @@ class PopupController {
         ? ((results.passed / results.total) * 100).toFixed(1) + "%"
         : "0%";
     if (this.el.demoRate) this.el.demoRate.textContent = successRate;
+    if (this.el.demoDuration) {
+      this.el.demoDuration.textContent = results.duration
+        ? (results.duration / 1000).toFixed(2) + "s"
+        : "--";
+    }
 
-    const duration = results.duration
-      ? (results.duration / 1000).toFixed(2) + "s"
-      : "--";
-    if (this.el.demoDuration) this.el.demoDuration.textContent = duration;
-
-    // Display detailed test results
     if (this.el.demoResultsDetail && results.tests) {
       this.el.demoResultsDetail.innerHTML = results.tests
         .map((test) => {
@@ -1077,17 +857,6 @@ class PopupController {
         })
         .join("");
     }
-
-    // Update progress bar
-    this._updateDemoProgress(
-      100,
-      `Complete: ${results.passed}/${results.total} passed`,
-    );
-
-    this.logger.info(
-      "popup",
-      `📊 Demo results displayed: ${results.passed}/${results.total} passed (${successRate})`,
-    );
   }
 
   // ==========================================================================
@@ -1095,33 +864,8 @@ class PopupController {
   // ==========================================================================
   _getBackgroundStats() {
     chrome.runtime.sendMessage({ action: "getStats" }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error("[Popup] Stats error:", chrome.runtime.lastError.message);
-        this._updateStatsDisplay({
-          requestsIntercepted: 0,
-          corsHeadersAdded: 0,
-          activeStreams: [],
-          recentRequests: [],
-          corsRules: { totalRules: 0, domains: [] },
-        });
-        if (this.el.corsModeBadge) {
-          this.el.corsModeBadge.textContent = "Connecting...";
-          this.el.corsModeBadge.style.background = "#ff444422";
-          this.el.corsModeBadge.style.color = "#ff4444";
-          this.el.corsModeBadge.style.border = "1px solid #ff444444";
-        }
-        return;
-      }
-
-      if (response && response.success) {
-        this._updateStatsDisplay(response.stats);
-        if (this.el.corsModeBadge) {
-          this.el.corsModeBadge.textContent = "Auto-Fix Active";
-          this.el.corsModeBadge.style.background = "#00ff8822";
-          this.el.corsModeBadge.style.color = "#00ff88";
-          this.el.corsModeBadge.style.border = "1px solid #00ff8844";
-        }
-      }
+      if (chrome.runtime.lastError || !response?.success) return;
+      this._updateStatsDisplay(response.stats);
     });
   }
 
@@ -1135,38 +879,17 @@ class PopupController {
     if (this.el.statRules)
       this.el.statRules.textContent = stats.corsRules?.totalRules || 0;
 
-    if (
-      stats.activeStreams &&
-      stats.activeStreams.length > 0 &&
-      this.el.domainList
-    ) {
+    if (stats.activeStreams?.length > 0 && this.el.domainList) {
       this.el.domainList.style.display = "block";
-      const recentDomains = stats.recentRequests || [];
-      const domainCorsStatus = {};
-      recentDomains.forEach((req) => {
-        if (!domainCorsStatus[req.domain]) {
-          domainCorsStatus[req.domain] = req.hasCORS;
-        }
-      });
-
       const rulesDomains = new Set(stats.corsRules?.domains || []);
-
       if (this.el.domainListContent) {
         this.el.domainListContent.innerHTML = stats.activeStreams
           .map((domain) => {
-            let badgeClass = "ok";
-            let badgeText = "OK";
-            if (rulesDomains.has(domain)) {
-              badgeClass = "fixed";
-              badgeText = "Fixed";
-            } else if (domainCorsStatus[domain] === false) {
-              badgeClass = "error";
-              badgeText = "Blocked";
-            }
+            const fixed = rulesDomains.has(domain);
             return `
               <div class="domain-item">
                 <span class="domain-name" title="${domain}">${domain}</span>
-                <span class="cors-badge ${badgeClass}">${badgeText}</span>
+                <span class="cors-badge ${fixed ? "fixed" : "ok"}">${fixed ? "Fixed" : "OK"}</span>
               </div>
             `;
           })
@@ -1177,172 +900,6 @@ class PopupController {
     }
   }
 
-  // ==========================================================================
-  // Stream URL Detection (NEW)
-  // ==========================================================================
-  /**
-   * Detect the stream URL from multiple sources:
-   * 1. Video element's src on the active page
-   * 2. Background's request history (recent .m3u8 URLs)
-   * 3. Keep current popup input value as fallback
-   *
-   * @returns {Promise<string>} Detected stream URL
-   */
-  async _detectStreamUrl() {
-    this.logger.info("popup", "🔍 Detecting stream URL...");
-
-    // Source 1: Try to get the video element's source from the page
-    if (this.activeTabId && this.videoFound) {
-      try {
-        const videoInfo = await this._getVideoElementInfo();
-        if (videoInfo && videoInfo.currentSrc) {
-          const src = videoInfo.currentSrc;
-          // Filter out blob URLs (these are temporary MSE URLs, not the actual stream)
-          if (src && !src.startsWith("blob:")) {
-            this.logger.info(
-              "popup",
-              `✅ Stream URL from video element: ${src}`,
-            );
-            return src;
-          } else if (src && src.startsWith("blob:")) {
-            this.logger.info(
-              "popup",
-              `⚠️ Video src is blob URL, checking other sources...`,
-            );
-            // Blob URLs mean MSE is being used - the actual stream URL is different
-            // Continue to check background history
-          }
-        }
-      } catch (error) {
-        this.logger.debug(
-          "popup",
-          `Could not get URL from video element: ${error.message}`,
-        );
-      }
-    }
-
-    // Source 2: Try to get the stream URL from background request history
-    try {
-      const response = await this._sendMessageAsync({ action: "getStats" });
-      if (response && response.success && response.stats) {
-        const stats = response.stats;
-
-        // Look for recent .m3u8 requests
-        if (stats.recentRequests && stats.recentRequests.length > 0) {
-          // Find the most recent .m3u8 URL
-          const recentM3u8 = stats.recentRequests
-            .filter((req) => req.url && req.url.endsWith(".m3u8"))
-            .sort((a, b) => b.timestamp - a.timestamp);
-
-          if (recentM3u8.length > 0) {
-            const streamUrl = recentM3u8[0].url;
-            this.logger.info(
-              "popup",
-              `✅ Stream URL from background history: ${streamUrl}`,
-            );
-            return streamUrl;
-          }
-        }
-
-        // Check active streams (domains only, but better than nothing)
-        if (stats.activeStreams && stats.activeStreams.length > 0) {
-          const domain = stats.activeStreams[0];
-          this.logger.info(
-            "popup",
-            `⚠️ Only domain available from background: ${domain}`,
-          );
-          // Can't reconstruct full URL from domain alone
-        }
-      }
-    } catch (error) {
-      this.logger.debug(
-        "popup",
-        `Could not get URL from background: ${error.message}`,
-      );
-    }
-
-    // Source 3: Keep current popup input value (fallback)
-    const currentValue = this.el.streamUrl?.value?.trim();
-    if (currentValue) {
-      this.logger.info(
-        "popup",
-        `ℹ️ Using existing popup input value: ${currentValue}`,
-      );
-      return currentValue;
-    }
-
-    // Ultimate fallback
-    const fallback = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
-    this.logger.info(
-      "popup",
-      `⚠️ No stream URL detected, using fallback: ${fallback}`,
-    );
-    return fallback;
-  }
-
-  /**
-   * Send a message to background.js and wait for response
-   * @param {Object} message - Message to send
-   * @returns {Promise<Object>} Response
-   */
-  _sendMessageAsync(message) {
-    return new Promise((resolve, reject) => {
-      if (
-        typeof chrome === "undefined" ||
-        !chrome.runtime ||
-        !chrome.runtime.sendMessage
-      ) {
-        resolve({ success: false, error: "chrome.runtime not available" });
-        return;
-      }
-      chrome.runtime.sendMessage(message, (response) => {
-        if (chrome.runtime.lastError) {
-          resolve({
-            success: false,
-            error: chrome.runtime.lastError.message,
-          });
-          return;
-        }
-        resolve(response || { success: false, error: "No response" });
-      });
-    });
-  }
-
-  /**
-   * Get the original page URL to use as referer
-   */
-  async _getOriginalReferer() {
-    if (!this.activeTabId) return null;
-
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: this.activeTabId },
-        func: () => {
-          return {
-            url: window.location.href,
-            referer: document.referrer || window.location.href,
-            origin: window.location.origin,
-          };
-        },
-      });
-
-      if (results && results[0] && results[0].result) {
-        const info = results[0].result;
-        this.logger.info("popup", `🌐 Original page: ${info.origin}`);
-        return info;
-      }
-    } catch (error) {
-      this.logger.debug(
-        "popup",
-        "Could not get page referer: " + error.message,
-      );
-    }
-    return null;
-  }
-
-  // --------------------------------------------------------------------------
-  // Cleanup
-  // --------------------------------------------------------------------------
   destroy() {
     if (this._statsInterval) clearInterval(this._statsInterval);
     if (this._videoCheckInterval) clearInterval(this._videoCheckInterval);
@@ -1351,23 +908,42 @@ class PopupController {
 }
 
 // ============================================================================
-// CONTENT SCRIPTS - Injected into the active tab via chrome.scripting
+// CONTENT SCRIPTS - All injected into MAIN world
 // ============================================================================
 
 /**
- * Setup MutationObserver on the page to watch for video element.
- * This function is serialized and executed in the page context.
+ * FIXED: Inject a combined script string into the page's MAIN world.
+ * Uses a <script> element appended to the document, NOT removed until
+ * the script fully executes.
  *
- * @param {string} videoSelector - CSS selector for the video element
- * @param {number} timeout - Maximum time to wait in milliseconds
+ * @param {string} combinedScript - All scripts combined into one string
+ */
+function injectCombinedScript(combinedScript) {
+  console.log(
+    "[HLS-Inject] 💉 Injecting combined script into MAIN world (" +
+      combinedScript.length +
+      " chars)",
+  );
+
+  const script = document.createElement("script");
+  script.id = "hlsjs-extension-injected";
+  script.textContent = combinedScript;
+
+  // Append to document (don't remove - let it stay for debugging)
+  (document.head || document.documentElement).appendChild(script);
+
+  console.log("[HLS-Inject] ✓ Script element added to DOM");
+  return true;
+}
+
+/**
+ * Setup MutationObserver on the page to watch for video element.
  */
 function setupVideoObserver(videoSelector, timeout) {
   console.log(
-    `[ContentScript] 🔍 Setting up MutationObserver for selector: "${videoSelector}"`,
+    `[ContentScript] 🔍 Setting up MutationObserver for: "${videoSelector}"`,
   );
-  console.log(`[ContentScript] ⏱️ Timeout: ${timeout}ms`);
 
-  // Store observer state on window to persist across checks
   window.__hlsVideoObserver = window.__hlsVideoObserver || {
     found: false,
     observer: null,
@@ -1377,68 +953,34 @@ function setupVideoObserver(videoSelector, timeout) {
 
   const state = window.__hlsVideoObserver;
 
-  // Check if already found
   const existingVideo = document.querySelector(videoSelector);
   if (existingVideo) {
-    console.log(`[ContentScript] ✅ Video element already exists in DOM!`);
+    console.log(`[ContentScript] ✅ Video element already exists!`);
     state.found = true;
     return;
   }
 
-  // Check if observer is already running
-  if (state.observer) {
-    console.log(`[ContentScript] Observer already running...`);
-    return;
-  }
+  if (state.observer) return;
 
-  // Create MutationObserver
   const observer = new MutationObserver((mutations, obs) => {
-    // Check for timeout
     if (Date.now() - state.startTime > timeout) {
-      console.log(`[ContentScript] ⏰ Observer timed out after ${timeout}ms`);
       obs.disconnect();
       state.observer = null;
       return;
     }
-
-    // Check if video element exists now
     const videoEl = document.querySelector(videoSelector);
     if (videoEl) {
-      console.log(
-        `[ContentScript] 🎯 Video element FOUND via MutationObserver!`,
-      );
-      console.log(`[ContentScript]    Tag: ${videoEl.tagName}`);
-      console.log(`[ContentScript]    Src: ${videoEl.currentSrc || "(none)"}`);
-      console.log(`[ContentScript]    Duration: ${videoEl.duration}`);
-
+      console.log(`[ContentScript] 🎯 Video element FOUND!`);
       state.found = true;
-
-      // We can disconnect now since we found the element
-      // But keep watching in case it's removed and re-added
-      // obs.disconnect();
-      // state.observer = null;
     }
   });
 
-  // Start observing
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-  });
-
+  observer.observe(document.body, { childList: true, subtree: true });
   state.observer = observer;
-
-  console.log(
-    `[ContentScript] 👁️ MutationObserver started watching for "${videoSelector}"`,
-  );
 }
 
 /**
  * Get current status of the video element.
- * This function is serialized and executed in the page context.
- *
- * @param {string} videoSelector - CSS selector for the video element
- * @returns {Object} Status object with found flag and video info
  */
 function getVideoElementStatus(videoSelector) {
   const state = window.__hlsVideoObserver || {};
@@ -1446,7 +988,6 @@ function getVideoElementStatus(videoSelector) {
 
   if (videoEl) {
     state.found = true;
-
     return {
       found: true,
       info: {
@@ -1460,15 +1001,6 @@ function getVideoElementStatus(videoSelector) {
     };
   }
 
-  // If observer timed out, report not found
-  if (state.startTime && Date.now() - state.startTime > 30000) {
-    return {
-      found: false,
-      info: null,
-      timedOut: true,
-    };
-  }
-
   return {
     found: false,
     info: null,
@@ -1477,217 +1009,165 @@ function getVideoElementStatus(videoSelector) {
 }
 
 /**
- * Get detailed video element information from the page.
- *
- * @param {string} videoSelector - CSS selector for the video element
- * @returns {Object|null} Video element information
+ * Get detailed video element information.
  */
 function getVideoElementInfoFromPage(videoSelector) {
   const videoEl = document.querySelector(videoSelector);
-
-  if (!videoEl) {
-    console.log(
-      `[ContentScript] ❌ Video element not found: "${videoSelector}"`,
-    );
-    return null;
-  }
-
-  const info = {
+  if (!videoEl) return null;
+  return {
     tagName: videoEl.tagName,
     currentSrc: videoEl.currentSrc,
     duration: videoEl.duration,
     paused: videoEl.paused,
     readyState: videoEl.readyState,
-    networkState: videoEl.networkState,
-    videoWidth: videoEl.videoWidth,
-    videoHeight: videoEl.videoHeight,
-    hasHlsInstance: !!(window.hls || (window.Hls && window.Hls.instances)),
   };
-
-  console.log(`[ContentScript] 📹 Video info:`, info);
-  return info;
 }
 
 /**
- * Execute a demo step on the page.
- * This function is serialized and executed in the page context.
- * ALL helper logic must be inline - no external function calls.
- *
- * @param {Object} step - The demo step to execute
- * @param {string} videoSelector - CSS selector for the video element
- * @returns {Object} Result of the demo step execution
+ * Load a stream URL into a video element on the page.
  */
-function executeDemoStepOnPage(step, videoSelector) {
-  console.log(
-    `[ContentScript] 🎬 Executing demo step: ${step.name || step.action}`,
-  );
+function loadStreamOnPage(url, videoSelector) {
+  console.log(`[ContentScript] 📥 Loading stream: ${url}`);
   try {
-    const videoEl = document.querySelector(videoSelector);
-    if (!videoEl) {
-      return {
-        success: false,
-        error: `Video element not found: "${videoSelector}"`,
-      };
+    let videoEl =
+      document.querySelector(videoSelector) || document.querySelector("video");
+    if (!videoEl) return { success: false, error: "No video element found" };
+
+    if (typeof Hls !== "undefined" && Hls.isSupported()) {
+      if (videoEl._hlsInstance) videoEl._hlsInstance.destroy();
+      const hls = new Hls({ debug: false, enableWorker: true });
+      hls.loadSource(url);
+      hls.attachMedia(videoEl);
+      videoEl._hlsInstance = hls;
+      return { success: true, method: "hlsjs" };
+    } else if (videoEl.canPlayType("application/vnd.apple.mpegurl")) {
+      videoEl.src = url;
+      return { success: true, method: "native" };
     }
-
-    // Handle different step actions
-    switch (step.action) {
-      case "play":
-        videoEl.play();
-        return { success: true, action: "play" };
-
-      case "pause":
-        videoEl.pause();
-        return { success: true, action: "pause" };
-
-      case "seek":
-        if (step.time !== undefined) {
-          videoEl.currentTime = step.time;
-          return { success: true, action: "seek", time: step.time };
-        }
-        return { success: false, error: "No time specified for seek" };
-
-      case "getState":
-        return {
-          success: true,
-          state: {
-            currentTime: videoEl.currentTime,
-            duration: videoEl.duration,
-            paused: videoEl.paused,
-            readyState: videoEl.readyState,
-            networkState: videoEl.networkState,
-            videoWidth: videoEl.videoWidth,
-            videoHeight: videoEl.videoHeight,
-          },
-        };
-
-      case "setVolume":
-        if (step.volume !== undefined) {
-          videoEl.volume = Math.max(0, Math.min(1, step.volume));
-          return { success: true, action: "setVolume", volume: videoEl.volume };
-        }
-        return { success: false, error: "No volume specified" };
-
-      case "getVolume":
-        return { success: true, volume: videoEl.volume, muted: videoEl.muted };
-
-      // ====================================================================
-      // loadStream: ALL logic inline (no external function calls)
-      // because chrome.scripting.executeScript only serializes THIS function
-      // ====================================================================
-      case "loadStream": {
-        const url = step.streamUrl;
-        if (!url) {
-          return { success: false, error: "No stream URL provided" };
-        }
-
-        // Store the original referer for fetch-proxy to use
-        const referer = step.referer || window.location.href;
-        console.log(`[ContentScript] 📥 Loading stream: ${url}`);
-        console.log(`[ContentScript] 🔑 Using referer: ${referer}`);
-
-        // Store referer globally so fetch-proxy can access it
-        window.__hlsOriginalReferer = referer;
-        window.__hlsStreamUrl = url;
-
-        const videoEl = document.querySelector(videoSelector);
-        if (!videoEl) {
-          return {
-            success: false,
-            error: `Video element not found: "${videoSelector}"`,
-          };
-        }
-
-        // Try native HLS first (works with proper referer)
-        console.log(`[ContentScript] Using native HLS support with referer`);
-        videoEl.src = url;
-        videoEl.crossOrigin = "anonymous";
-
-        return { success: true, method: "native" };
-      }
-
-      default:
-        // For unknown actions, try to execute as a video method
-        if (typeof videoEl[step.action] === "function") {
-          const result = videoEl[step.action](...(step.args || []));
-          return { success: true, action: step.action, result: result };
-        }
-        return { success: false, error: `Unknown action: ${step.action}` };
-    }
+    return { success: false, error: "HLS not supported" };
   } catch (error) {
-    console.error(`[ContentScript] ❌ Demo step failed:`, error);
     return { success: false, error: error.message };
   }
 }
 
 /**
- * Load a stream URL into a video element on the page.
- *
- * @param {string} url - The stream URL to load
- * @param {string} videoSelector - CSS selector for the video element
- * @returns {Object} Result of the load operation
+ * ========================================================================
+ * MAIN DEMO FUNCTION - Runs ALL demos in the page's MAIN world
+ * ========================================================================
+ * This runs in MAIN world and has access to window.Hls, window.HlsPlayer, etc.
+ * that were set by the injected scripts.
  */
-function loadStreamOnPage(url, videoSelector) {
-  console.log(`[ContentScript] 📥 Loading stream: ${url}`);
-  console.log(`[ContentScript] 🎯 Target selector: ${videoSelector}`);
+function runAllDemosOnPage(videoSelector, streamUrl, originalReferer) {
+  console.log(
+    "[PageDemo] ==========================================================",
+  );
+  console.log("[PageDemo] 🚀 RUNNING ALL DEMOS ON PAGE (MAIN world)");
+  console.log(
+    "[PageDemo] ==========================================================",
+  );
+  console.log(`[PageDemo] Video Selector: ${videoSelector}`);
+  console.log(`[PageDemo] Stream URL: ${streamUrl}`);
 
   try {
-    // Try to find existing video element
-    let videoEl = document.querySelector(videoSelector);
-
-    // If no video element found, try to create one or look for any video
+    // Step 1: Find video element
+    const videoEl = document.querySelector(videoSelector);
     if (!videoEl) {
-      console.log(
-        `[ContentScript] ⚠️ Target video not found, looking for any video element...`,
-      );
-      videoEl = document.querySelector("video");
+      return { success: false, error: `Video not found: ${videoSelector}` };
+    }
+    console.log(`[PageDemo] ✅ Video element: ${videoEl.tagName}`);
 
-      if (!videoEl) {
-        console.log(`[ContentScript] ❌ No video element found on page`);
-        return { success: false, error: "No video element found on page" };
-      }
-
-      console.log(`[ContentScript] Found alternative video element:`, videoEl);
+    // Step 2: Set referer
+    if (originalReferer) {
+      window.__hlsOriginalReferer = originalReferer;
+      console.log(`[PageDemo] 🔑 Referer: ${originalReferer}`);
     }
 
-    // Check if HLS.js is available
-    if (typeof Hls !== "undefined" && Hls.isSupported()) {
+    // Step 3: Verify modules (using window.* since we're in MAIN world)
+    const requiredModules = [
+      "Hls",
+      "HlsPlayer",
+      "Logger",
+      "DemoRunner",
+      "PlaybackController",
+      "QualityController",
+      "AudioController",
+      "LiveController",
+      "ErrorController",
+      "IFrameController",
+      "DRMController",
+      "CMCDController",
+    ];
+
+    const missingModules = requiredModules.filter((m) => {
+      return typeof window[m] === "undefined" || window[m] === null;
+    });
+
+    if (missingModules.length > 0) {
+      console.error("[PageDemo] ❌ Missing modules:", missingModules);
       console.log(
-        `[ContentScript] ✅ HLS.js is available, creating HLS instance`,
+        "[PageDemo] Available on window:",
+        Object.keys(window)
+          .filter(
+            (k) =>
+              typeof window[k] === "function" && k[0] === k[0].toUpperCase(),
+          )
+          .join(", "),
       );
-
-      // Destroy existing HLS instance if any
-      if (videoEl._hlsInstance) {
-        videoEl._hlsInstance.destroy();
-        console.log(`[ContentScript] 🗑️ Destroyed previous HLS instance`);
-      }
-
-      const hls = new Hls({
-        debug: false,
-        enableWorker: true,
-      });
-
-      hls.loadSource(url);
-      hls.attachMedia(videoEl);
-
-      videoEl._hlsInstance = hls;
-
-      console.log(`[ContentScript] ✅ HLS stream loaded`);
-      return { success: true, method: "hlsjs" };
-    } else if (videoEl.canPlayType("application/vnd.apple.mpegurl")) {
-      // Native HLS support (Safari)
-      console.log(`[ContentScript] Using native HLS support`);
-      videoEl.src = url;
-      return { success: true, method: "native" };
-    } else {
       return {
         success: false,
-        error: "HLS playback not supported on this page",
+        error:
+          `Missing modules: ${missingModules.join(", ")}. ` +
+          `Check that scripts were injected into MAIN world.`,
       };
     }
+    console.log(`[PageDemo] ✅ All ${requiredModules.length} modules verified`);
+
+    // Step 4: Pre-load CORS rules
+    if (
+      window.FetchProxy &&
+      typeof window.FetchProxy.preloadCorsRules === "function"
+    ) {
+      console.log("[PageDemo] 🔧 Pre-loading CORS rules...");
+      window.FetchProxy.preloadCorsRules(streamUrl);
+    }
+
+    // Step 5: Create DemoRunner and run ALL tests
+    console.log("[PageDemo] 🏃 Creating DemoRunner...");
+    const demoRunner = new DemoRunner();
+
+    console.log("[PageDemo] ▶️ Running all demos (this may take a while)...");
+
+    return demoRunner
+      .runAll({
+        videoElement: videoEl,
+        streamUrl: streamUrl,
+        verbose: true,
+        stopOnFailure: false,
+        playerProxy: null,
+      })
+      .then((results) => {
+        console.log(
+          "[PageDemo] ==========================================================",
+        );
+        console.log(
+          `[PageDemo] ✅ ALL DEMOS COMPLETE: ${results.passed}/${results.total} passed`,
+        );
+        console.log(
+          "[PageDemo] ==========================================================",
+        );
+        return { success: true, results: results, error: null };
+      })
+      .catch((error) => {
+        console.error("[PageDemo] ❌ Demo run failed:", error);
+        return {
+          success: false,
+          results: demoRunner.results || null,
+          error: error.message,
+        };
+      });
   } catch (error) {
-    console.error(`[ContentScript] ❌ Failed to load stream:`, error);
-    return { success: false, error: error.message };
+    console.error("[PageDemo] ❌ Setup failed:", error);
+    return { success: false, results: null, error: error.message };
   }
 }
 
@@ -1695,27 +1175,11 @@ function loadStreamOnPage(url, videoSelector) {
 // Initialize
 // ============================================================================
 document.addEventListener("DOMContentLoaded", () => {
-  console.log("[Popup] 🚀 Popup initializing (Independent Mode)...");
-  console.log("[Popup] 📋 VIDEO_SELECTOR:", CONFIG.VIDEO_SELECTOR);
-  console.log(
-    "[Popup] 📋 DemoRunner available:",
-    typeof DemoRunner !== "undefined",
-  );
-
+  console.log("[Popup] 🚀 Popup initializing (Fully Independent Mode)...");
   window.popupController = new PopupController();
-
   console.log("[Popup] ✓ Popup ready");
-  console.log(
-    "[Popup] ℹ️  Independent mode: works directly with current page's video element",
-  );
-  console.log(
-    "[Popup] ℹ️  Uses MutationObserver to wait for video element to appear",
-  );
 });
 
-// Cleanup on unload
 window.addEventListener("beforeunload", () => {
-  if (window.popupController) {
-    window.popupController.destroy();
-  }
+  if (window.popupController) window.popupController.destroy();
 });

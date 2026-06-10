@@ -56,11 +56,24 @@ class PlayerApp {
    */
   _checkAutoRun() {
     const urlParams = new URLSearchParams(window.location.search);
-    const autoUrl = urlParams.get("url"); // ✅ Reads ?url= parameter
+    const autoUrl = urlParams.get("url");
+    const autoRun = urlParams.get("autorun");
 
     if (autoUrl) {
       document.getElementById("streamUrl").value = autoUrl;
       Logger.info("app", `Auto-run URL set: ${autoUrl}`);
+
+      // If autorun is true, load the stream and then run demos
+      if (autoRun === "true") {
+        Logger.info(
+          "app",
+          "🚀 Autorun enabled - will run all demos after stream loads",
+        );
+        this._loadStream();
+
+        // Wait for manifest to load, then run demos
+        this._autoRunOnManifestLoad();
+      }
     }
   }
 
@@ -401,19 +414,18 @@ class PlayerApp {
 
     try {
       const options = {
-        videoElement: this.videoEl, // Fresh video element, no existing player
+        videoElement: this.videoEl,
         streamUrl: streamUrl,
         verbose: true,
         stopOnFailure: false,
-        skipLive: document.getElementById("demoSkipLive")?.checked || false,
-        skipDRM: document.getElementById("demoSkipDRM")?.checked || true,
-        skipCMCD: document.getElementById("demoSkipCMCD")?.checked || false,
-        skipIFrame: document.getElementById("demoSkipIFrame")?.checked || false,
       };
 
       const results = await this.demoRunner.runAll(options);
       this._displayDemoResults(results);
       this._updateDemoStatus("✅ Complete");
+
+      // NEW: Send results to popup
+      this._sendResultsToPopup(results);
 
       Logger.info("app", "=".repeat(50));
       Logger.info("app", "✅ DEMONSTRATION COMPLETE");
@@ -469,10 +481,6 @@ class PlayerApp {
         streamUrl: streamUrl,
         verbose: true,
         stopOnFailure: false,
-        skipLive: true,
-        skipDRM: true,
-        skipCMCD: true,
-        skipIFrame: true,
       };
 
       const results = await this.demoRunner.runAll(options);
@@ -484,6 +492,85 @@ class PlayerApp {
     } finally {
       this.isDemoRunning = false;
       this._setDemoRunningState(false);
+    }
+  }
+
+  // ==========================================================================
+  // NEW: Send demo results back to popup (if opened from popup)
+  // ==========================================================================
+
+  /**
+   * Send demo results back to the extension popup.
+   * Called when demos complete if the player was opened from the popup.
+   *
+   * @param {Object} results - Demo results object
+   */
+  _sendResultsToPopup(results) {
+    if (
+      typeof chrome === "undefined" ||
+      !chrome.runtime ||
+      !chrome.runtime.sendMessage
+    ) {
+      Logger.debug(
+        "app",
+        "Not in extension context, cannot send results to popup",
+      );
+      return;
+    }
+
+    try {
+      chrome.runtime.sendMessage(
+        {
+          action: "demoResults",
+          results: results,
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            Logger.debug(
+              "app",
+              "Popup may not be listening: " + chrome.runtime.lastError.message,
+            );
+            return;
+          }
+          Logger.info("app", "📤 Demo results sent to popup");
+        },
+      );
+    } catch (error) {
+      Logger.debug("app", "Failed to send results to popup: " + error.message);
+    }
+  }
+
+  // ==========================================================================
+  // NEW: Send progress updates to popup
+  // ==========================================================================
+  /**
+   * Send demo progress updates back to the extension popup.
+   *
+   * @param {number} current - Current test number
+   * @param {number} total - Total tests
+   * @param {string} currentTest - Current test name
+   */
+  _sendProgressToPopup(current, total, currentTest) {
+    if (
+      typeof chrome === "undefined" ||
+      !chrome.runtime ||
+      !chrome.runtime.sendMessage
+    ) {
+      return;
+    }
+
+    const progress = total > 0 ? Math.round((current / total) * 100) : 0;
+
+    try {
+      chrome.runtime.sendMessage({
+        action: "demoProgress",
+        current: current,
+        total: total,
+        currentTest: currentTest,
+        progress: progress,
+      });
+    } catch (error) {
+      // Silently ignore - popup may not be open
     }
   }
 
@@ -550,7 +637,6 @@ class PlayerApp {
     document.getElementById("demoTotal").textContent = "--";
     document.getElementById("demoPassed").textContent = "--";
     document.getElementById("demoFailed").textContent = "--";
-    document.getElementById("demoSkipped").textContent = "--";
     document.getElementById("demoRate").textContent = "--";
     document.getElementById("demoDuration").textContent = "--";
     document.getElementById("demoResultsDetail").innerHTML = "";
@@ -565,7 +651,6 @@ class PlayerApp {
     document.getElementById("demoTotal").textContent = results.total || 0;
     document.getElementById("demoPassed").textContent = results.passed || 0;
     document.getElementById("demoFailed").textContent = results.failed || 0;
-    document.getElementById("demoSkipped").textContent = results.skipped || 0;
 
     const successRate =
       results.total > 0
