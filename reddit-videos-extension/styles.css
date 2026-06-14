@@ -1,202 +1,72 @@
 /* ============================================
-   Reddit Auto Video Player - Styles v8.0
+   Reddit Auto Video Player - Styles v8.1
+   Enhanced Contrast & Visibility
    ============================================ */
 
 /* ---------- Floating Control Panel ---------- */
-#reddit-auto-player-panel {
-  position: fixed;
-  top: 80px;
-  right: 20px;
-  z-index: 2147483647;
-  background: rgba(255, 69, 0, 0.95);
-  color: white;
-  padding: 12px 16px;
-  border-radius: 12px;
-  box-shadow: 0 8px 25px rgba(255, 69, 0, 0.4);
-  font-family:
-    system-ui,
-    -apple-system,
-    sans-serif;
-  font-size: 14px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  transition:
-    top 0.3s ease,
-    opacity 0.3s ease;
-  user-select: none;
-  cursor: move;
-}
-
 #reddit-auto-player-panel:hover {
   opacity: 1 !important;
-  box-shadow: 0 12px 30px rgba(255, 69, 0, 0.6);
+  box-shadow: 0 12px 30px rgba(255, 69, 0, 0.6) !important;
 }
 
-/* Panel when dragging */
-#reddit-auto-player-panel.dragging {
-  transition: none;
-  opacity: 0.9;
-  box-shadow: 0 15px 35px rgba(255, 69, 0, 0.7);
-}
-
-/* ---------- Panel Checkbox ---------- */
-#reddit-auto-player-toggle {
-  width: 18px;
-  height: 18px;
-  accent-color: #ffffff;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-#reddit-auto-player-toggle:hover {
-  transform: scale(1.1);
-}
-
-/* ---------- Panel Label ---------- */
-#reddit-auto-player-label {
-  cursor: pointer;
-  font-weight: 600;
-  user-select: none;
-  white-space: nowrap;
-  line-height: 1.4;
-}
-
-/* ---------- Video Styling (Currently Playing) ---------- */
-[data-currently-playing="true"] shreddit-player video {
-  transition:
-    transform 0.3s ease,
-    filter 0.3s ease;
-  transform: scale(1.05);
-  filter: brightness(1.05) contrast(1.05);
-}
-
-/* ---------- Contrasting Background Container ---------- */
-.reddit-video-bg {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(
-    135deg,
-    rgba(20, 20, 20, 0.85) 0%,
-    rgba(40, 40, 40, 0.85) 100%
-  );
-  border-radius: 8px;
-  z-index: 0;
-  pointer-events: none;
-  animation: fadeInBg 0.5s ease;
-}
-
+/* ---------- Video Background Animation ---------- */
 @keyframes fadeInBg {
   from {
     opacity: 0;
+    transform: scale(0.95);
   }
   to {
     opacity: 1;
+    transform: scale(1);
   }
 }
 
 /* ---------- Video Post Clickable Cursor ---------- */
-shreddit-post[data-has-video="true"] {
-  cursor: pointer;
-  transition: transform 0.2s ease;
-}
-
 shreddit-post[data-has-video="true"]:hover {
-  transform: scale(1.01);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
 }
 
-/* ---------- Play Overlay (for autoplay restrictions) ---------- */
-.reddit-play-overlay {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: rgba(0, 0, 0, 0.85);
-  color: white;
-  padding: 15px 25px;
-  border-radius: 8px;
-  cursor: pointer;
-  z-index: 9999;
-  font-family:
-    system-ui,
-    -apple-system,
-    sans-serif;
-  font-size: 16px;
-  font-weight: 600;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
-  border: 2px solid rgba(255, 69, 0, 0.6);
-  transition: all 0.2s ease;
-  animation: pulseOverlay 2s infinite;
-}
-
-.reddit-play-overlay:hover {
-  background: rgba(255, 69, 0, 0.9);
-  transform: translate(-50%, -50%) scale(1.1);
-  box-shadow: 0 8px 25px rgba(255, 69, 0, 0.6);
-}
-
+/* ---------- Play Overlay Animation ---------- */
 @keyframes pulseOverlay {
   0%,
   100% {
     border-color: rgba(255, 69, 0, 0.6);
   }
   50% {
-    border-color: rgba(255, 69, 0, 0.9);
+    border-color: rgba(255, 255, 255, 0.9);
   }
-}
-
-/* ---------- Video Status Indicator ---------- */
-.reddit-video-status {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  background: rgba(0, 0, 0, 0.7);
-  color: #ff4500;
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-family: system-ui, monospace;
-  z-index: 100;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-
-[data-currently-playing="true"] .reddit-video-status {
-  opacity: 1;
 }
 
 /* ---------- Responsive Adjustments ---------- */
 @media (max-width: 768px) {
   #reddit-auto-player-panel {
-    top: 60px;
-    right: 10px;
-    padding: 8px 12px;
-    font-size: 12px;
-    gap: 8px;
+    top: 60px !important;
+    right: 10px !important;
+    padding: 8px 12px !important;
+    font-size: 12px !important;
+    gap: 8px !important;
   }
 
   #reddit-auto-player-label {
-    font-size: 11px;
+    font-size: 11px !important;
   }
 }
 
 @media (max-width: 480px) {
   #reddit-auto-player-panel {
-    top: 50px;
-    right: 5px;
-    padding: 6px 10px;
-    border-radius: 8px;
+    top: 50px !important;
+    right: 5px !important;
+    padding: 6px 10px !important;
+    border-radius: 8px !important;
   }
 
   #reddit-auto-player-label {
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    max-width: 150px !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
   }
 }
