@@ -121,6 +121,48 @@
     return video.src ? video.src.split("/").pop().slice(0, 20) : "unknown";
   }
 
+  function setActionBarVisibility(post, visible) {
+    if (!post) return;
+
+    // Try finding rpl-action-bar in multiple ways (Shadow DOM or regular DOM)
+    let actionBar = null;
+
+    // Method 1: Check if shreddit-post has a shadow root with rpl-action-bar
+    if (post.shadowRoot) {
+      actionBar = post.shadowRoot.querySelector("rpl-action-bar");
+    }
+
+    // Method 2: Direct child in regular DOM
+    if (!actionBar) {
+      actionBar = post.querySelector("rpl-action-bar");
+    }
+
+    // Method 3: Check inside any nested shadow roots
+    if (!actionBar) {
+      const player = post.querySelector("shreddit-player");
+      if (player && player.shadowRoot) {
+        // Not likely here, but check anyway
+        actionBar = player.shadowRoot.querySelector("rpl-action-bar");
+      }
+    }
+
+    if (actionBar) {
+      actionBar.style.display = visible ? "" : "none";
+      log(`🎯 Action bar ${visible ? "shown" : "hidden"} for post`, "info");
+    } else {
+      log(
+        `⚠️ Could not find action bar to ${visible ? "show" : "hide"}`,
+        "warning",
+      );
+
+      // Debug: Log what we can find
+      if (post.shadowRoot) {
+        console.log("Shadow root children:", post.shadowRoot.children);
+      }
+      console.log("Post children:", post.children);
+    }
+  }
+
   // ==================== VOLUME PERSISTENCE ====================
   function loadSavedVolumes() {
     try {
@@ -380,6 +422,8 @@
     currentPlayingVideo = video;
     post.setAttribute("data-currently-playing", "true");
 
+    setActionBarVisibility(post, false);
+
     const postId = post.getAttribute("post-id") || "unknown";
     log(`▶️ Now playing: Post ${postId}`, "success");
 
@@ -474,6 +518,9 @@
     if (!currentPlayingPost) return;
 
     log("🧹 Cleaning up previous player", "info");
+
+    // Show action bar before cleaning up
+    setActionBarVisibility(currentPlayingPost, true);
 
     // Remove visual enhancements
     removeVideoStyling(currentPlayingPost);
