@@ -57,6 +57,20 @@
     document.body.appendChild(overlay);
     _overlayEl = overlay;
 
+    // Restore persisted size selection
+    const savedSize = localStorage.getItem("vo-overlay-size") || "m";
+    const player = document.getElementById("vo-player");
+    if (player) {
+      player.dataset.size = savedSize;
+      // Update active button
+      document.querySelectorAll(".vo-size-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.size === savedSize);
+      });
+      console.log(
+        `[Overlay] 🔄 Restored size "${savedSize}" from localStorage`,
+      );
+    }
+
     // Close on scrim click
     overlay.addEventListener("click", (e) => {
       if (e.target === overlay) {
@@ -85,6 +99,15 @@
       const size = btn.dataset.size;
       const player = document.getElementById("vo-player");
       player.dataset.size = size;
+
+      // Persist selection to localStorage
+      try {
+        localStorage.setItem("vo-overlay-size", size);
+        console.log(`[Overlay] 💾 Size "${size}" saved to localStorage`);
+      } catch (err) {
+        console.warn("[Overlay] Failed to save size preference:", err);
+      }
+
       document.querySelectorAll(".vo-size-btn").forEach((b) => {
         b.classList.toggle("active", b.dataset.size === size);
       });
