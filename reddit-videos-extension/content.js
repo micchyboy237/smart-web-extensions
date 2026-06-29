@@ -188,17 +188,13 @@
 
   // ==================== SHADOW DOM INJECTION ====================
   function injectShadowDOMStyles(shredditPlayer) {
-    if (!shredditPlayer || !shredditPlayer.shadowRoot) {
-      return false;
-    }
+    if (!shredditPlayer || !shredditPlayer.shadowRoot) return false;
     const shadowRoot = shredditPlayer.shadowRoot;
-    // Avoid duplicate injection
-    if (injectedShadowRoots.has(shadowRoot)) {
-      return true;
-    }
+    if (injectedShadowRoots.has(shadowRoot)) return true;
+
     try {
       const styleElement = document.createElement("style");
-      // Use getShadowStyles() to always get the current VIDEO_SCALE
+      styleElement.id = "reddit-auto-player-style";
       styleElement.textContent = CONFIG.getShadowStyles();
       shadowRoot.appendChild(styleElement);
       injectedShadowRoots.add(shadowRoot);
@@ -210,6 +206,38 @@
     } catch (error) {
       log(`❌ Shadow DOM injection failed: ${error.message}`, "error");
       return false;
+    }
+  }
+
+  function setVideoScaleEnabled(post, enabled) {
+    if (!post) return;
+    const shredditPlayer = post.querySelector("shreddit-player");
+    if (!shredditPlayer || !shredditPlayer.shadowRoot) return;
+
+    const shadowRoot = shredditPlayer.shadowRoot;
+    let overrideStyle = shadowRoot.getElementById("reddit-scale-override");
+
+    if (!enabled) {
+      // Inject an override that resets scale
+      if (!overrideStyle) {
+        overrideStyle = document.createElement("style");
+        overrideStyle.id = "reddit-scale-override";
+        shadowRoot.appendChild(overrideStyle);
+      }
+      overrideStyle.textContent = `
+        video, .video-element, .media-video {
+          transform: scale(1) !important;
+          filter: none !important;
+          box-shadow: none !important;
+        }
+      `;
+      log("🔽 Scale override applied — video at normal size", "info");
+    } else {
+      // Remove the override so the base style takes effect again
+      if (overrideStyle) {
+        overrideStyle.remove();
+        log("🔼 Scale override removed — video enlarged", "info");
+      }
     }
   }
 
@@ -339,10 +367,22 @@
 
           if (eventName === "pause") {
             video._redditUserPaused = true;
-            log("⏸️ User paused video", "warning");
+            log("⏸️ User paused video - shrinking video", "warning");
+
+            // Use scale override instead of removing all styling
+            if (currentPlayingPost) {
+              setVideoScaleEnabled(currentPlayingPost, false);
+            }
           }
+
           if (eventName === "play" || eventName === "playing") {
             video._redditUserPaused = false;
+
+            // Restore scale (only if this video is still the current one)
+            if (currentPlayingPost) {
+              setVideoScaleEnabled(currentPlayingPost, true);
+              log("🔼 Video scale restored on resume", "info");
+            }
           }
 
           // Apply volume only on initial play if no user preference
