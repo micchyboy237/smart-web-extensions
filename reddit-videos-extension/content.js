@@ -312,10 +312,71 @@
     log(`🧹 Removed video styling`, "info");
   }
 
+  // ==================== PAUSE/RESUME HANDLING ====================
+  function pauseVideo(post) {
+    if (!post) return;
+
+    log("⏸️ User paused video - restoring normal appearance", "warning");
+
+    // 1. Reset video scale
+    setVideoScaleEnabled(post, false);
+
+    // 2. Show action bar
+    setActionBarVisibility(post, true);
+
+    // 3. Remove background container
+    const bgContainer = post.querySelector(".reddit-video-bg");
+    if (bgContainer) {
+      bgContainer.style.display = "none";
+      log("🖼️ Background hidden on pause", "info");
+    }
+
+    // 4. Remove wrapper class styling
+    const wrapper = post.querySelector(".reddit-video-wrapper");
+    if (wrapper) {
+      wrapper.classList.remove("reddit-video-wrapper");
+      log("📦 Wrapper class removed on pause", "info");
+    }
+  }
+
+  function resumeVideo(post) {
+    if (!post) return;
+
+    log("▶️ Video resumed - restoring enhanced appearance", "info");
+
+    // 1. Restore video scale
+    setVideoScaleEnabled(post, true);
+
+    // 2. Hide action bar
+    setActionBarVisibility(post, false);
+
+    // 3. Show background container
+    const bgContainer = post.querySelector(".reddit-video-bg");
+    if (bgContainer) {
+      bgContainer.style.display = "";
+      log("🖼️ Background restored on resume", "info");
+    } else {
+      // Re-create background if it was removed
+      const player = post.querySelector("shreddit-player");
+      if (player && player.parentElement) {
+        const newBg = document.createElement("div");
+        newBg.className = "reddit-video-bg";
+        player.parentElement.insertBefore(newBg, player);
+        log("🖼️ Background re-created on resume", "info");
+      }
+    }
+
+    // 4. Re-add wrapper class
+    const player = post.querySelector("shreddit-player");
+    if (player && player.parentElement) {
+      player.parentElement.classList.add("reddit-video-wrapper");
+      log("📦 Wrapper class restored on resume", "info");
+    }
+  }
+
   // ==================== VOLUME MANAGEMENT ====================
   function applyUnmuteAndVolume(video, isNewVideo = false) {
     if (!video) return;
-
     const videoId = getVideoId(video);
 
     // Initialize state
@@ -335,7 +396,6 @@
       }
       video._settingVolumeProgrammatically = false;
     };
-
     video.removeEventListener("volumechange", volumeChangeHandler);
     video.addEventListener("volumechange", volumeChangeHandler);
 
@@ -358,33 +418,23 @@
       "canplay",
       "error",
     ];
-
     eventsToLog.forEach((eventName) => {
       video.addEventListener(
         eventName,
         () => {
           logState(eventName.toUpperCase());
-
           if (eventName === "pause") {
             video._redditUserPaused = true;
-            log("⏸️ User paused video - shrinking video", "warning");
-
-            // Use scale override instead of removing all styling
             if (currentPlayingPost) {
-              setVideoScaleEnabled(currentPlayingPost, false);
+              pauseVideo(currentPlayingPost);
             }
           }
-
           if (eventName === "play" || eventName === "playing") {
             video._redditUserPaused = false;
-
-            // Restore scale (only if this video is still the current one)
             if (currentPlayingPost) {
-              setVideoScaleEnabled(currentPlayingPost, true);
-              log("🔼 Video scale restored on resume", "info");
+              resumeVideo(currentPlayingPost);
             }
           }
-
           // Apply volume only on initial play if no user preference
           if (
             (eventName === "playing" || eventName === "canplay") &&
