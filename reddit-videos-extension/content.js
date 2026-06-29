@@ -6,24 +6,40 @@
   const CONFIG = {
     DEFAULT_VOLUME: 0.2,
     PANEL_TOP_OFFSET: 80,
-    VIDEO_SCALE: 1.15,
+    VIDEO_SCALE: 1.2,
     BACKGROUND_OPACITY: 0.95,
     STORAGE_KEY: "reddit_auto_player_volumes",
-    SHADOW_STYLES: `
-      video {
-        transform: scale(1.15) !important;
-        transition: transform 0.3s ease, filter 0.3s ease !important;
-        filter: brightness(1.1) contrast(1.1) saturate(1.05) !important;
-        box-shadow: 0 0 30px rgba(0, 0, 0, 0.5) !important;
-      }
-      :host {
-        background: #000000 !important;
-      }
-      .media-controls, .player-controls {
-        background: rgba(0, 0, 0, 0.8) !important;
-        backdrop-filter: blur(10px) !important;
-      }
-    `,
+    // SHADOW_STYLES is now a function so it always uses current VIDEO_SCALE
+    getShadowStyles: function () {
+      return `
+        :host {
+          background: #000000 !important;
+          overflow: visible !important;
+        }
+        .player-container, .video-container, .media-container {
+          overflow: visible !important;
+          max-width: none !important;
+          max-height: none !important;
+        }
+        video, .video-element, .media-video {
+          transform: scale(${this.VIDEO_SCALE}) !important;
+          transition: transform 0.3s ease, filter 0.3s ease !important;
+          filter: brightness(1.1) contrast(1.1) saturate(1.05) !important;
+          box-shadow: 0 0 30px rgba(0, 0, 0, 0.5) !important;
+          max-width: none !important;
+          max-height: none !important;
+          border-radius: 1rem !important;
+        }
+        div, section, article {
+          overflow: visible !important;
+        }
+        .media-controls, .player-controls {
+          background: rgba(0, 0, 0, 0.8) !important;
+          backdrop-filter: blur(10px) !important;
+        }
+      `;
+    },
+    SHADOW_STYLES: "", // Will be populated in init()
   };
 
   // ==================== STATE ====================
@@ -133,21 +149,21 @@
     if (!shredditPlayer || !shredditPlayer.shadowRoot) {
       return false;
     }
-
     const shadowRoot = shredditPlayer.shadowRoot;
-
     // Avoid duplicate injection
     if (injectedShadowRoots.has(shadowRoot)) {
       return true;
     }
-
     try {
       const styleElement = document.createElement("style");
-      styleElement.textContent = CONFIG.SHADOW_STYLES;
+      // Use getShadowStyles() to always get the current VIDEO_SCALE
+      styleElement.textContent = CONFIG.getShadowStyles();
       shadowRoot.appendChild(styleElement);
       injectedShadowRoots.add(shadowRoot);
-
-      log("✅ Shadow DOM styles injected", "success");
+      log(
+        `✅ Shadow DOM styles injected with scale ${CONFIG.VIDEO_SCALE}x`,
+        "success",
+      );
       return true;
     } catch (error) {
       log(`❌ Shadow DOM injection failed: ${error.message}`, "error");
@@ -158,7 +174,6 @@
   // ==================== VIDEO STYLING ====================
   function applyVideoStyling(post, video) {
     if (!post || !video) return;
-
     log(`🎨 Applying styling to video`, "info");
 
     // Get the shreddit-player element
@@ -166,82 +181,65 @@
     if (shredditPlayer) {
       // Inject styles into Shadow DOM for actual video scaling
       const shadowInjected = injectShadowDOMStyles(shredditPlayer);
-
       if (!shadowInjected) {
         // Retry after delay if Shadow DOM not ready
         setTimeout(() => injectShadowDOMStyles(shredditPlayer), 500);
       }
-
-      // Style the shreddit-player container
-      shredditPlayer.style.cssText = `
-        background: #000000 !important;
-        border-radius: 8px !important;
-        overflow: visible !important;
-        box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.9), 
-                    0 0 25px rgba(255, 69, 0, 0.4),
-                    0 8px 32px rgba(0, 0, 0, 0.7) !important;
-        transition: all 0.3s ease !important;
-      `;
+      log(`🔓 Container constraints managed via CSS`, "info");
     }
 
-    // Create dark contrasting background
+    // Create dark contrasting background (wrapper + bg)
     let bgContainer = post.querySelector(".reddit-video-bg");
     if (!bgContainer) {
       bgContainer = document.createElement("div");
       bgContainer.className = "reddit-video-bg";
-      bgContainer.style.cssText = `
-        position: absolute;
-        top: -10px;
-        left: -10px;
-        right: -10px;
-        bottom: -10px;
-        background: radial-gradient(
-          ellipse at center,
-          rgba(20, 20, 20, 0.95) 0%,
-          rgba(0, 0, 0, 0.98) 70%,
-          rgba(15, 15, 15, 1) 100%
-        );
-        border-radius: 12px;
-        z-index: 0;
-        pointer-events: none;
-      `;
 
       const player = post.querySelector("shreddit-player");
       if (player && player.parentElement) {
-        player.parentElement.style.position = "relative";
-        player.parentElement.style.zIndex = "1";
+        // Add wrapper class for CSS targeting
+        player.parentElement.classList.add("reddit-video-wrapper");
         player.parentElement.insertBefore(bgContainer, player);
         log("🖼️ Dark background added", "success");
       }
     }
 
-    // Style the post container
-    post.style.background = "transparent";
-    post.style.padding = "10px 0";
+    // Ensure any parent flex/grid containers don't collapse the video area
+    const player = post.querySelector("shreddit-player");
+    if (player) {
+      let parent = player.parentElement;
+      while (parent && parent !== post) {
+        // Ensure the container has enough height for the scaled video
+        parent.style.minHeight = "auto";
+        parent.style.flexShrink = "0";
+        parent = parent.parentElement;
+      }
+      log(`📏 Parent containers adjusted for scaled video`, "info");
+    }
 
-    log(`✨ Video enhanced with ${CONFIG.VIDEO_SCALE}x scale`, "success");
+    log(
+      `✨ Video enhanced with ${CONFIG.VIDEO_SCALE}x scale and anti-overlap protection`,
+      "success",
+    );
   }
 
   function removeVideoStyling(post) {
     if (!post) return;
 
-    // Remove background
+    // Remove background elements
     post.querySelectorAll(".reddit-video-bg").forEach((el) => el.remove());
 
-    // Reset player styles
+    // Remove wrapper class
     const shredditPlayer = post.querySelector("shreddit-player");
-    if (shredditPlayer) {
-      shredditPlayer.style.cssText = "";
-
-      // Clean up shadow root tracking
-      if (shredditPlayer.shadowRoot) {
-        injectedShadowRoots.delete(shredditPlayer.shadowRoot);
-      }
+    if (shredditPlayer && shredditPlayer.parentElement) {
+      shredditPlayer.parentElement.classList.remove("reddit-video-wrapper");
     }
 
-    // Reset post styles
-    post.style.background = "";
-    post.style.padding = "";
+    // Clean up shadow root tracking
+    if (shredditPlayer && shredditPlayer.shadowRoot) {
+      injectedShadowRoots.delete(shredditPlayer.shadowRoot);
+    }
+
+    log(`🧹 Removed video styling`, "info");
   }
 
   // ==================== VOLUME MANAGEMENT ====================
@@ -782,18 +780,17 @@
 
   // ==================== INITIALIZATION ====================
   function init() {
-    log("🚀 Reddit Auto Video Player v8.1 Initializing", "info");
-    log("=========================================", "info");
+    // Populate SHADOW_STYLES on init so it's available for logging
+    CONFIG.SHADOW_STYLES = CONFIG.getShadowStyles();
 
+    log("🚀 Reddit Auto Video Player v8.3 Initializing", "info");
+    log("=========================================", "info");
     // Load saved preferences
     loadSavedVolumes();
-
     // Create UI
     createUI();
-
     // Enable auto-play
     isEnabled = true;
-
     log("Features active:", "success");
     log("  ✓ Volume persistence across videos", "info");
     log(`  ✓ Video scaling (${CONFIG.VIDEO_SCALE}x)`, "info");
@@ -806,7 +803,6 @@
     );
     log("  ✓ Arrow key navigation (← →)", "info");
     log("  ✓ Auto-advance on video end", "info");
-
     // Delayed start to ensure page is fully loaded
     setTimeout(() => {
       log("⏰ Starting auto-play sequence...", "info");

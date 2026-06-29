@@ -1,12 +1,108 @@
 /* ============================================
-   Reddit Auto Video Player - Styles v8.1
-   Enhanced Contrast & Visibility
+   Reddit Auto Video Player - Styles v8.3
+   Enhanced Contrast & Visibility with Unbounded Containers
+   + Anti-Overlap Protection
    ============================================ */
 
+/* ---------- Anti-Overlap: Elevate Playing Post ---------- */
+/* Give the entire playing post a higher stacking context */
+shreddit-post[data-currently-playing="true"] {
+  position: relative !important;
+  z-index: 1000 !important; /* Above normal content (0) */
+  isolation: isolate !important; /* New stacking context */
+  overflow: visible !important;
+  background: transparent !important;
+  padding: 10px 0 !important;
+  margin-bottom: 20px !important; /* Push next post down */
+}
+
+/* Push sibling posts away from the scaled video */
+shreddit-post[data-currently-playing="true"] + shreddit-post {
+  margin-top: 20px !important;
+  clear: both !important;
+}
+
+/* ---------- Ensure Video Player Stays On Top ---------- */
+/* The shreddit-player gets highest z-index within the post */
+shreddit-post[data-currently-playing="true"] shreddit-player {
+  position: relative !important;
+  z-index: 2000 !important; /* Above post content */
+  background: #000000 !important;
+  border-radius: 8px !important;
+  overflow: visible !important;
+  max-width: none !important;
+  max-height: none !important;
+  box-shadow:
+    0 0 0 4px rgba(0, 0, 0, 0.9),
+    0 0 25px rgba(255, 69, 0, 0.4),
+    0 8px 32px rgba(0, 0, 0, 0.7) !important;
+  transition: all 0.3s ease !important;
+}
+
+/* ---------- Remove Container Constraints ---------- */
+/* Allow the scaled video to break out of bounding containers */
+shreddit-post[data-currently-playing="true"] > *,
+shreddit-post[data-currently-playing="true"] shreddit-player > * {
+  overflow: visible !important;
+  max-width: none !important;
+  max-height: none !important;
+}
+
+/* Ensure all intermediate containers don't clip */
+shreddit-post[data-currently-playing="true"] div,
+shreddit-post[data-currently-playing="true"] section,
+shreddit-post[data-currently-playing="true"] article {
+  overflow: visible !important;
+}
+
+/* ---------- Post Content Spacing ---------- */
+/* Prevent title, vote buttons, etc. from overlapping the video */
+shreddit-post[data-currently-playing="true"] > div:first-child,
+shreddit-post[data-currently-playing="true"] > header,
+shreddit-post[data-currently-playing="true"] [slot="post-header"] {
+  position: relative !important;
+  z-index: 500 !important; /* Below video, above background */
+  margin-bottom: 10px !important;
+}
+
+/* Video background container */
+.reddit-video-bg {
+  position: absolute;
+  top: -15px;
+  left: -15px;
+  right: -15px;
+  bottom: -15px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(20, 20, 20, 0.95) 0%,
+    rgba(0, 0, 0, 0.98) 70%,
+    rgba(15, 15, 15, 1) 100%
+  );
+  border-radius: 1rem;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Video parent wrapper for background positioning */
+.reddit-video-wrapper {
+  position: relative !important;
+  z-index: 1500 !important; /* Between post and video */
+  overflow: visible !important;
+}
+
 /* ---------- Floating Control Panel ---------- */
+#reddit-auto-player-panel {
+  z-index: 2147483647 !important; /* Max z-index - always on top */
+}
+
 #reddit-auto-player-panel:hover {
   opacity: 1 !important;
   box-shadow: 0 12px 30px rgba(255, 69, 0, 0.6) !important;
+}
+
+/* ---------- Play Overlay (z-index fix) ---------- */
+.reddit-play-overlay {
+  z-index: 10000 !important; /* Above everything */
 }
 
 /* ---------- Video Background Animation ---------- */
@@ -50,7 +146,6 @@ shreddit-post[data-has-video="true"]:hover {
     font-size: 12px !important;
     gap: 8px !important;
   }
-
   #reddit-auto-player-label {
     font-size: 11px !important;
   }
@@ -63,7 +158,6 @@ shreddit-post[data-has-video="true"]:hover {
     padding: 6px 10px !important;
     border-radius: 8px !important;
   }
-
   #reddit-auto-player-label {
     max-width: 150px !important;
     overflow: hidden !important;
