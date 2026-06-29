@@ -375,16 +375,33 @@
   }
 
   // ==================== VOLUME MANAGEMENT ====================
-  function applyUnmuteAndVolume(video, isNewVideo = false) {
+  function applyInitialVolume(video) {
     if (!video) return;
     const videoId = getVideoId(video);
 
-    // Initialize state
-    if (video._redditUserPaused === undefined) {
-      video._redditUserPaused = false;
-    }
+    setTimeout(() => {
+      if (userVolumeMap.has(videoId)) {
+        video._settingVolumeProgrammatically = true;
+        video.volume = userVolumeMap.get(videoId);
+        video.muted = false;
+        log(`🔄 Restored volume: ${video.volume.toFixed(2)}`, "success");
+      } else {
+        video._settingVolumeProgrammatically = true;
+        video.muted = true;
+        video.volume = CONFIG.DEFAULT_VOLUME;
+        setTimeout(() => {
+          video._settingVolumeProgrammatically = true;
+          video.muted = false;
+        }, 100);
+        log(`🔊 Default volume set: ${CONFIG.DEFAULT_VOLUME}`, "info");
+      }
+    }, 10);
+  }
 
-    // Track user volume changes
+  function bindVolumePersistence(video) {
+    if (!video) return;
+    const videoId = getVideoId(video);
+
     const volumeChangeHandler = () => {
       if (!video._settingVolumeProgrammatically && !video.muted) {
         const currentVolume = video.volume;
@@ -396,128 +413,129 @@
       }
       video._settingVolumeProgrammatically = false;
     };
+
     video.removeEventListener("volumechange", volumeChangeHandler);
     video.addEventListener("volumechange", volumeChangeHandler);
+    log("🎚️ Volume persistence bound", "info");
+  }
 
-    // State logging
-    const logState = (eventName) => {
-      console.log(
-        `%c[Reddit Video State] ${eventName.padEnd(12)} | ` +
-          `paused:${video.paused} | muted:${video.muted} | volume:${video.volume.toFixed(2)} | ` +
-          `readyState:${video.readyState} | currentTime:${video.currentTime.toFixed(1)}s | src: ${videoId}`,
-        "color:#00B0FF; font-weight:bold",
-      );
-    };
+  function setupVolumeManagement(video, isNewVideo = false) {
+    if (!video) return;
 
-    // Event handlers
-    const eventsToLog = [
-      "play",
-      "playing",
-      "pause",
-      "ended",
-      "canplay",
-      "error",
-    ];
-    eventsToLog.forEach((eventName) => {
-      video.addEventListener(
-        eventName,
-        () => {
-          logState(eventName.toUpperCase());
-          if (eventName === "pause") {
-            video._redditUserPaused = true;
-            if (currentPlayingPost) {
-              pauseVideo(currentPlayingPost);
-            }
-          }
-          if (eventName === "play" || eventName === "playing") {
-            video._redditUserPaused = false;
-            if (currentPlayingPost) {
-              resumeVideo(currentPlayingPost);
-            }
-          }
-          // Apply volume only on initial play if no user preference
-          if (
-            (eventName === "playing" || eventName === "canplay") &&
-            !video._redditUserPaused &&
-            !userVolumeMap.has(videoId)
-          ) {
-            setTimeout(() => {
-              if (!userVolumeMap.has(videoId)) {
-                video._settingVolumeProgrammatically = true;
-                video.muted = false;
-                video.volume = CONFIG.DEFAULT_VOLUME;
-                log(`🔊 Default volume: ${CONFIG.DEFAULT_VOLUME}`, "info");
-              }
-            }, 50);
-          }
-        },
-        { once: eventName === "ended" },
-      );
-    });
+    bindVolumePersistence(video);
 
-    // Initial volume setup
     if (isNewVideo) {
-      setTimeout(() => {
-        if (userVolumeMap.has(videoId)) {
-          video._settingVolumeProgrammatically = true;
-          video.volume = userVolumeMap.get(videoId);
-          video.muted = false;
-          log(`🔄 Restored volume: ${video.volume.toFixed(2)}`, "success");
-        } else {
-          video._settingVolumeProgrammatically = true;
-          video.muted = true;
-          video.volume = CONFIG.DEFAULT_VOLUME;
-          setTimeout(() => {
-            video._settingVolumeProgrammatically = true;
-            video.muted = false;
-          }, 100);
-        }
-      }, 10);
+      applyInitialVolume(video);
     }
   }
 
-  // ==================== PLAY VIDEO ====================
-  async function playVideoInPost(post, isAutoNext = false) {
-    if (!post) {
-      log("❌ No post provided", "error");
-      return;
+  // ==================== PLAYBACK STATE HANDLING ====================
+  function handlePauseState(post, video) {
+    if (!post || !video) return;
+
+    video._redditUserPaused = true;
+    log("⏸️ User paused video - restoring normal appearance", "warning");
+    pauseVideo(post);
+  }
+
+  function handlePlayState(post, video) {
+    if (!post || !video) return;
+
+    video._redditUserPaused = false;
+    log("▶️ Video playing - restoring enhanced appearance", "info");
+    resumeVideo(post);
+  }
+
+  function handleAutoVolumeOnFirstPlay(video, videoId) {
+    if (!video) return;
+
+    // Apply default volume on first play if user hasn't set a preference
+    if (!userVolumeMap.has(videoId)) {
+      setTimeout(() => {
+        if (!userVolumeMap.has(videoId) && !video._redditUserPaused) {
+          video._settingVolumeProgrammatically = true;
+          video.muted = false;
+          video.volume = CONFIG.DEFAULT_VOLUME;
+          log(`🔊 Auto-volume on first play: ${CONFIG.DEFAULT_VOLUME}`, "info");
+        }
+      }, 50);
+    }
+  }
+
+  // ==================== STATE LOGGING (DEBUG) ====================
+  function logVideoState(video, eventName) {
+    const videoId = getVideoId(video);
+    console.log(
+      `%c[Reddit Video State] ${eventName.padEnd(12)} | ` +
+        `paused:${video.paused} | muted:${video.muted} | volume:${video.volume.toFixed(2)} | ` +
+        `readyState:${video.readyState} | currentTime:${video.currentTime.toFixed(1)}s | src: ${videoId}`,
+      "color:#00B0FF; font-weight:bold",
+    );
+  }
+
+  // ==================== EVENT BINDING ====================
+  function bindPlaybackEvents(video) {
+    if (!video) return;
+
+    // Initialize state flag
+    if (video._redditUserPaused === undefined) {
+      video._redditUserPaused = false;
     }
 
-    const player = post.querySelector("shreddit-player");
-    const video = player ? getVideoFromPlayer(player) : null;
+    const videoId = getVideoId(video);
 
-    if (!video) {
-      log("❌ No video found in post", "error");
-      return;
-    }
+    // Core playback events
+    const eventHandlers = {
+      pause: () => {
+        logVideoState(video, "PAUSE");
+        if (currentPlayingPost) {
+          handlePauseState(currentPlayingPost, video);
+        }
+      },
+      play: () => {
+        logVideoState(video, "PLAY");
+        if (currentPlayingPost) {
+          handlePlayState(currentPlayingPost, video);
+        }
+      },
+      playing: () => {
+        logVideoState(video, "PLAYING");
+        handleAutoVolumeOnFirstPlay(video, videoId);
+        // Also restore appearance in case it's a programmatic play
+        if (currentPlayingPost && video._redditUserPaused) {
+          handlePlayState(currentPlayingPost, video);
+        }
+      },
+      canplay: () => {
+        logVideoState(video, "CANPLAY");
+        handleAutoVolumeOnFirstPlay(video, videoId);
+      },
+      ended: () => {
+        logVideoState(video, "ENDED");
+      },
+      error: () => {
+        logVideoState(video, "ERROR");
+      },
+    };
 
-    // Respect manual pause unless it's auto-next or arrow navigation
-    if (video._redditUserPaused && !isAutoNext) {
-      log("⏸️ Skipping auto-play - user manually paused this video", "warning");
-      return;
-    }
-
-    cleanupPreviousPlayer();
-
-    // Pause all other videos
-    document.querySelectorAll("video").forEach((v) => {
-      if (v !== video) v.pause();
+    // Bind all events
+    Object.entries(eventHandlers).forEach(([eventName, handler]) => {
+      video.addEventListener(eventName, handler, {
+        once: eventName === "ended", // Auto-advance handler is bound separately
+      });
     });
 
-    // CRITICAL: Apply styling BEFORE marking as current
-    applyVideoStyling(post, video);
+    log(
+      "🎬 Playback events bound (pause/play/playing/canplay/ended/error)",
+      "info",
+    );
+  }
 
-    // Mark as current playing
-    currentPlayingPost = post;
-    currentPlayingVideo = video;
-    post.setAttribute("data-currently-playing", "true");
+  // ==================== AUTO-ADVANCE BINDING ====================
+  function bindAutoAdvance(post, video) {
+    if (!post || !video) return;
 
-    setActionBarVisibility(post, false);
-
-    const postId = post.getAttribute("post-id") || "unknown";
-    log(`▶️ Now playing: Post ${postId}`, "success");
-
-    // Auto-next on ended
+    // Clean up previous handler
     if (video._redditAutoEnded) {
       video.removeEventListener("ended", video._redditAutoEnded);
     }
@@ -525,7 +543,6 @@
     video._redditAutoEnded = async () => {
       if (!isEnabled) return;
       log("🎬 Video ended - finding next", "info");
-
       const next = getNextVideoPost(post);
       if (next) {
         log("⏭️ Auto-advancing to next video", "info");
@@ -540,9 +557,64 @@
     };
 
     video.addEventListener("ended", video._redditAutoEnded, { once: true });
+    log("⏭️ Auto-advance on end bound", "info");
+  }
 
-    // Setup volume management
-    applyUnmuteAndVolume(video);
+  // ==================== MAIN SETUP (ORCHESTRATOR) ====================
+  function setupVideoEvents(post, video, isNewVideo = false) {
+    if (!video) {
+      log("❌ setupVideoEvents called with no video", "error");
+      return;
+    }
+
+    log(`🔧 Setting up video events (isNewVideo: ${isNewVideo})`, "info");
+
+    // 1. Bind all playback state events
+    bindPlaybackEvents(video);
+
+    // 2. Setup volume management (persistence + initial volume for new videos)
+    setupVolumeManagement(video, isNewVideo);
+
+    // 3. Bind auto-advance on ended
+    bindAutoAdvance(post, video);
+
+    log("✅ Video event setup complete", "success");
+  }
+
+  // ==================== PLAY VIDEO ====================
+  async function playVideoInPost(post, isAutoNext = false) {
+    if (!post) {
+      log("❌ No post provided", "error");
+      return;
+    }
+    const player = post.querySelector("shreddit-player");
+    const video = player ? getVideoFromPlayer(player) : null;
+    if (!video) {
+      log("❌ No video found in post", "error");
+      return;
+    }
+    // Respect manual pause unless it's auto-next or arrow navigation
+    if (video._redditUserPaused && !isAutoNext) {
+      log("⏸️ Skipping auto-play - user manually paused this video", "warning");
+      return;
+    }
+    cleanupPreviousPlayer();
+    // Pause all other videos
+    document.querySelectorAll("video").forEach((v) => {
+      if (v !== video) v.pause();
+    });
+    // CRITICAL: Apply styling BEFORE marking as current
+    applyVideoStyling(post, video);
+    // Mark as current playing
+    currentPlayingPost = post;
+    currentPlayingVideo = video;
+    post.setAttribute("data-currently-playing", "true");
+    setActionBarVisibility(post, false);
+    const postId = post.getAttribute("post-id") || "unknown";
+    log(`▶️ Now playing: Post ${postId}`, "success");
+
+    // ===== REFACTORED: Single call to setup all video events =====
+    setupVideoEvents(post, video, false);
 
     // Play video
     try {
@@ -550,7 +622,6 @@
       log("✅ Playback started successfully", "success");
     } catch (err) {
       log(`❌ Play failed: ${err.message}`, "error");
-
       // Create click-to-play overlay if autoplay blocked
       if (err.name === "NotAllowedError") {
         createPlayOverlay(video);
@@ -732,7 +803,9 @@
 
     log("🆕 New video post detected", "info");
 
-    applyUnmuteAndVolume(video, true);
+    // Only setup volume management for new posts
+    // Playback events and auto-advance are bound when video actually starts playing
+    setupVolumeManagement(video, true);
 
     if (!post._redditClickListenerAdded) {
       addClickListenersToPosts();
