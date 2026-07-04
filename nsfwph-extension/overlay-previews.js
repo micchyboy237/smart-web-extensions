@@ -124,7 +124,7 @@
     const MAX = calcFrameCount(duration);
     const times = Array.from(
       { length: MAX },
-      (_, i) => ((i + 1) / (MAX + 1)) * duration,
+      (_, i) => (i / (MAX - 1)) * duration,
     );
     console.log(
       `[OverlayPreviews] 🎬 Generating ${MAX} previews | Times: ${times.map((t) => formatMMSS(t)).join(", ")}`,
