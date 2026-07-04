@@ -27,6 +27,7 @@
   border-radius: 12px;
   border: 1px solid #333;
   width: min(860px, 94vw);
+  height: 100%;
   overflow: hidden;
   opacity: 0;
   transform: scale(0.93) translateY(14px);
