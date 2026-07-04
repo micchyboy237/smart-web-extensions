@@ -13,14 +13,17 @@
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   }
 
-  function calcFrameCount(duration) {
+  function calcFrameCount(duration, maxFrames = 12) {
     if (!duration || !isFinite(duration) || duration < 1) return 3;
+
+    // Logarithmic scaling with configurable ceiling
     const count = Math.min(
-      10,
-      Math.max(3, Math.round(Math.log2(duration / 15 + 1) * 3)),
+      maxFrames,
+      Math.max(3, Math.round(Math.log2(duration / 30 + 1) * 6)),
     );
+
     console.log(
-      `[OverlayPreviews] calcFrameCount: ${formatMMSS(duration)} → ${count} frames`,
+      `[OverlayPreviews] 📐 calcFrameCount: ${formatMMSS(duration)} → ${count} frames (max: ${maxFrames})`,
     );
     return count;
   }
