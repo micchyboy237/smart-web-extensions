@@ -92,7 +92,10 @@
     const onEnded = () => {
       if (currentlyPlaying === videoToPlay) {
         currentlyPlaying = null;
-        closeVideoOverlay();
+        console.log(
+          `[Content] 🏁 Video ended for ${videoToPlay.dataset.videoObserverId} — overlay stays open`,
+        );
+        // Don't close overlay — user may want to replay or scrub
       }
     };
     videoToPlay.addEventListener("ended", onEnded, { once: true });
