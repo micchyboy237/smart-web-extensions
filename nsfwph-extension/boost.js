@@ -355,6 +355,22 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
           return;
         }
 
+        // 🔑 Don't fight with OverlayPreviews — if they're active, skip the preload check
+        if (this._overlayPreviewsActive) {
+          // Only check that active video is still in DOM
+          if (!document.body.contains(this._activeVideo)) {
+            if (BOOST_CONFIG.DEBUG_PRIORITY) {
+              console.log(
+                `[Priority] 🗑️ Active video removed from DOM, clearing`,
+              );
+            }
+            this.clearActiveVideo();
+            return;
+          }
+          // Skip preload enforcement during overlay previews loading
+          return;
+        }
+
         // Verify active video still has preload="auto"
         if (this._activeVideo.preload !== "auto") {
           if (BOOST_CONFIG.DEBUG_PRIORITY) {
@@ -422,12 +438,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         }
       }
     },
-    /** @type {Set<HTMLVideoElement>} Videos currently prioritized for gallery */
-    _galleryVideos: new Set(),
-    /** @type {Set<HTMLVideoElement>} Videos currently prioritized for gallery */
-    _galleryVideos: new Set(),
-    /** @type {Set<HTMLVideoElement>} Videos currently prioritized for overlay previews */
-    _overlayPreviews: new Set(),
+
     /**
      * Internal helper to apply priority to a batch of videos.
      * @private
@@ -508,6 +519,9 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       // Restore all other background videos to metadata
       this._restoreAllToMetadata();
     },
+
+    /** @type {Set<HTMLVideoElement>} Videos currently prioritized for gallery */
+    _galleryVideos: new Set(),
     /**
      * Prioritize a set of gallery videos for downloading.
      */
@@ -520,8 +534,130 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     clearGalleryPriority() {
       this._clearBatchPriority(this._galleryVideos, "Gallery");
     },
+
+    /** @type {Set<HTMLVideoElement>} Videos currently prioritized for overlay previews */
+    _overlayPreviews: new Set(),
+    /** @type {boolean} Whether overlay previews are actively being loaded */
+    _overlayPreviewsActive: false,
+    /**
+     * Add a single overlay preview video to the priority set.
+     * Unlike setOverlayPreviewsPriority which replaces all at once,
+     * this adds incrementally so we can stagger loading.
+     * @param {HTMLVideoElement} video - Single video to prioritize
+     */
+    addOverlayPreviewPriority(video) {
+      if (!BOOST_CONFIG.PRIORITY_ENABLED) return;
+
+      // On first call, mark overlay previews as active and deprioritize main video
+      if (!this._overlayPreviewsActive) {
+        this._overlayPreviewsActive = true;
+
+        if (this._activeVideo) {
+          this._deprioritizeVideoForElement(this._activeVideo);
+          if (BOOST_CONFIG.DEBUG_PRIORITY) {
+            console.log(
+              `[Priority] ⏸️ Suspended main active video for OverlayPreviews batch loading`,
+            );
+          }
+        }
+
+        // Deprioritize all other registered background videos
+        for (const entry of this._registeredManagers) {
+          if (entry.video !== video && entry.video !== this._activeVideo) {
+            this._deprioritizeVideo(entry);
+          }
+        }
+      }
+
+      // Add this single video
+      this._overlayPreviews.add(video);
+      video.preload = "auto";
+
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        const id =
+          video.dataset.videoObserverId ||
+          video.dataset.pendingSrc?.substring(0, 30) ||
+          "unknown";
+        console.log(
+          `[Priority] ➕ OVERLAYPREVIEW ADDED | preload → "auto" | total: ${this._overlayPreviews.size}`,
+        );
+      }
+    },
+    /**
+     * Remove a single overlay preview video from the priority set.
+     * Call after the video has finished loading to free bandwidth.
+     * Only restores main video when ALL overlay preview batches are done.
+     * @param {HTMLVideoElement} video - Single video to deprioritize
+     */
+    removeOverlayPreviewPriority(video) {
+      if (!this._overlayPreviews.has(video)) return;
+
+      this._overlayPreviews.delete(video);
+      video.preload = "none"; // Stop consuming bandwidth
+
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        const id = video.dataset.videoObserverId || "unknown";
+        console.log(
+          `[Priority] ➖ OVERLAYPREVIEW REMOVED | preload → "none" | remaining: ${this._overlayPreviews.size}`,
+        );
+      }
+
+      // 🔑 KEY: Only restore when ALL batches are done (overlayPreviewsActive is false)
+      // Don't restore just because one batch finished - more batches are coming!
+    },
+    /**
+     * Called by OverlayPreviews when ALL staggered batches are complete.
+     * This is the signal to restore main video priority.
+     */
+    notifyOverlayPreviewsComplete() {
+      if (!this._overlayPreviewsActive) return;
+
+      this._overlayPreviewsActive = false;
+
+      // Restore main active video if it exists
+      if (this._activeVideo && document.body.contains(this._activeVideo)) {
+        this._prioritizeVideoForElement(this._activeVideo);
+        if (BOOST_CONFIG.DEBUG_PRIORITY) {
+          console.log(
+            `[Priority] 🔄 All overlay preview batches complete — restored main active video`,
+          );
+        }
+      }
+
+      // Restore background videos to metadata
+      this._restoreAllToMetadata();
+
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        console.log(
+          `[Priority] ✅ Overlay previews fully complete — bandwidth restored`,
+        );
+      }
+    },
+    /**
+     * Internal helper to restore after overlay previews.
+     * @private
+     */
+    _restoreAfterOverlayPreviews() {
+      this._overlayPreviewsActive = false;
+
+      if (this._activeVideo && document.body.contains(this._activeVideo)) {
+        this._prioritizeVideoForElement(this._activeVideo);
+        if (BOOST_CONFIG.DEBUG_PRIORITY) {
+          console.log(
+            `[Priority] 🔄 Restored main active video priority after overlay previews`,
+          );
+        }
+      }
+      this._restoreAllToMetadata();
+      if (BOOST_CONFIG.DEBUG_PRIORITY) {
+        console.log(
+          `[Priority] ✅ Overlay previews complete — bandwidth restored to active video`,
+        );
+      }
+    },
     /**
      * Prioritize a set of overlay preview videos for downloading.
+     * Kept for backward compatibility but prefer addOverlayPreviewPriority for staggered loading.
      */
     setOverlayPreviewsPriority(videos) {
       this._applyBatchPriority(
@@ -535,7 +671,9 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
      */
     clearOverlayPreviewsPriority() {
       this._clearBatchPriority(this._overlayPreviews, "OverlayPreviews");
+      this._overlayPreviewsActive = false;
     },
+
     /**
      * Get priority stats for debugging.
      */
