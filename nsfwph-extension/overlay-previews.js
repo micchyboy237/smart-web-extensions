@@ -13,7 +13,7 @@
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   }
 
-  function calcFrameCount(duration, maxFrames = 12) {
+  function calcFrameCount(duration, maxFrames = 16) {
     if (!duration || !isFinite(duration) || duration < 1) return 3;
 
     // Logarithmic scaling with configurable ceiling
