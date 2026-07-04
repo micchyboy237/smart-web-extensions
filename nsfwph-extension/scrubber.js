@@ -287,6 +287,9 @@ if (window.__SCRUBBER_SYSTEM_INITIALIZED__) {
   function doCaptureFrame(videoEl, state, captureTime) {
     if (!state.captureCtx || !state.captureCanvas) return;
 
+    // Skip if cross-origin is causing persistent failures
+    if (state._crossOriginFailed) return;
+
     const ctx = state.captureCtx;
     const canvas = state.captureCanvas;
 
@@ -302,7 +305,6 @@ if (window.__SCRUBBER_SYSTEM_INITIALIZED__) {
         src: dataUrl,
       });
 
-      // Debug: log every 10th thumbnail
       if (state.thumbnails.length % 10 === 0) {
         console.log(
           `[Scrubber] 📸 Captured ${state.thumbnails.length} thumbnails | ` +
@@ -311,7 +313,16 @@ if (window.__SCRUBBER_SYSTEM_INITIALIZED__) {
         );
       }
     } catch (err) {
-      console.warn("[Scrubber] ❌ Capture failed:", err.message);
+      if (err.message.includes("Tainted")) {
+        console.warn(
+          `[Scrubber] ⚠️ Cross-origin video — canvas capture disabled. ` +
+            `Add crossorigin="anonymous" to <video> and ensure CORS headers on server.`,
+        );
+        state._crossOriginFailed = true; // Suppress further errors
+        stopThumbnailCapture(state, false); // Stop trying
+      } else {
+        console.warn("[Scrubber] ❌ Capture failed:", err.message);
+      }
     }
   }
 
@@ -324,18 +335,14 @@ if (window.__SCRUBBER_SYSTEM_INITIALIZED__) {
   function startThumbnailCapture(videoEl, state) {
     if (!videoEl || !state) return;
 
-    // Reset for new video
     state.thumbnails = [];
     state.lastCaptureTime = -1;
     state.isCapturing = false;
+    state._crossOriginFailed = false; // Reset cross-origin flag
 
-    // Stop any existing capture
     stopThumbnailCapture(state, false);
-
-    // Create capture canvas
     getCaptureCanvas(state);
 
-    // Start periodic capture check (~4 times per second)
     state.captureIntervalId = setInterval(() => {
       if (videoEl.paused) return;
       captureFrame(videoEl, state);

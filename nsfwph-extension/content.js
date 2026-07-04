@@ -285,7 +285,9 @@
     }
     observeInProgress = true;
 
-    const foundVideos = document.querySelectorAll(VIDEO_SELECTOR);
+    const foundVideos = document.querySelectorAll(
+      `${VIDEO_SELECTOR}:not(#vo-overlay ${VIDEO_SELECTOR})`,
+    );
     const previouslyTracked = videos.size;
     const videoArray = Array.from(foundVideos);
 

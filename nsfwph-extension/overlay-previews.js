@@ -2,8 +2,10 @@
 (function () {
   "use strict";
 
-  const STAGGER_CONCURRENCY = 5; // How many previews load simultaneously
-  const STAGGER_GAP_MS = 200; // Delay between batches
+  // How many previews load simultaneously
+  const STAGGER_CONCURRENCY = 4; // 4 at a time (was 5 — slightly less competition)
+  // Delay between batches
+  const STAGGER_GAP_MS = 150; // 150ms gap (was 200ms — slightly faster)
 
   let _container = null;
   let _mainVideo = null;
@@ -206,12 +208,13 @@
           ? (performance.now() - state.startTime).toFixed(0)
           : "?";
         console.log(`  🎯 [${loadId}] frame captured (+${totalElapsed}ms)`);
+        video.playbackRate = 2.0; // Speed up the brief play for faster frame
         video
           .play()
           .then(() => {
             setTimeout(() => {
               if (!video.paused) video.pause();
-            }, 150);
+            }, 60); // Reduced from 150ms for snappier frames
           })
           .catch(() => {});
       },
