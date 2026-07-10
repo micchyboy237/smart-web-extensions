@@ -213,12 +213,20 @@ function dataEquals(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function onDataChange(newData) {
+/**
+ * Handle data changes - sync to IndexedDB and Python server.
+ * Uses the separate server-client module for API calls.
+ */
+async function onDataChange(newData) {
   console.log("🔄 Data CHANGED →", newData.length, "items");
   console.table(newData);
 
+  // ====================== STEP 1: Sync to Python Server ======================
+  // Fire-and-forget: don't block local DB operations
+  syncToServer(newData);
+
+  // ====================== STEP 2: Save to Local IndexedDB ======================
   newData.forEach((item) => {
-    // Generate unique ID using FULL URL (not just videoId)
     const itemWithId = {
       ...item,
       id: generateIdFromUrl(item.url, item.videoId),
@@ -248,6 +256,44 @@ function onDataChange(newData) {
         }
       });
   });
+}
+
+/**
+ * Sync scraped videos to the Python server.
+ * Non-blocking - errors are logged but don't affect local DB.
+ */
+async function syncToServer(videos) {
+  if (!videos || videos.length === 0) {
+    console.log("[MISSAV EXT] 📭 No videos to sync");
+    return;
+  }
+
+  console.log(`[MISSAV EXT] 📤 Syncing ${videos.length} videos to server...`);
+
+  try {
+    // Ensure each video has a generated ID before sending
+    const videosWithIds = videos.map((video) => ({
+      ...video,
+      id: video.id || generateIdFromUrl(video.url, video.videoId),
+    }));
+
+    const result = await serverClient.ingestVideos(videosWithIds);
+
+    console.log("[MISSAV EXT] ✅ Server sync complete:", {
+      ingested: result.ingested,
+      total: result.total,
+      time_ms: result.time_ms || "N/A",
+    });
+  } catch (err) {
+    console.error("[MISSAV EXT] ❌ Server sync failed:", err.message);
+
+    // Videos are automatically queued in serverClient for retry
+    const syncState = serverClient.getSyncState();
+    console.log(
+      "[MISSAV EXT] 📦 Pending videos for retry:",
+      syncState.pendingCount,
+    );
+  }
 }
 
 // ====================== INITIAL DB LOAD & LOG ======================
@@ -405,6 +451,86 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       })
       .catch((err) => {
         console.error("❌ Failed to delete all items:", err);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  // NEW: Smart search
+  if (request.action === "smartSearch") {
+    serverClient
+      .search(request.params || {})
+      .then((results) => {
+        console.log(
+          "[MISSAV EXT] ✅ Smart search complete:",
+          results.results?.length,
+          "results",
+        );
+        sendResponse({ success: true, ...results });
+      })
+      .catch((err) => {
+        console.error("[MISSAV EXT] ❌ Smart search failed:", err);
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  // NEW: Quick search (simplified)
+  if (request.action === "quickSearch") {
+    serverClient
+      .quickSearch(request.query, request.options || {})
+      .then((results) => {
+        sendResponse({ success: true, ...results });
+      })
+      .catch((err) => {
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  // NEW: Find similar videos
+  if (request.action === "findSimilar") {
+    serverClient
+      .findSimilar(request.videoId, request.options || {})
+      .then((results) => {
+        sendResponse({ success: true, ...results });
+      })
+      .catch((err) => {
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  // NEW: Server sync status
+  if (request.action === "getServerStatus") {
+    sendResponse({
+      success: true,
+      syncState: serverClient.getSyncState(),
+    });
+    return true;
+  }
+
+  // NEW: Force server sync
+  if (request.action === "forceSync") {
+    serverClient
+      .syncNow()
+      .then((state) => {
+        sendResponse({ success: true, syncState: state });
+      })
+      .catch((err) => {
+        sendResponse({ success: false, error: err.message });
+      });
+    return true;
+  }
+
+  // NEW: Update preferences
+  if (request.action === "updatePreferences") {
+    serverClient
+      .updatePreferences(request.preferences)
+      .then((result) => {
+        sendResponse({ success: true, ...result });
+      })
+      .catch((err) => {
         sendResponse({ success: false, error: err.message });
       });
     return true;

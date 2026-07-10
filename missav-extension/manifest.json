@@ -1,16 +1,19 @@
+// Jet_Apps/web-extensions/smart-web-extensions/missav-extension/manifest.json
+// Add server-client.js to content_scripts
 {
   "manifest_version": 4,
   "name": "MissAV Quick Viewer",
-  "version": "1.4",
-  "description": "Search and filter structured data",
+  "version": "1.5",
+  "description": "Smart search and filter videos with AI-powered recommendations",
   "permissions": ["storage", "tabs"],
+  "host_permissions": ["http://localhost:8000/*"],
   "action": {
     "default_popup": "popup.html"
   },
   "content_scripts": [
     {
       "matches": ["https://missav.ws/*"],
-      "js": ["db.js", "content.js"],
+      "js": ["db.js", "server-client.js", "content.js"],
       "run_at": "document_end"
     }
   ],
