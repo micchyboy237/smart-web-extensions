@@ -5,9 +5,9 @@ Provides AI-powered search with diversity, filtering, and personalization.
 """
 
 import logging
-import os
 import time
 
+from app.config import CHROMA_DIR, SERVER_DIR
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -115,8 +115,6 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
-CHROMA_DIR = os.path.join(SERVER_DIR, "chroma_data")
 chroma_service = chroma_service_module.init_service(CHROMA_DIR)
 diversity_search = DiversityAwareSearch()
 ensemble_strategy = EnsembleSearchStrategy()
@@ -140,8 +138,8 @@ async def startup():
     except Exception as e:
         logger.error(f"❌ ChromaDB error: {e}")
     logger.info("🌐 CORS: Enabled for all origins (development mode)")
-    logger.info(f"   Methods: GET, POST, PUT, DELETE, OPTIONS, PATCH")
-    logger.info(f"   Max Age: 3600s")
+    logger.info("   Methods: GET, POST, PUT, DELETE, OPTIONS, PATCH")
+    logger.info("   Max Age: 3600s")
     logger.info("🔓 Private Network Access header: enabled on every response")
     routes = [
         route.path
@@ -161,49 +159,3 @@ async def startup():
 async def shutdown():
     """Clean shutdown."""
     logger.info("🛑 Server shutting down...")
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    os.chdir(SERVER_DIR)
-    print(f"📂 Server directory: {SERVER_DIR}")
-    print(f"📂 ChromaDB directory: {CHROMA_DIR}")
-    print()
-    reload_dirs: list[str] = [
-        "routes",
-        "services",
-        "utils",
-        "models",
-    ]
-    reload_files: list[str] = ["server.py"]
-    existing_dirs = [d for d in reload_dirs if os.path.isdir(d)]
-    existing_files = [f for f in reload_files if os.path.isfile(f)]
-    if not existing_dirs:
-        existing_dirs.append(".")
-    print("👁️  Auto-reload watching:")
-    for d in existing_dirs:
-        print(f"   📁 {d}/")
-    for f in existing_files:
-        print(f"   📄 {f}")
-    print(f"   🚫 Excluding: chroma_data/, __pycache__/, *.sqlite3")
-    print()
-    uvicorn.run(
-        "server:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-        reload_dirs=existing_dirs,
-        reload_includes=[*existing_files, "*.py"],
-        reload_excludes=[
-            "*.sqlite3",
-            "*.db",
-            "*.log",
-            "chroma_data/*",
-            "__pycache__/*",
-            ".chroma_*",
-        ],
-        log_level="info",
-        access_log=True,
-        timeout_keep_alive=30,
-    )

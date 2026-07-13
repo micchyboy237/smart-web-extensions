@@ -6,16 +6,19 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import chromadb
 import numpy as np
-from chromadb import Documents, EmbeddingFunction, Embeddings
+from chromadb import Documents, EmbeddingFunction, Embeddings, PersistentClient
 from chromadb.config import Settings
 from jet.adapters.llama_cpp.embed_utils import embed
 
+try:
+    from app.config import PERSIST_DIR
+except ImportError:
+    PERSIST_DIR = str(
+        Path("~/.cache/chrome_db/missav/chroma_data").expanduser().resolve()
+    )
+
 logger = logging.getLogger(__name__)
-
-
-PERSIST_DIR = str(Path("~/.cache/chrome_db/missav").expanduser().resolve())
 
 
 class LlamaCppEmbeddingFunction(EmbeddingFunction):
@@ -48,29 +51,33 @@ class ChromaVideoService:
         persist_directory: str = PERSIST_DIR,
         collection_name: str = "missav_videos",
     ):
-        self.client = chromadb.Client(
-            Settings(
-                persist_directory=persist_directory,
+        """Initialize ChromaDB with PERSISTENT storage."""
+        # ✅ Use PersistentClient with 'path' parameter for disk storage
+        self.client = PersistentClient(
+            path=persist_directory,
+            settings=Settings(
                 anonymized_telemetry=False,
-            )
+            ),
         )
+
+        logger.info(f"💾 [ChromaService] Persistent storage at: {persist_directory}")
+
         self.embedding_function = LlamaCppEmbeddingFunction()
+
         try:
-            # embedding_function must be passed on GET too, or Chroma
-            # will complain about a mismatched/missing function on
-            # subsequent add()/query() calls.
             self.collection = self.client.get_collection(
                 collection_name,
                 embedding_function=self.embedding_function,
             )
-            logger.info(f"Loaded existing collection: {collection_name}")
+            logger.info(f"✅ Loaded existing collection: {collection_name}")
         except Exception:
             self.collection = self.client.create_collection(
                 name=collection_name,
                 metadata={"hnsw:space": "cosine"},
                 embedding_function=self.embedding_function,
             )
-            logger.info(f"Created new collection: {collection_name}")
+            logger.info(f"🆕 Created new collection: {collection_name}")
+
         self.collection_name = collection_name
 
     def get_video(self, video_id: str) -> Optional[dict]:
@@ -305,3 +312,9 @@ def get_video(video_id: str) -> Optional[dict]:
 
 def delete_videos(ids: list[str]) -> None:
     return get_service().delete_videos(ids)
+
+
+if __name__ == "__main__":
+    from main._main_chroma_service import main
+
+    main()
