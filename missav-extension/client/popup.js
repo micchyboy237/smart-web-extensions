@@ -3,6 +3,8 @@ const queryInput = document.getElementById("query");
 const topKInput = document.getElementById("topK");
 const includeCodesSelect = document.getElementById("includeCodes");
 const excludeCodesSelect = document.getElementById("excludeCodes");
+const includeCodesFilter = document.getElementById("includeCodesFilter");
+const excludeCodesFilter = document.getElementById("excludeCodesFilter");
 const episodeMinInput = document.getElementById("episodeMin");
 const episodeMaxInput = document.getElementById("episodeMax");
 const diversityFactorInput = document.getElementById("diversityFactor");
@@ -14,20 +16,53 @@ const quickSearchBtn = document.getElementById("quickSearchBtn");
 const findSimilarBtn = document.getElementById("findSimilarBtn");
 const serverStatusBtn = document.getElementById("serverStatusBtn");
 const resultsContainer = document.getElementById("resultsContainer");
+const loadingOverlay = document.getElementById("loadingOverlay");
+const toast = document.getElementById("toast");
+const themeToggle = document.getElementById("themeToggle");
+const clearQueryBtn = document.getElementById("clearQuery");
 
 // ====================== STATE ======================
 let availableCodes = new Set();
+let currentTheme = "light";
 
 // ====================== INITIALIZATION ======================
 document.addEventListener("DOMContentLoaded", async () => {
+  // Load theme
+  await loadTheme();
   // Load available codes from IndexedDB
   await loadAvailableCodes();
+  // Auto-focus search input
+  queryInput.focus();
   // Set up event listeners
   setupEventListeners();
+  // Update slider visuals
+  updateSliderVisuals();
 });
+
+// ====================== THEME ======================
+async function loadTheme() {
+  const { theme } = await chrome.storage.sync.get("theme");
+  currentTheme = theme || "light";
+  document.documentElement.setAttribute("data-theme", currentTheme);
+  updateThemeIcon();
+}
+
+function toggleTheme() {
+  currentTheme = currentTheme === "light" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", currentTheme);
+  chrome.storage.sync.set({ theme: currentTheme });
+  updateThemeIcon();
+  showToast(`Switched to ${currentTheme} mode`, "success");
+}
+
+function updateThemeIcon() {
+  const icon = themeToggle.querySelector("i");
+  icon.className = currentTheme === "light" ? "fas fa-moon" : "fas fa-sun";
+}
 
 // ====================== LOAD DATA ======================
 async function loadAvailableCodes() {
+  showLoading(true);
   try {
     const response = await chrome.runtime.sendMessage({ action: "getAll" });
     if (response.success) {
@@ -40,6 +75,9 @@ async function loadAvailableCodes() {
     }
   } catch (err) {
     console.error("[POPUP] Failed to load codes:", err);
+    showToast("Failed to load codes", "error");
+  } finally {
+    showLoading(false);
   }
 }
 
@@ -54,13 +92,40 @@ function populateCodeSelects() {
       select.appendChild(option);
     });
   });
+  // Add filter event listeners
+  includeCodesFilter.addEventListener("input", () =>
+    filterOptions(includeCodesSelect, includeCodesFilter.value),
+  );
+  excludeCodesFilter.addEventListener("input", () =>
+    filterOptions(excludeCodesSelect, excludeCodesFilter.value),
+  );
+}
+
+function filterOptions(selectElement, filterText) {
+  const options = selectElement.options;
+  for (let i = 0; i < options.length; i++) {
+    const option = options[i];
+    const text = option.textContent.toLowerCase();
+    const show = text.includes(filterText.toLowerCase());
+    option.style.display = show ? "block" : "none";
+  }
 }
 
 // ====================== EVENT LISTENERS ======================
 function setupEventListeners() {
+  // Theme toggle
+  themeToggle.addEventListener("click", toggleTheme);
+
+  // Clear query
+  clearQueryBtn.addEventListener("click", () => {
+    queryInput.value = "";
+    queryInput.focus();
+  });
+
   // Update diversity value display
   diversityFactorInput.addEventListener("input", () => {
     diversityValueSpan.textContent = diversityFactorInput.value;
+    updateSliderVisuals();
   });
 
   // Smart Search
@@ -77,11 +142,29 @@ function setupEventListeners() {
 
   // Server Status
   serverStatusBtn.addEventListener("click", () => checkServerStatus());
+
+  // Keyboard shortcuts
+  queryInput.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") performSmartSearch();
+  });
+}
+
+// ====================== SLIDER VISUALS ======================
+function updateSliderVisuals() {
+  // Update diversity slider track fill
+  const progress =
+    (diversityFactorInput.value / diversityFactorInput.max) * 100;
+  diversityFactorInput.style.setProperty("--progress", `${progress}%`);
 }
 
 // ====================== API CALLS ======================
 async function performSmartSearch() {
   const params = buildSearchParams();
+  if (!params.query) {
+    showToast("Please enter a search query", "error");
+    return;
+  }
+  showLoading(true);
   try {
     const response = await chrome.runtime.sendMessage({
       action: "smartSearch",
@@ -89,20 +172,24 @@ async function performSmartSearch() {
     });
     if (response.success) {
       displayResults(response.results || [], "Smart Search Results");
+      showToast(`Found ${response.results?.length || 0} results`, "success");
     } else {
-      displayError(response.error || "Smart search failed");
+      showToast(response.error || "Smart search failed", "error");
     }
   } catch (err) {
-    displayError(`Smart search error: ${err.message}`);
+    showToast(`Smart search error: ${err.message}`, "error");
+  } finally {
+    showLoading(false);
   }
 }
 
 async function performQuickSearch() {
   const query = queryInput.value.trim();
   if (!query) {
-    displayError("Please enter a search query");
+    showToast("Please enter a search query", "error");
     return;
   }
+  showLoading(true);
   try {
     const response = await chrome.runtime.sendMessage({
       action: "quickSearch",
@@ -115,15 +202,19 @@ async function performQuickSearch() {
     });
     if (response.success) {
       displayResults(response.results || [], "Quick Search Results");
+      showToast(`Found ${response.results?.length || 0} results`, "success");
     } else {
-      displayError(response.error || "Quick search failed");
+      showToast(response.error || "Quick search failed", "error");
     }
   } catch (err) {
-    displayError(`Quick search error: ${err.message}`);
+    showToast(`Quick search error: ${err.message}`, "error");
+  } finally {
+    showLoading(false);
   }
 }
 
 async function performFindSimilar(videoId) {
+  showLoading(true);
   try {
     const response = await chrome.runtime.sendMessage({
       action: "findSimilar",
@@ -134,15 +225,22 @@ async function performFindSimilar(videoId) {
     });
     if (response.success) {
       displayResults(response.results || [], `Similar to ${videoId}`);
+      showToast(
+        `Found ${response.results?.length || 0} similar videos`,
+        "success",
+      );
     } else {
-      displayError(response.error || "Find similar failed");
+      showToast(response.error || "Find similar failed", "error");
     }
   } catch (err) {
-    displayError(`Find similar error: ${err.message}`);
+    showToast(`Find similar error: ${err.message}`, "error");
+  } finally {
+    showLoading(false);
   }
 }
 
 async function checkServerStatus() {
+  showLoading(true);
   try {
     const response = await chrome.runtime.sendMessage({
       action: "getServerStatus",
@@ -150,17 +248,23 @@ async function checkServerStatus() {
     if (response.success) {
       const status = response.syncState;
       resultsContainer.innerHTML = `
-        <div class="status">
-          <p><strong>Server Status:</strong> ${status.isOnline ? "Online" : "Offline"}</p>
+        <div class="status-info">
+          <h4><i class="fas fa-server"></i> Server Status</h4>
+          <p><strong>Status:</strong> <span class="${status.isOnline ? "online" : "offline"}">
+            ${status.isOnline ? "Online ✅" : "Offline ❌"}
+          </span></p>
           <p><strong>Pending Videos:</strong> ${status.pendingCount || 0}</p>
           <p><strong>Last Sync:</strong> ${status.lastSyncTime || "Never"}</p>
         </div>
       `;
+      showToast("Server status updated", "success");
     } else {
-      displayError(response.error || "Failed to check server status");
+      showToast(response.error || "Failed to check server status", "error");
     }
   } catch (err) {
-    displayError(`Server status error: ${err.message}`);
+    showToast(`Server status error: ${err.message}`, "error");
+  } finally {
+    showLoading(false);
   }
 }
 
@@ -172,9 +276,9 @@ function buildSearchParams() {
     topK: parseInt(topKInput.value) || 20,
     includeCodes: getSelectedOptions(includeCodesSelect),
     excludeCodes: getSelectedOptions(excludeCodesSelect),
-    includeEpisodes: [], // Not implemented in UI yet
+    includeEpisodes: [],
     episodeRange: episodeRange,
-    excludeIds: [], // Not implemented in UI yet
+    excludeIds: [],
     diversityFactor: parseFloat(diversityFactorInput.value),
     maxPerCode: maxPerCodeInput.value ? parseInt(maxPerCodeInput.value) : null,
     searchType: searchTypeSelect.value,
@@ -196,24 +300,87 @@ function getEpisodeRange() {
 
 function displayResults(results, title) {
   if (!results.length) {
-    resultsContainer.innerHTML = `<p class="status">No results found.</p>`;
+    resultsContainer.innerHTML = `
+      <div class="empty-results">
+        <i class="fas fa-search"></i>
+        <p>No results found</p>
+      </div>
+    `;
     return;
   }
-  let html = `<h3>${title} (${results.length})</h3>`;
+  let html = `<h4><i class="fas fa-list"></i> ${title} (${results.length})</h4>`;
   results.forEach((result, index) => {
     const metadata = result.metadata || {};
+    const videoId = metadata.video_id || metadata.videoId || "N/A";
+    const code = metadata.code || "N/A";
+    const episode = metadata.episode || "N/A";
+    const text = metadata.text || "No title";
+    const score = result.score ? result.score.toFixed(2) : "N/A";
+    const diversityScore = result.diversity_score
+      ? result.diversity_score.toFixed(2)
+      : "N/A";
+
     html += `
-      <div class="result-item">
-        <p><strong>${index + 1}.</strong> ${metadata.text || "No title"}</p>
-        <p><small>Code: ${metadata.code || "N/A"} | Episode: ${
-          metadata.episode || "N/A"
-        } | Score: ${result.score?.toFixed(2)}</small></p>
+      <div class="result-item" data-video-id="${videoId}">
+        <h4>${text}</h4>
+        <div class="metadata">
+          <span><i class="fas fa-tag"></i> ${code}</span>
+          <span><i class="fas fa-hashtag"></i> ${episode}</span>
+          <span><i class="fas fa-star"></i> ${score}</span>
+          <span><i class="fas fa-palette"></i> ${diversityScore}</span>
+          <span class="score">#${index + 1}</span>
+        </div>
       </div>
     `;
   });
   resultsContainer.innerHTML = html;
+
+  // Add click to copy video ID
+  resultsContainer.querySelectorAll(".result-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      const videoId = item.getAttribute("data-video-id");
+      navigator.clipboard.writeText(videoId);
+      showToast(`Copied: ${videoId}`, "success");
+    });
+  });
 }
 
-function displayError(message) {
-  resultsContainer.innerHTML = `<p class="status" style="color: #e74c3c;">❌ ${message}</p>`;
+function showLoading(show) {
+  loadingOverlay.classList.toggle("hidden", !show);
 }
+
+function showToast(message, type = "info") {
+  toast.textContent = message;
+  toast.className = `toast ${type} show`;
+  setTimeout(() => {
+    toast.classList.remove("show");
+  }, 3000);
+}
+
+// ====================== STYLES FOR STATUS INFO ======================
+const style = document.createElement("style");
+style.textContent = `
+  .status-info {
+    padding: 12px;
+  }
+  .status-info h4 {
+    margin: 0 0 12px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+  }
+  .status-info p {
+    margin: 6px 0;
+    font-size: 13px;
+  }
+  .online {
+    color: var(--success-color);
+    font-weight: 600;
+  }
+  .offline {
+    color: var(--error-color);
+    font-weight: 600;
+  }
+`;
+document.head.appendChild(style);

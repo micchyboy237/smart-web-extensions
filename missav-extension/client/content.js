@@ -128,56 +128,66 @@ function extractData() {
   console.log("[MISSAV EXT] 📥 extractData() called");
   const anchors = document.querySelectorAll(".text-secondary");
   console.log("[MISSAV EXT] Found", anchors.length, ".text-secondary anchors");
-  const data = Array.from(anchors)
-    .map((a, index) => {
-      let url = a.href?.trim() || "";
-      const text = a.textContent?.trim() || "";
-      const hashIndex = url.indexOf("#");
-      if (hashIndex !== -1) {
-        url = url.substring(0, hashIndex);
-      }
-      if (!url || !text) {
-        return null;
-      }
-      // Extract JAV info from URL and text
-      const { videoId, code, episode } = extractJavInfo(url, text);
-      const container = findVideoWithPreviewContainer(a);
-      if (!container) {
-        console.log("[MISSAV EXT] ⚠️ No preview container for:", text);
-        return {
-          url,
-          text,
-          thumbnail: null,
-          preview: null,
-          videoId,
-          code,
-          episode,
-        };
-      }
+
+  // Dedupe by generated id. Same video can appear more than once on the
+  // page (e.g. main grid + "related videos" rail) — without this, the
+  // extension sends duplicate ids in one ingest batch, which ChromaDB
+  // rejects outright (rejects the WHOLE batch, not just the dupes).
+  const seen = new Map(); // id -> item
+
+  Array.from(anchors).forEach((a, index) => {
+    let url = a.href?.trim() || "";
+    const text = a.textContent?.trim() || "";
+    const hashIndex = url.indexOf("#");
+    if (hashIndex !== -1) {
+      url = url.substring(0, hashIndex);
+    }
+    if (!url || !text) {
+      return;
+    }
+
+    const { videoId, code, episode } = extractJavInfo(url, text);
+    const id = generateIdFromUrl(url, videoId);
+
+    const container = findVideoWithPreviewContainer(a);
+    let thumbnail = null;
+    let preview = null;
+    if (container) {
       const img = container.querySelector("img");
-      const thumbnail = img ? getSrcOrDataSrc(img) : null;
+      thumbnail = img ? getSrcOrDataSrc(img) : null;
       const video = container.querySelector("video");
-      let preview = null;
       if (video) {
         preview =
           getSrcOrDataSrc(video) ||
           video.querySelector("source")?.getAttribute("src")?.trim() ||
           null;
       }
-      const result = {
-        url,
-        text,
-        thumbnail,
-        preview,
-        videoId,
-        code,
-        episode,
+    } else {
+      console.log("[MISSAV EXT] ⚠️ No preview container for:", text);
+    }
+
+    const item = { id, url, text, thumbnail, preview, videoId, code, episode };
+
+    const existing = seen.get(id);
+    if (!existing) {
+      seen.set(id, item);
+    } else {
+      // Same id already captured this pass — keep whichever copy has
+      // more data instead of blindly keeping the first/last one, since
+      // one occurrence on the page (e.g. related rail) may not have
+      // lazy-loaded its thumbnail/preview yet.
+      const merged = {
+        ...existing,
+        thumbnail: existing.thumbnail || item.thumbnail,
+        preview: existing.preview || item.preview,
       };
-      console.log("[MISSAV EXT] 📦 Extracted item", index, ":", result);
-      return result;
-    })
-    .filter((item) => item !== null);
-  console.log("[MISSAV EXT] 📊 Total extracted items:", data.length);
+      seen.set(id, merged);
+      console.log("[MISSAV EXT] 🔁 Duplicate id merged:", id);
+    }
+  });
+
+  const data = Array.from(seen.values());
+  console.log("[MISSAV EXT] 📊 Total extracted items (deduped):", data.length);
   return data;
 }
 // Deep comparison

@@ -186,31 +186,25 @@ class ChromaVideoService:
     def add_videos(self, videos: list[dict]) -> int:
         """
         Add videos to ChromaDB with embeddings.
-
+        Now always uses upsert for "insert if new, update if existing".
         Args:
             videos: List of video metadata dicts
-
         Returns:
-            Number of videos added
+            Number of videos added/upserted
         """
         if not videos:
             return 0
-
         start_time = time.time()
-
         # Prepare documents for embedding
         ids = []
         documents = []
         metadatas = []
-
         for video in videos:
             video_id = video.get("id") or video.get("videoId")
             if not video_id:
                 continue
-
             # Create searchable document text
             doc_text = self._create_document_text(video)
-
             ids.append(video_id)
             documents.append(doc_text)
             metadatas.append(
@@ -220,37 +214,26 @@ class ChromaVideoService:
                     "code": video.get("code") or "",
                     "episode": video.get("episode") or "",
                     "video_id": video.get("videoId") or "",
+                    # "thumbnail": video.get("thumbnail") or "",
+                    "thumbnail": "",
+                    "preview": video.get("preview") or "",
                 }
             )
-
         if not ids:
             logger.warning("No valid videos to add")
             return 0
-
-        # Add to collection (ChromaDB handles embedding automatically)
+        # Always upsert (insert new, update existing)
         try:
-            self.collection.add(
+            self.collection.upsert(
                 ids=ids,
                 documents=documents,
                 metadatas=metadatas,
             )
-
             elapsed = (time.time() - start_time) * 1000
-            logger.info(f"Added {len(ids)} videos in {elapsed:.2f}ms")
+            logger.info(f"Upserted {len(ids)} videos in {elapsed:.2f}ms")
         except Exception as e:
-            logger.error(f"Failed to add videos: {e}")
-            # Try upsert instead (update existing, add new)
-            try:
-                self.collection.upsert(
-                    ids=ids,
-                    documents=documents,
-                    metadatas=metadatas,
-                )
-                logger.info(f"Upserted {len(ids)} videos")
-            except Exception as e2:
-                logger.error(f"Upsert also failed: {e2}")
-                raise
-
+            logger.error(f"Failed to upsert videos: {e}")
+            raise
         return len(ids)
 
     def search(

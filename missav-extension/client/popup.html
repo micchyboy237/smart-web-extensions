@@ -5,96 +5,183 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MissAV Smart Search</title>
     <link rel="stylesheet" href="popup.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
-    <div class="container">
-      <h1>MissAV Smart Search</h1>
-
-      <!-- Search Query -->
-      <div class="form-group">
-        <label for="query">Search Query</label>
-        <input
-          type="text"
-          id="query"
-          placeholder="e.g., 'popular juq videos from 300-500'"
-        />
+    <div class="popup-container">
+      <!-- Header -->
+      <div class="header">
+        <h1><i class="fas fa-film"></i> MissAV Smart Search</h1>
+        <button id="themeToggle" class="icon-button" title="Toggle Dark Mode">
+          <i class="fas fa-moon"></i>
+        </button>
       </div>
 
-      <!-- Top K Results -->
-      <div class="form-group">
-        <label for="topK">Results to Return (1-100)</label>
-        <input type="number" id="topK" min="1" max="100" value="20" />
-      </div>
+      <!-- Main Content: Two Columns -->
+      <div class="main-content">
+        <!-- Left Column: Search Form -->
+        <div class="search-column">
+          <!-- Search Query -->
+          <div class="form-group">
+            <label for="query">Search Query</label>
+            <div class="search-input-wrapper">
+              <input
+                type="text"
+                id="query"
+                placeholder="e.g., 'popular juq videos from 300-500' or 'mxgs -fc2'"
+                autocomplete="off"
+              />
+              <button id="clearQuery" class="icon-button" title="Clear">
+                <i class="fas fa-times"></i>
+              </button>
+            </div>
+            <small class="hint"
+              >Supports natural language, codes (juq, mxgs), and filters
+              (-fc2).</small
+            >
+          </div>
 
-      <!-- Include Codes -->
-      <div class="form-group">
-        <label for="includeCodes">Include Codes (e.g., juq, mxgs)</label>
-        <select id="includeCodes" multiple>
-          <!-- Populated dynamically in popup.js -->
-        </select>
-      </div>
+          <!-- Top K and Search Type -->
+          <div class="form-row">
+            <div class="form-group">
+              <label for="topK">Results</label>
+              <input type="number" id="topK" min="1" max="100" value="20" />
+            </div>
+            <div class="form-group">
+              <label for="searchType">Search Type</label>
+              <select id="searchType">
+                <option value="hybrid">Hybrid</option>
+                <option value="semantic">Semantic</option>
+                <option value="keyword">Keyword</option>
+                <option value="ensemble">Ensemble</option>
+              </select>
+            </div>
+          </div>
 
-      <!-- Exclude Codes -->
-      <div class="form-group">
-        <label for="excludeCodes">Exclude Codes</label>
-        <select id="excludeCodes" multiple>
-          <!-- Populated dynamically in popup.js -->
-        </select>
-      </div>
+          <!-- Include/Exclude Codes -->
+          <div class="form-row">
+            <div class="form-group">
+              <label for="includeCodes">Include Codes</label>
+              <div class="multi-select">
+                <input
+                  type="text"
+                  id="includeCodesFilter"
+                  placeholder="Filter codes..."
+                  class="filter-input"
+                />
+                <select id="includeCodes" multiple size="4"></select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="excludeCodes">Exclude Codes</label>
+              <div class="multi-select">
+                <input
+                  type="text"
+                  id="excludeCodesFilter"
+                  placeholder="Filter codes..."
+                  class="filter-input"
+                />
+                <select id="excludeCodes" multiple size="4"></select>
+              </div>
+            </div>
+          </div>
 
-      <!-- Episode Range -->
-      <div class="form-group">
-        <label for="episodeRange">Episode Range</label>
-        <div class="range-inputs">
-          <input type="number" id="episodeMin" placeholder="Min" min="0" />
-          <span>to</span>
-          <input type="number" id="episodeMax" placeholder="Max" min="0" />
+          <!-- Episode Range and Diversity -->
+          <div class="form-row">
+            <div class="form-group">
+              <label for="episodeRange">Episode Range</label>
+              <div class="range-inputs">
+                <input
+                  type="number"
+                  id="episodeMin"
+                  placeholder="Min"
+                  min="0"
+                />
+                <span>—</span>
+                <input
+                  type="number"
+                  id="episodeMax"
+                  placeholder="Max"
+                  min="0"
+                />
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="diversityFactor">Diversity</label>
+              <div class="slider-container">
+                <input
+                  type="range"
+                  id="diversityFactor"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  value="0.3"
+                />
+                <div class="slider-labels">
+                  <span>Relevance</span>
+                  <span id="diversityValue">0.3</span>
+                  <span>Diversity</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Max Per Code -->
+          <div class="form-group">
+            <label for="maxPerCode">Max per Code</label>
+            <input
+              type="number"
+              id="maxPerCode"
+              min="1"
+              placeholder="Optional"
+            />
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="button-group">
+            <button id="smartSearchBtn" class="primary-button">
+              <i class="fas fa-search"></i> Smart Search
+            </button>
+            <button id="quickSearchBtn" class="secondary-button">
+              <i class="fas fa-bolt"></i> Quick Search
+            </button>
+            <button id="findSimilarBtn" class="secondary-button">
+              <i class="fas fa-random"></i> Find Similar
+            </button>
+            <button id="serverStatusBtn" class="secondary-button">
+              <i class="fas fa-server"></i> Status
+            </button>
+          </div>
+        </div>
+
+        <!-- Right Column: Results List -->
+        <div class="results-column">
+          <h2><i class="fas fa-list"></i> Results</h2>
+          <div id="resultsContainer" class="results-container">
+            <div class="empty-results">
+              <i class="fas fa-search"></i>
+              <p>Enter a query and click "Smart Search"</p>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- Diversity Factor -->
-      <div class="form-group">
-        <label for="diversityFactor"
-          >Diversity (0 = Relevance, 1 = Diversity)</label
-        >
-        <input
-          type="range"
-          id="diversityFactor"
-          min="0"
-          max="1"
-          step="0.1"
-          value="0.3"
-        />
-        <span id="diversityValue">0.3</span>
+      <!-- Loading Overlay -->
+      <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="spinner">
+          <i class="fas fa-spinner fa-spin"></i>
+        </div>
       </div>
 
-      <!-- Max Per Code -->
-      <div class="form-group">
-        <label for="maxPerCode">Max Results per Code</label>
-        <input type="number" id="maxPerCode" min="1" placeholder="Optional" />
-      </div>
-
-      <!-- Search Type -->
-      <div class="form-group">
-        <label for="searchType">Search Type</label>
-        <select id="searchType">
-          <option value="hybrid">Hybrid (Default)</option>
-          <option value="semantic">Semantic</option>
-          <option value="keyword">Keyword</option>
-          <option value="ensemble">Ensemble</option>
-        </select>
-      </div>
-
-      <!-- Action Buttons -->
-      <div class="button-group">
-        <button id="smartSearchBtn">Smart Search</button>
-        <button id="quickSearchBtn">Quick Search</button>
-        <button id="findSimilarBtn">Find Similar</button>
-        <button id="serverStatusBtn">Server Status</button>
-      </div>
-
-      <!-- Results Container -->
-      <div id="resultsContainer" class="results-container"></div>
+      <!-- Toast Notifications -->
+      <div id="toast" class="toast hidden"></div>
     </div>
 
     <script src="popup.js"></script>
