@@ -1,7 +1,5 @@
-# Jet_Apps/web-extensions/smart-web-extensions/missav-extension/server/server.py
 """
 MissAV Smart Search API Server
-
 FastAPI server with ChromaDB for video storage and smart search.
 Provides AI-powered search with diversity, filtering, and personalization.
 """
@@ -13,8 +11,6 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
-# Import route modules
 from routes.health import router as health_router
 from routes.preferences import router as preferences_router
 from routes.search import router as search_router
@@ -25,14 +21,10 @@ from utils.search_strategies import (
     EnsembleSearchStrategy,
 )
 
-# ====================== LOGGING ======================
-
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-# ====================== FASTAPI APP ======================
 
 app = FastAPI(
     title="MissAV Smart Search API",
@@ -42,25 +34,18 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# ====================== CORS CONFIGURATION ======================
-
 ALLOWED_ORIGINS = [
-    # Browser extension origins (Chrome/Firefox)
     "chrome-extension://*",
     "moz-extension://*",
     "extension://*",
-    # MissAV website
     "https://missav.ws",
     "https://*.missav.ws",
-    # Local development
     "http://localhost",
     "http://localhost:*",
     "http://127.0.0.1",
     "http://127.0.0.1:*",
-    # Allow all for development (restrict in production)
     "*",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -84,34 +69,33 @@ app.add_middleware(
     max_age=3600,
 )
 
-# ====================== REQUEST LOGGING MIDDLEWARE ======================
-
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Log all incoming requests with timing and origin info."""
-    start_time = time.time()
+    """Log all incoming requests with timing and origin info, and add the
+    legacy Private Network Access preflight header.
 
+    NOTE: The "canceled"/CORS error the extension was hitting is Chrome's
+    newer Local Network Access (LNA) permission check, which is a browser
+    permission the user grants per-origin — this header alone does not fix
+    that. It's included here as a harmless fallback for older Chrome
+    versions that still check the pre-LNA Private Network Access preflight
+    header. See the extension's service-worker.js for the actual fix.
+    """
+    start_time = time.time()
     origin = request.headers.get("origin", "unknown")
     method = request.method
     path = request.url.path
-
     logger.info(f"[REQUEST] {method} {path} | Origin: {origin}")
-
     response = await call_next(request)
-
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
     elapsed = (time.time() - start_time) * 1000
     status_code = response.status_code
-
     if status_code >= 400:
         logger.warning(f"[RESPONSE] {method} {path} → {status_code} ({elapsed:.2f}ms)")
     else:
         logger.info(f"[RESPONSE] {method} {path} → {status_code} ({elapsed:.2f}ms)")
-
     return response
-
-
-# ====================== ERROR HANDLER ======================
 
 
 @app.exception_handler(Exception)
@@ -121,7 +105,6 @@ async def global_exception_handler(request: Request, exc: Exception):
         f"[ERROR] {request.method} {request.url.path}: {str(exc)}",
         exc_info=True,
     )
-
     return JSONResponse(
         status_code=500,
         content={
@@ -132,25 +115,15 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# ====================== SERVICES ======================
-
-# Get the directory containing this script for ChromaDB storage
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 CHROMA_DIR = os.path.join(SERVER_DIR, "chroma_data")
 chroma_service = chroma_service_module.init_service(CHROMA_DIR)
-
-# Initialize services (shared across route modules)
 diversity_search = DiversityAwareSearch()
 ensemble_strategy = EnsembleSearchStrategy()
-
-# ====================== ROUTE REGISTRATION ======================
-
 app.include_router(health_router)
 app.include_router(videos_router)
 app.include_router(search_router)
 app.include_router(preferences_router)
-
-# ====================== LIFECYCLE EVENTS ======================
 
 
 @app.on_event("startup")
@@ -161,20 +134,15 @@ async def startup():
     logger.info(f"📂 Server directory: {SERVER_DIR}")
     logger.info(f"📂 ChromaDB directory: {CHROMA_DIR}")
     logger.info("=" * 60)
-
-    # Verify ChromaDB
     try:
         count = chroma_service.get_count()
         logger.info(f"📊 ChromaDB: {count} videos indexed")
     except Exception as e:
         logger.error(f"❌ ChromaDB error: {e}")
-
-    # Log CORS configuration
     logger.info("🌐 CORS: Enabled for all origins (development mode)")
     logger.info(f"   Methods: GET, POST, PUT, DELETE, OPTIONS, PATCH")
     logger.info(f"   Max Age: 3600s")
-
-    # Log registered routes
+    logger.info("🔓 Private Network Access header: enabled on every response")
     routes = [
         route.path
         for route in app.routes
@@ -183,7 +151,6 @@ async def startup():
     logger.info(f"📋 Registered API routes ({len(routes)}):")
     for route in sorted(routes):
         logger.info(f"   {route}")
-
     logger.info("=" * 60)
     logger.info("✅ Server ready at http://0.0.0.0:8000")
     logger.info("📖 API docs at http://localhost:8000/docs")
@@ -196,23 +163,46 @@ async def shutdown():
     logger.info("🛑 Server shutting down...")
 
 
-# ====================== MAIN ======================
-
 if __name__ == "__main__":
     import uvicorn
 
-    # Change to server directory for consistent relative paths
     os.chdir(SERVER_DIR)
-
     print(f"📂 Server directory: {SERVER_DIR}")
     print(f"📂 ChromaDB directory: {CHROMA_DIR}")
     print()
-
+    reload_dirs: list[str] = [
+        "routes",
+        "services",
+        "utils",
+        "models",
+    ]
+    reload_files: list[str] = ["server.py"]
+    existing_dirs = [d for d in reload_dirs if os.path.isdir(d)]
+    existing_files = [f for f in reload_files if os.path.isfile(f)]
+    if not existing_dirs:
+        existing_dirs.append(".")
+    print("👁️  Auto-reload watching:")
+    for d in existing_dirs:
+        print(f"   📁 {d}/")
+    for f in existing_files:
+        print(f"   📄 {f}")
+    print(f"   🚫 Excluding: chroma_data/, __pycache__/, *.sqlite3")
+    print()
     uvicorn.run(
         "server:app",
         host="0.0.0.0",
         port=8000,
-        reload=False,
+        reload=True,
+        reload_dirs=existing_dirs,
+        reload_includes=[*existing_files, "*.py"],
+        reload_excludes=[
+            "*.sqlite3",
+            "*.db",
+            "*.log",
+            "chroma_data/*",
+            "__pycache__/*",
+            ".chroma_*",
+        ],
         log_level="info",
         access_log=True,
         timeout_keep_alive=30,

@@ -3,13 +3,13 @@
  * Server Integration Client
  *
  * Handles all communication with the Python FastAPI server.
- * Separated from content.js for clean architecture and easier testing.
+ * Loaded by service-worker.js (background context) so that Chrome's Local
+ * Network Access permission applies to the extension's own origin rather
+ * than whatever page injected a content script.
  */
-
 // ====================== CONFIGURATION ======================
-
 const SERVER_CONFIG = {
-  BASE_URL: "http://localhost:8000/api",
+  BASE_URL: "http://192.168.68.30:8000/api",
   ENDPOINTS: {
     INGEST: "/videos/ingest",
     SEARCH: "/search",
@@ -21,16 +21,13 @@ const SERVER_CONFIG = {
   RETRY_ATTEMPTS: 3,
   RETRY_DELAY_MS: 1000,
 };
-
 // ====================== SERVER CLIENT CLASS ======================
-
 class MissAVServerClient {
   constructor(config = {}) {
     this.baseUrl = config.baseUrl || SERVER_CONFIG.BASE_URL;
     this.timeout = config.timeout || SERVER_CONFIG.TIMEOUT_MS;
     this.retryAttempts = config.retryAttempts || SERVER_CONFIG.RETRY_ATTEMPTS;
     this.retryDelay = config.retryDelay || SERVER_CONFIG.RETRY_DELAY_MS;
-
     // Track sync state
     this.syncState = {
       isOnline: false,
@@ -38,25 +35,20 @@ class MissAVServerClient {
       pendingVideos: [],
       syncInProgress: false,
     };
-
     // Check server connectivity on init
     this._checkConnectivity();
-
     console.log("[SERVER CLIENT] ✅ Initialized", {
       baseUrl: this.baseUrl,
       timeout: this.timeout,
     });
   }
-
   // ====================== CONNECTIVITY ======================
-
   async _checkConnectivity() {
     try {
       const response = await this._fetchWithTimeout(
         `${this.baseUrl}${SERVER_CONFIG.ENDPOINTS.COUNT}`,
         { method: "GET", signal: AbortSignal.timeout(5000) },
       );
-
       if (response.ok) {
         const data = await response.json();
         this.syncState.isOnline = true;
@@ -67,14 +59,11 @@ class MissAVServerClient {
       console.warn("[SERVER CLIENT] ⚠️ Server offline:", err.message);
     }
   }
-
   async isServerOnline() {
     await this._checkConnectivity();
     return this.syncState.isOnline;
   }
-
   // ====================== VIDEO INGESTION ======================
-
   /**
    * Send scraped videos to the server.
    *
@@ -84,27 +73,22 @@ class MissAVServerClient {
    */
   async ingestVideos(videos, options = {}) {
     const { source = "extension", retry = true } = options;
-
     if (!videos || videos.length === 0) {
       console.log("[SERVER CLIENT] 📭 No videos to ingest");
       return { ingested: 0, total: 0 };
     }
-
     // Add generated IDs if not present
     const videosWithIds = videos.map((video) => ({
       ...video,
       id: video.id || generateIdFromUrl(video.url, video.videoId),
     }));
-
     console.log(
       `[SERVER CLIENT] 📤 Sending ${videosWithIds.length} videos to server`,
     );
-
     const payload = {
       videos: videosWithIds,
       source: source,
     };
-
     try {
       const response = await this._fetchWithRetry(
         `${this.baseUrl}${SERVER_CONFIG.ENDPOINTS.INGEST}`,
@@ -112,33 +96,32 @@ class MissAVServerClient {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(this.timeout),
+          // NOTE: no signal here anymore — _fetchWithRetry builds a FRESH
+          // AbortSignal.timeout() for every attempt (see below). Passing a
+          // pre-built one meant the SAME signal was reused across retries,
+          // and since AbortSignal.timeout() starts counting the moment
+          // it's created, later retries could arrive already-expired and
+          // get "canceled" instantly.
         },
         retry ? this.retryAttempts : 0,
       );
-
       if (!response.ok) {
         throw new Error(
           `Server returned ${response.status}: ${response.statusText}`,
         );
       }
-
       const result = await response.json();
-
       this.syncState.lastSyncTime = new Date().toISOString();
       this.syncState.isOnline = true;
-
       console.log("[SERVER CLIENT] ✅ Ingest complete:", {
         ingested: result.ingested,
         total: result.total,
         time_ms: result.time_ms,
       });
-
       return result;
     } catch (err) {
       console.error("[SERVER CLIENT] ❌ Ingest failed:", err.message);
       this.syncState.isOnline = false;
-
       // Queue for retry if offline
       if (retry) {
         this.syncState.pendingVideos.push(...videosWithIds);
@@ -147,11 +130,9 @@ class MissAVServerClient {
           this.syncState.pendingVideos.length,
         );
       }
-
       throw err;
     }
   }
-
   /**
    * Retry sending any pending videos.
    */
@@ -160,19 +141,14 @@ class MissAVServerClient {
       console.log("[SERVER CLIENT] 📦 No pending videos to retry");
       return;
     }
-
     if (this.syncState.syncInProgress) {
       console.log("[SERVER CLIENT] ⏳ Sync already in progress");
       return;
     }
-
     this.syncState.syncInProgress = true;
-
     const pending = [...this.syncState.pendingVideos];
     this.syncState.pendingVideos = [];
-
     console.log(`[SERVER CLIENT] 🔄 Retrying ${pending.length} pending videos`);
-
     try {
       await this.ingestVideos(pending, { retry: false });
     } catch (err) {
@@ -183,9 +159,7 @@ class MissAVServerClient {
       this.syncState.syncInProgress = false;
     }
   }
-
   // ====================== SMART SEARCH ======================
-
   /**
    * Perform smart search with filters and diversity.
    *
@@ -205,7 +179,6 @@ class MissAVServerClient {
       maxPerCode = null,
       searchType = "hybrid",
     } = searchParams;
-
     console.log("[SERVER CLIENT] 🔍 Search request:", {
       query,
       topK,
@@ -214,7 +187,6 @@ class MissAVServerClient {
       excludeCodes,
       diversityFactor,
     });
-
     const payload = {
       query,
       top_k: topK,
@@ -227,7 +199,6 @@ class MissAVServerClient {
       max_per_code: maxPerCode,
       search_type: searchType,
     };
-
     try {
       const response = await this._fetchWithTimeout(
         `${this.baseUrl}${SERVER_CONFIG.ENDPOINTS.SEARCH}`,
@@ -238,33 +209,27 @@ class MissAVServerClient {
           signal: AbortSignal.timeout(this.timeout),
         },
       );
-
       if (!response.ok) {
         throw new Error(`Search failed: ${response.status}`);
       }
-
       const result = await response.json();
-
       console.log("[SERVER CLIENT] ✅ Search complete:", {
         results_count: result.results?.length,
         total_candidates: result.total_candidates,
         time_ms: result.search_time_ms,
       });
-
       if (result.query_understanding) {
         console.log(
           "[SERVER CLIENT] 🧠 Query understanding:",
           result.query_understanding,
         );
       }
-
       return result;
     } catch (err) {
       console.error("[SERVER CLIENT] ❌ Search failed:", err.message);
       throw err;
     }
   }
-
   /**
    * Quick search helper for common use cases.
    */
@@ -277,7 +242,6 @@ class MissAVServerClient {
       ...options,
     });
   }
-
   /**
    * Find similar videos to a given video.
    */
@@ -286,10 +250,8 @@ class MissAVServerClient {
     if (!video) {
       throw new Error(`Video not found: ${videoId}`);
     }
-
     // Search using the video's text/code as query
     const searchQuery = video.metadata?.text || video.metadata?.code || "";
-
     return this.search({
       query: searchQuery,
       topK: options.topK || 10,
@@ -298,15 +260,12 @@ class MissAVServerClient {
       ...options,
     });
   }
-
   // ====================== VIDEO OPERATIONS ======================
-
   /**
    * Get a single video by ID.
    */
   async getVideo(videoId) {
     console.log("[SERVER CLIENT] 🔍 Getting video:", videoId);
-
     try {
       const response = await this._fetchWithTimeout(
         `${this.baseUrl}${SERVER_CONFIG.ENDPOINTS.VIDEO}/${videoId}`,
@@ -315,16 +274,13 @@ class MissAVServerClient {
           signal: AbortSignal.timeout(this.timeout),
         },
       );
-
       if (response.status === 404) {
         console.log("[SERVER CLIENT] ⚠️ Video not found:", videoId);
         return null;
       }
-
       if (!response.ok) {
         throw new Error(`Failed to get video: ${response.status}`);
       }
-
       const result = await response.json();
       console.log("[SERVER CLIENT] ✅ Video retrieved:", result.id);
       return result;
@@ -333,7 +289,6 @@ class MissAVServerClient {
       throw err;
     }
   }
-
   /**
    * Get total video count on server.
    */
@@ -346,7 +301,6 @@ class MissAVServerClient {
           signal: AbortSignal.timeout(5000),
         },
       );
-
       if (response.ok) {
         const data = await response.json();
         return data.count;
@@ -356,9 +310,7 @@ class MissAVServerClient {
     }
     return 0;
   }
-
   // ====================== USER PREFERENCES ======================
-
   /**
    * Update user preferences for personalized search.
    */
@@ -371,9 +323,7 @@ class MissAVServerClient {
       preferred_episode_range: preferences.preferredEpisodeRange || null,
       diversity_preference: preferences.diversityPreference || 0.3,
     };
-
     console.log("[SERVER CLIENT] 📝 Updating preferences:", payload);
-
     try {
       const response = await this._fetchWithTimeout(
         `${this.baseUrl}${SERVER_CONFIG.ENDPOINTS.PREFERENCES}`,
@@ -384,7 +334,6 @@ class MissAVServerClient {
           signal: AbortSignal.timeout(this.timeout),
         },
       );
-
       if (response.ok) {
         const result = await response.json();
         console.log("[SERVER CLIENT] ✅ Preferences updated");
@@ -398,7 +347,6 @@ class MissAVServerClient {
     }
     return null;
   }
-
   /**
    * Get user preferences.
    */
@@ -411,7 +359,6 @@ class MissAVServerClient {
           signal: AbortSignal.timeout(this.timeout),
         },
       );
-
       if (response.ok) {
         const result = await response.json();
         console.log("[SERVER CLIENT] ✅ Preferences retrieved");
@@ -422,9 +369,7 @@ class MissAVServerClient {
     }
     return null;
   }
-
   // ====================== SYNC STATUS ======================
-
   /**
    * Get current sync state.
    */
@@ -434,40 +379,39 @@ class MissAVServerClient {
       pendingCount: this.syncState.pendingVideos.length,
     };
   }
-
   /**
    * Force a full sync check.
    */
   async syncNow() {
     console.log("[SERVER CLIENT] 🔄 Force sync requested");
     await this._checkConnectivity();
-
     if (this.syncState.isOnline) {
       await this.retryPendingVideos();
     }
-
     return this.getSyncState();
   }
-
   // ====================== HTTP HELPERS ======================
-
+  /**
+   * Plain fetch wrapper. Falls back to a fresh AbortSignal.timeout() if
+   * the caller didn't already supply a signal.
+   */
   async _fetchWithTimeout(url, options = {}) {
-    const controller = new AbortController();
-    const timeout = options.signal
-      ? options.signal
-      : AbortSignal.timeout(this.timeout);
-
-    // Merge signals if timeout specified
-    const signal = options.signal
-      ? AbortSignal.any([controller.signal, timeout])
-      : timeout;
-
+    const signal = options.signal || AbortSignal.timeout(this.timeout);
     return fetch(url, { ...options, signal });
   }
-
+  /**
+   * Retry wrapper with exponential backoff.
+   *
+   * FIX: builds a brand new AbortSignal.timeout() for EVERY attempt,
+   * created right before that attempt fires (i.e. after the backoff
+   * delay has already elapsed). Previously a single signal was created
+   * once before the loop and reused — since AbortSignal.timeout() starts
+   * counting down at creation time, later retries could start with a
+   * signal that had already expired during the backoff wait, causing an
+   * instant "canceled" fetch before any request was even sent.
+   */
   async _fetchWithRetry(url, options = {}, retries = 0) {
     let lastError;
-
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         if (attempt > 0) {
@@ -477,14 +421,20 @@ class MissAVServerClient {
           );
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
-
-        return await this._fetchWithTimeout(url, options);
+        const attemptOptions = {
+          ...options,
+          signal: AbortSignal.timeout(this.timeout), // fresh signal, fresh clock
+        };
+        console.log(
+          `[SERVER CLIENT] 🌐 Attempt ${attempt + 1}/${retries + 1} → ${url}`,
+        );
+        return await this._fetchWithTimeout(url, attemptOptions);
       } catch (err) {
         lastError = err;
-
-        if (err.name === "AbortError") {
+        if (err.name === "TimeoutError" || err.name === "AbortError") {
           console.warn(
-            `[SERVER CLIENT] ⏱️ Request timed out (attempt ${attempt + 1})`,
+            `[SERVER CLIENT] ⏱️ Timed out / canceled (attempt ${attempt + 1}):`,
+            err.message,
           );
         } else if (err.name === "TypeError" && err.message.includes("fetch")) {
           console.warn(
@@ -493,19 +443,14 @@ class MissAVServerClient {
         }
       }
     }
-
     throw lastError;
   }
 }
-
 // ====================== GLOBAL INSTANCE ======================
-
 // Create singleton instance
 const serverClient = new MissAVServerClient();
-
 // Export for use in other files
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { MissAVServerClient, serverClient, SERVER_CONFIG };
 }
-
 console.log("[SERVER CLIENT] ✅ Module loaded");
