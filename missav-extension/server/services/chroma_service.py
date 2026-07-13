@@ -97,7 +97,7 @@ class ChromaVideoService:
 
     def get_videos(
         self,
-        limit: int = 100,
+        limit: Optional[int] = None,
         offset: int = 0,
         where: Optional[dict] = None,
     ) -> dict:
@@ -110,7 +110,7 @@ class ChromaVideoService:
         the where filter to narrow results.
 
         Args:
-            limit: Max results to return (default 100, max 1000)
+            limit: Max results to return (None = all videos, max 1000 if provided).
             offset: Number of results to skip (for pagination)
             where: Optional metadata filter (ChromaDB where clause)
 
@@ -118,7 +118,7 @@ class ChromaVideoService:
             dict with keys:
                 - videos: list of {id, document, metadata} dicts
                 - total: total count matching the filter
-                - limit: requested limit
+                - limit: requested limit (or total count if None)
                 - offset: requested offset
         """
         logger.info(
@@ -126,8 +126,9 @@ class ChromaVideoService:
         )
         start_time = time.time()
 
-        # Safety cap
-        limit = min(limit, 1000)
+        # Apply safety cap only if limit is provided
+        if limit is not None:
+            limit = min(limit, 1000)
 
         try:
             # ChromaDB returns ALL items when you don't specify IDs
@@ -140,17 +141,23 @@ class ChromaVideoService:
             return {
                 "videos": [],
                 "total": 0,
-                "limit": limit,
+                "limit": limit if limit is not None else 0,
                 "offset": offset,
             }
 
         total = len(result["ids"])
 
         # Apply pagination via slicing
-        slice_end = offset + limit
-        ids_slice = result["ids"][offset:slice_end]
-        docs_slice = result["documents"][offset:slice_end]
-        metas_slice = result["metadatas"][offset:slice_end]
+        if limit is not None:
+            slice_end = offset + limit
+            ids_slice = result["ids"][offset:slice_end]
+            docs_slice = result["documents"][offset:slice_end]
+            metas_slice = result["metadatas"][offset:slice_end]
+        else:
+            # Return all results from offset onwards
+            ids_slice = result["ids"][offset:]
+            docs_slice = result["documents"][offset:]
+            metas_slice = result["metadatas"][offset:]
 
         videos = []
         for i in range(len(ids_slice)):
@@ -163,6 +170,7 @@ class ChromaVideoService:
             )
 
         elapsed = (time.time() - start_time) * 1000
+        actual_limit = limit if limit is not None else len(videos)
         logger.info(
             f"✅ [ChromaService] Retrieved {len(videos)}/{total} videos "
             f"in {elapsed:.2f}ms"
@@ -171,7 +179,7 @@ class ChromaVideoService:
         return {
             "videos": videos,
             "total": total,
-            "limit": limit,
+            "limit": actual_limit,
             "offset": offset,
         }
 
@@ -390,7 +398,7 @@ def get_video(video_id: str) -> Optional[dict]:
 
 
 def get_videos(
-    limit: int = 100,
+    limit: Optional[int] = None,
     offset: int = 0,
     where: Optional[dict] = None,
 ) -> dict:

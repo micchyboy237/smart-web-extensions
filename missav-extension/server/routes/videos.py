@@ -2,6 +2,7 @@
 
 import logging
 import time
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from models.video import VideoBatchIngest
@@ -14,7 +15,12 @@ router = APIRouter(prefix="/api/videos", tags=["videos"])
 
 @router.get("")
 async def get_all_videos(
-    limit: int = Query(default=100, ge=1, le=1000, description="Max videos to return"),
+    limit: Optional[int] = Query(
+        default=100,
+        ge=1,
+        le=1000,
+        description="Max videos to return (default 100, max 1000)",
+    ),
     offset: int = Query(default=0, ge=0, description="Number of videos to skip"),
 ):
     """
@@ -39,7 +45,10 @@ async def get_all_videos(
     start_time = time.time()
 
     try:
-        result = chroma_service.get_videos(limit=limit, offset=offset)
+        # Always provide a specific limit when calling from the API
+        # Use the default of 100 if limit is somehow None
+        api_limit = limit if limit is not None else 100
+        result = chroma_service.get_videos(limit=api_limit, offset=offset)
 
         elapsed = (time.time() - start_time) * 1000
         logger.info(
