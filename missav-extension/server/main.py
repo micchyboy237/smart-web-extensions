@@ -56,6 +56,7 @@ if __name__ == "__main__":
             "**/generated/**/*",  # Extra safety for deep nesting
             "**/main/**",
             "**/main/**/*",
+            "examples",
         ],
         log_level="info",
         access_log=True,
