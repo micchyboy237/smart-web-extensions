@@ -4,16 +4,20 @@ Here are comprehensive CURL examples covering all search features of your MissAV
 
 ## API Endpoint Overview
 
-| Method | Endpoint                     | Purpose                     |
-| ------ | ---------------------------- | --------------------------- |
-| GET    | `/api/health`                | Server health check         |
-| POST   | `/api/videos/ingest`         | Ingest video batch          |
-| GET    | `/api/videos`                | List all videos (paginated) |
-| GET    | `/api/videos/{video_id}`     | Get single video            |
-| GET    | `/api/videos/count`          | Total video count           |
-| POST   | `/api/search`                | Smart search                |
-| POST   | `/api/preferences`           | Update user preferences     |
-| GET    | `/api/preferences/{user_id}` | Get user preferences        |
+| Method | Endpoint                                 | Purpose                     |
+| ------ | ---------------------------------------- | --------------------------- |
+| GET    | `/api/health`                            | Server health check         |
+| GET    | `/api/analysis/health`                   | Analysis module health      |
+| POST   | `/api/analysis/topics`                   | Extract topics via BERTopic |
+| GET    | `/api/analysis/topics/{topic_id}/videos` | Get videos for a topic      |
+| POST   | `/api/analysis/topics/search`            | Search topics by keyword    |
+| POST   | `/api/videos/ingest`                     | Ingest video batch          |
+| GET    | `/api/videos`                            | List all videos (paginated) |
+| GET    | `/api/videos/{video_id}`                 | Get single video            |
+| GET    | `/api/videos/count`                      | Total video count           |
+| POST   | `/api/search`                            | Smart search                |
+| POST   | `/api/preferences`                       | Update user preferences     |
+| GET    | `/api/preferences/{user_id}`             | Get user preferences        |
 
 ---
 
@@ -42,7 +46,149 @@ curl -X GET http://localhost:8000/api/health \
 
 ---
 
-## 2. Video Ingestion
+## 2. Analysis — BERTopic Integration
+
+### Analysis Health Check
+
+```bash
+# Check if BERTopic/embedding server is ready
+curl -X GET http://localhost:8000/api/analysis/health
+```
+
+**Response:**
+
+```json
+{
+  "status": "available",
+  "embedder_ready": true,
+  "model_info": {
+    "backend": "llama.cpp",
+    "min_topic_size_default": 3,
+    "supports_keybert": true
+  }
+}
+```
+
+### Extract Topics from All Videos
+
+```bash
+# Run BERTopic on the entire video collection
+curl -X POST http://localhost:8000/api/analysis/topics \
+  -H "Content-Type: application/json" \
+  -d '{
+    "min_topic_size": 3,
+    "top_n_words": 10,
+    "remove_stop_words": true,
+    "use_keybert": true
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "topics": [
+    {
+      "topic_id": 0,
+      "name": "0_actress_drama_beautiful",
+      "keywords": ["actress", "drama", "beautiful", "story", "romance"],
+      "size": 45,
+      "representative_doc": "JUQ-373 Beautiful Actress | Series: juq | Episode: 373..."
+    },
+    {
+      "topic_id": 1,
+      "name": "1_new_release_recent",
+      "keywords": ["new", "release", "recent", "latest", "debut"],
+      "size": 32,
+      "representative_doc": "MXGS-1200 New Release | Series: mxgs | Episode: 1200..."
+    }
+  ],
+  "topic_count": 2,
+  "document_count": 100,
+  "outlier_count": 23,
+  "extraction_time_ms": 4521.34,
+  "timestamp": "2026-07-14T10:30:00.000Z"
+}
+```
+
+### Extract Topics from Specific Videos
+
+```bash
+curl -X POST http://localhost:8000/api/analysis/topics \
+  -H "Content-Type: application/json" \
+  -d '{
+    "video_ids": ["juq-373", "mxgs-1200", "ssis-500"],
+    "min_topic_size": 2,
+    "top_n_words": 5,
+    "remove_stop_words": true,
+    "use_keybert": true
+  }'
+```
+
+### Extract Topics with Lower Granularity (more topics)
+
+```bash
+curl -X POST http://localhost:8000/api/analysis/topics \
+  -H "Content-Type: application/json" \
+  -d '{
+    "min_topic_size": 2,
+    "top_n_words": 15,
+    "remove_stop_words": true,
+    "use_keybert": true
+  }'
+```
+
+### Get Videos for a Specific Topic
+
+```bash
+# After extraction, explore which videos belong to topic 0
+curl -X GET "http://localhost:8000/api/analysis/topics/0/videos?limit=10&offset=0"
+```
+
+**Response:**
+
+```json
+{
+  "topic_id": 0,
+  "topic_name": "0_actress_drama_beautiful",
+  "keywords": ["actress", "drama", "beautiful", "story", "romance"],
+  "videos": [
+    {
+      "index": 0,
+      "topic_id": 0,
+      "document_snippet": "JUQ-373 Beautiful Actress | Series: juq..."
+    }
+  ],
+  "total": 45,
+  "limit": 10,
+  "offset": 0
+}
+```
+
+### Search Topics by Keyword
+
+```bash
+# Find topics containing "actress" in their keywords
+curl -X POST "http://localhost:8000/api/analysis/topics/search?keyword=actress&limit=3"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "topic_id": 0,
+    "name": "0_actress_drama_beautiful",
+    "keywords": ["actress", "drama", "beautiful", "story", "romance"],
+    "size": 45,
+    "representative_doc": "JUQ-373 Beautiful Actress | Series: juq | Episode: 373..."
+  }
+]
+```
+
+---
+
+## 3. Video Ingestion
 
 ```bash
 # Ingest a batch of videos
@@ -74,7 +220,7 @@ curl -X POST http://localhost:8000/api/videos/ingest \
 
 ---
 
-## 3. Video Retrieval
+## 4. Video Retrieval
 
 ```bash
 # Get all videos (default 100)
@@ -92,7 +238,7 @@ curl -X GET http://localhost:8000/api/videos/juq-373
 
 ---
 
-## 4. Smart Search - All Features
+## 5. Smart Search - All Features
 
 ### Basic Semantic Search
 
@@ -252,7 +398,7 @@ curl -X POST http://localhost:8000/api/search \
 
 ---
 
-## 5. User Preferences
+## 6. User Preferences
 
 ### Update/Create Preferences
 

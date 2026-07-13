@@ -11,11 +11,13 @@ from app.config import CHROMA_DIR, SERVER_DIR
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from routes.analysis import router as analysis_router
 from routes.health import router as health_router
 from routes.preferences import router as preferences_router
 from routes.search import router as search_router
 from routes.videos import router as videos_router
 from services import chroma_service as chroma_service_module
+from services.analysis_service import init_analysis_service  # ← NEW: Add this import
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -42,6 +44,7 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:*",
     "*",
 ]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -70,7 +73,6 @@ app.add_middleware(
 async def log_requests(request: Request, call_next):
     """Log all incoming requests with timing and origin info, and add the
     legacy Private Network Access preflight header.
-
     NOTE: The "canceled"/CORS error the extension was hitting is Chrome's
     newer Local Network Access (LNA) permission check, which is a browser
     permission the user grants per-origin — this header alone does not fix
@@ -117,6 +119,7 @@ app.include_router(health_router)
 app.include_router(videos_router)
 app.include_router(search_router)
 app.include_router(preferences_router)
+app.include_router(analysis_router)  # ← NEW: Add this router registration
 
 
 @app.on_event("startup")
@@ -127,15 +130,26 @@ async def startup():
     logger.info(f"📂 Server directory: {SERVER_DIR}")
     logger.info(f"📂 ChromaDB directory: {CHROMA_DIR}")
     logger.info("=" * 60)
+
     try:
         count = chroma_service.get_count()
         logger.info(f"📊 ChromaDB: {count} videos indexed")
     except Exception as e:
         logger.error(f"❌ ChromaDB error: {e}")
+
+    # ── NEW: Initialize analysis service ──────────────────────────────
+    try:
+        init_analysis_service()
+        logger.info("🧩 Analysis service initialized (BERTopic ready)")
+    except Exception as e:
+        logger.warning(f"⚠️ Analysis service initialization deferred: {e}")
+    # ───────────────────────────────────────────────────────────────────
+
     logger.info("🌐 CORS: Enabled for all origins (development mode)")
     logger.info("   Methods: GET, POST, PUT, DELETE, OPTIONS, PATCH")
     logger.info("   Max Age: 3600s")
     logger.info("🔓 Private Network Access header: enabled on every response")
+
     routes = [
         route.path
         for route in app.routes
