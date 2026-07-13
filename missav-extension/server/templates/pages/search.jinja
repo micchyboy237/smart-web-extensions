@@ -1,0 +1,43 @@
+{% extends "base/layout.jinja" %}
+{% from "base/macros.jinja" import filter_panel, search_result_item, empty_state, stats_panel %}
+{% set active_page = "search" %}
+{% block title %}Smart Search - MissAV{% endblock %}
+{% block content %}
+    <div class="container-fluid px-0">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h2 class="mb-1"><i class="bi bi-search me-2"></i>Smart Search</h2>
+                <p class="text-muted mb-0">Search with filters, diversity control, and natural language</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-lg-3">{{ filter_panel() }}</div>
+            <div class="col-lg-9">
+                <form hx-post="/web/search-results"
+                      hx-target="#search-results"
+                      hx-trigger="submit"
+                      hx-indicator="#search-loading">
+                    <div class="search-box d-flex align-items-center mb-4 p-3">
+                        <i class="bi bi-search text-muted me-2 fs-5"></i>
+                        <input type="text"
+                               name="query"
+                               class="flex-grow-1 py-2"
+                               placeholder="Search with filters enabled..."
+                               hx-trigger="keyup changed delay:500ms"
+                               hx-post="/web/search-results"
+                               hx-target="#search-results"
+                               hx-indicator="#search-loading"
+                               hx-include="[name='search_type'],[name='top_k'],[name='diversity_factor'],[name='include_codes'],[name='exclude_codes']">
+                    </div>
+                </form>
+                <div id="search-loading" class="htmx-indicator text-center py-5">
+                    <div class="loading-spinner mx-auto mb-3"></div>
+                    <p class="text-muted">Searching across {{ stats.get('total_videos', 'all') }} videos...</p>
+                </div>
+                <div id="search-results">
+                    {{ empty_state('search', 'Start Searching', 'Enter a query above to find videos across your collection') }}
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}

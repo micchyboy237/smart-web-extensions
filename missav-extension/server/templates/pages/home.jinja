@@ -1,0 +1,93 @@
+{% extends "base/layout.jinja" %}
+{% from "base/macros.jinja" import stats_panel, empty_state %}
+{% set active_page = "home" %}
+{% block title %}Dashboard - MissAV Smart Search{% endblock %}
+{% block content %}
+    <div class="container-fluid px-0">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h2 class="mb-1"><i class="bi bi-speedometer2 me-2"></i>Dashboard</h2>
+                <p class="text-muted mb-0">Overview of your video collection and search analytics</p>
+            </div>
+            <a href="/web/search" class="btn btn-primary rounded-pill px-4">
+                <i class="bi bi-search me-2"></i>Start Searching
+            </a>
+        </div>
+        {{ stats_panel(stats) }}
+        <div class="row g-4 mt-2">
+            <div class="col-md-8">
+                <div class="card h-100">
+                    <div class="card-header bg-transparent border-bottom">
+                        <h5 class="mb-0"><i class="bi bi-lightning-charge me-2"></i>Quick Search</h5>
+                    </div>
+                    <div class="card-body">
+                        <form hx-post="/web/search-results"
+                              hx-target="#quick-search-results"
+                              hx-trigger="submit"
+                              hx-indicator="#quick-search-spinner">
+                            <div class="input-group input-group-lg mb-4">
+                                <span class="input-group-text bg-transparent border-end-0">
+                                    <i class="bi bi-search"></i>
+                                </span>
+                                <input type="text"
+                                       name="query"
+                                       class="form-control bg-transparent border-start-0"
+                                       placeholder="Try: 'popular juq videos from 300-500' or 'something like juq-373'...">
+                                <button class="btn btn-primary px-4" type="submit">
+                                    <span id="quick-search-spinner" class="htmx-indicator">
+                                        <span class="spinner-border spinner-border-sm me-1"></span>
+                                    </span>
+                                    Search
+                                </button>
+                            </div>
+                        </form>
+                        <div id="quick-search-results">
+                            <div class="text-center text-muted py-4">
+                                <i class="bi bi-search display-4 d-block mb-3"></i>
+                                <p>Enter a search query to find videos</p>
+                                <small>Supports natural language, codes, and episode ranges</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card h-100">
+                    <div class="card-header bg-transparent border-bottom">
+                        <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i>Features</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="d-flex mb-3">
+                            <i class="bi bi-1-circle text-primary me-3" style="font-size: 1.5rem;"></i>
+                            <div>
+                                <h6>Smart Search</h6>
+                                <small class="text-muted">Hybrid semantic + keyword search with natural language understanding</small>
+                            </div>
+                        </div>
+                        <div class="d-flex mb-3">
+                            <i class="bi bi-2-circle text-success me-3" style="font-size: 1.5rem;"></i>
+                            <div>
+                                <h6>Diversity Ranking</h6>
+                                <small class="text-muted">MMR-based re-ranking to avoid showing similar videos</small>
+                            </div>
+                        </div>
+                        <div class="d-flex mb-3">
+                            <i class="bi bi-3-circle text-warning me-3" style="font-size: 1.5rem;"></i>
+                            <div>
+                                <h6>Topic Extraction</h6>
+                                <small class="text-muted">Discover content themes with AI-powered topic modeling</small>
+                            </div>
+                        </div>
+                        <div class="d-flex">
+                            <i class="bi bi-4-circle text-info me-3" style="font-size: 1.5rem;"></i>
+                            <div>
+                                <h6>Code & Episode Filters</h6>
+                                <small class="text-muted">Filter by series codes, episode ranges, and exclusions</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}

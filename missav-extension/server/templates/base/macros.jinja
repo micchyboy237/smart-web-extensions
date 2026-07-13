@@ -1,0 +1,242 @@
+{# Reusable UI components #}
+{% macro video_card(video, rank=none) %}
+    <div class="col animate-in"
+         style="animation-delay: {{ (rank or 0) * 0.05 }}s">
+        <div class="card video-card h-100"
+             onclick="location.href='/web/videos/{{ video.id }}'">
+            <div class="video-thumbnail">
+                {% if video.metadata and video.metadata.get('thumbnail') %}
+                    <img src="{{ video.metadata.thumbnail }}"
+                         alt="{{ video.metadata.get('text', 'Video') }}"
+                         loading="lazy"
+                         onerror="this.parentElement.innerHTML='<i class=\'bi bi-film placeholder-icon\'></i>'">
+                {% else %}
+                    <i class="bi bi-film placeholder-icon"></i>
+                {% endif %}
+                {% if video.metadata and video.metadata.get('code') %}
+                    <span class="video-code-badge">{{ video.metadata.code | upper }}</span>
+                {% endif %}
+                {% if video.diversity_score is defined and video.diversity_score > 0.7 %}
+                    <span class="diversity-indicator diversity-high"
+                          style="position:absolute;
+                                 top:10px;
+                                 right:10px">
+                        <i class="bi bi-stars"></i> Unique
+                    </span>
+                {% endif %}
+            </div>
+            <div class="card-body p-3">
+                <h6 class="card-title mb-1 text-truncate" style="font-size: 0.9rem;">
+                    {{ video.metadata.get('text', video.document[:80]) if video.metadata else video.document[:80] }}
+                </h6>
+                <div class="d-flex justify-content-between align-items-center mt-2">
+                    <small class="text-muted">
+                        {% if video.metadata and video.metadata.get('episode') %}
+                            Episode {{ video.metadata.episode }}
+                        {% endif %}
+                    </small>
+                    {% if video.score is defined %}
+                        <span class="result-score">{{ "%.2f"|format(video.score) }}</span>
+                    {% endif %}
+                </div>
+                {% if video.diversity_score is defined and video.diversity_score > 0 %}
+                    <div class="progress mt-2" style="height: 3px;">
+                        <div class="progress-bar bg-info"
+                             style="width: {{ video.diversity_score * 100 }}%"
+                             title="Diversity: {{ "%.0f"|format(video.diversity_score * 100) }}%"></div>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+{% endmacro %}
+{% macro topic_card(topic) %}
+    <div class="col-md-6 col-lg-4 animate-in">
+        <div class="card h-100"
+             onclick="location.href='/web/topics/{{ topic.topic_id }}'">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <h6 class="card-title mb-0">{{ topic.name | replace('_', ' ') | title }}</h6>
+                    <span class="badge bg-primary rounded-pill">{{ topic.size }} videos</span>
+                </div>
+                <div class="mb-3">
+                    {% for keyword in topic.keywords[:5] %}
+                        <span class="topic-pill me-1 mb-1">{{ keyword }}</span>
+                    {% endfor %}
+                </div>
+                <p class="card-text small text-muted text-truncate">{{ topic.representative_doc[:120] }}...</p>
+            </div>
+            <div class="card-footer bg-transparent border-top-0">
+                <small class="text-muted">
+                    <i class="bi bi-collection me-1"></i>{{ topic.size }} videos in this topic
+                </small>
+            </div>
+        </div>
+    </div>
+{% endmacro %}
+{% macro search_result_item(result, index) %}
+    <div class="card mb-3 animate-in"
+         style="animation-delay: {{ index * 0.05 }}s">
+        <div class="card-body">
+            <div class="row align-items-center">
+                <div class="col-auto">
+                    <div class="video-thumbnail rounded" style="width: 120px; height: 80px;">
+                        {% if result.metadata and result.metadata.get('thumbnail') %}
+                            <img src="{{ result.metadata.thumbnail }}"
+                                 alt="Thumbnail"
+                                 onerror="this.parentElement.innerHTML='<i class=\'bi bi-film\'></i>'">
+                        {% else %}
+                            <i class="bi bi-film placeholder-icon" style="font-size: 1.5rem;"></i>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <h6 class="mb-1">
+                                <a href="/web/videos/{{ result.id }}"
+                                   class="text-decoration-none text-white">
+                                    {{ result.metadata.get('text', result.document[:80]) if result.metadata else result.document[:80] }}
+                                </a>
+                            </h6>
+                            <div class="d-flex gap-2 align-items-center">
+                                {% if result.metadata and result.metadata.get('code') %}
+                                    <span class="badge bg-secondary">{{ result.metadata.code | upper }}</span>
+                                {% endif %}
+                                {% if result.metadata and result.metadata.get('episode') %}
+                                    <small class="text-muted">Episode {{ result.metadata.episode }}</small>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="text-end">
+                            <div class="result-score mb-1">{{ "%.3f"|format(result.score) }}</div>
+                            {% if result.diversity_score is defined and result.diversity_score > 0 %}
+                                {% if result.diversity_score > 0.7 %}
+                                    <span class="diversity-indicator diversity-high">High Diversity</span>
+                                {% elif result.diversity_score > 0.4 %}
+                                    <span class="diversity-indicator diversity-medium">Medium Diversity</span>
+                                {% else %}
+                                    <span class="diversity-indicator diversity-low">Low Diversity</span>
+                                {% endif %}
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endmacro %}
+{% macro filter_panel(filters={}) %}
+    <div class="filter-panel mb-4">
+        <h6 class="mb-3"><i class="bi bi-funnel me-2"></i>Filters</h6>
+        <div class="row g-3">
+            <div class="col-md-4">
+                <label class="form-label small text-muted">Search Type</label>
+                <select class="form-select form-select-sm" name="search_type">
+                    <option value="hybrid"
+                            {{ 'selected' if filters.get("search_type") == 'hybrid' }}>Hybrid (Recommended)</option>
+                    <option value="semantic"
+                            {{ 'selected' if filters.get("search_type") == 'semantic' }}>Semantic</option>
+                    <option value="keyword"
+                            {{ 'selected' if filters.get("search_type") == 'keyword' }}>Keyword</option>
+                    <option value="ensemble"
+                            {{ 'selected' if filters.get("search_type") == 'ensemble' }}>Ensemble</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small text-muted">Results Per Page</label>
+                <select class="form-select form-select-sm" name="top_k">
+                    <option value="10">10</option>
+                    <option value="20" selected>20</option>
+                    <option value="30">30</option>
+                    <option value="50">50</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small text-muted">Diversity</label>
+                <select class="form-select form-select-sm" name="diversity_factor">
+                    <option value="0.0">Relevance Only</option>
+                    <option value="0.3" selected>Balanced</option>
+                    <option value="0.6">More Diverse</option>
+                    <option value="0.9">Maximum Diversity</option>
+                </select>
+            </div>
+            <div class="col-md-6">
+                <label class="form-label small text-muted">Include Codes</label>
+                <input type="text"
+                       class="form-control form-control-sm"
+                       name="include_codes"
+                       placeholder="e.g., juq, mxgs, ssis"
+                       value="{{ filters.get('include_codes', '') }}">
+            </div>
+            <div class="col-md-6">
+                <label class="form-label small text-muted">Exclude Codes</label>
+                <input type="text"
+                       class="form-control form-control-sm"
+                       name="exclude_codes"
+                       placeholder="e.g., fc2, heyzo"
+                       value="{{ filters.get('exclude_codes', '') }}">
+            </div>
+        </div>
+    </div>
+{% endmacro %}
+{% macro stats_panel(stats) %}
+    <div class="row g-3 mb-4">
+        <div class="col-md-3">
+            <div class="card stat-card p-3">
+                <div class="d-flex align-items-center">
+                    <i class="bi bi-database text-primary me-3" style="font-size: 1.5rem;"></i>
+                    <div>
+                        <small class="text-muted">Total Videos</small>
+                        <h4 class="mb-0">{{ format_number(stats.get('total_videos', 0) ) }}</h4>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card stat-card p-3">
+                <div class="d-flex align-items-center">
+                    <i class="bi bi-search text-success me-3" style="font-size: 1.5rem;"></i>
+                    <div>
+                        <small class="text-muted">Search Time</small>
+                        <h4 class="mb-0">{{ stats.get('search_time_ms', 0) | round(1) }}ms</h4>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card stat-card p-3">
+                <div class="d-flex align-items-center">
+                    <i class="bi bi-diagram-3 text-warning me-3" style="font-size: 1.5rem;"></i>
+                    <div>
+                        <small class="text-muted">Topics</small>
+                        <h4 class="mb-0">{{ stats.get('topic_count', 0) }}</h4>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card stat-card p-3">
+                <div class="d-flex align-items-center">
+                    <i class="bi bi-star text-info me-3" style="font-size: 1.5rem;"></i>
+                    <div>
+                        <small class="text-muted">Avg Score</small>
+                        <h4 class="mb-0">{{ "%.2f"|format(stats.get('avg_score', 0) ) }}</h4>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endmacro %}
+{% macro empty_state(icon, title, message, action_url=none, action_text=none) %}
+    <div class="empty-state">
+        <i class="bi bi-{{ icon }} d-block"></i>
+        <h4>{{ title }}</h4>
+        <p class="text-muted">{{ message }}</p>
+        {% if action_url and action_text %}
+            <a href="{{ action_url }}" class="btn btn-primary rounded-pill px-4">
+                <i class="bi bi-arrow-right me-2"></i>{{ action_text }}
+            </a>
+        {% endif %}
+    </div>
+{% endmacro %}

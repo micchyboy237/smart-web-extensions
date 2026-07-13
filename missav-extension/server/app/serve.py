@@ -16,8 +16,9 @@ from routes.health import router as health_router
 from routes.preferences import router as preferences_router
 from routes.search import router as search_router
 from routes.videos import router as videos_router
+from routes.web import router as web_router
 from services import chroma_service as chroma_service_module
-from services.analysis_service import init_analysis_service  # ← NEW: Add this import
+from services.analysis_service import init_analysis_service
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -119,7 +120,8 @@ app.include_router(health_router)
 app.include_router(videos_router)
 app.include_router(search_router)
 app.include_router(preferences_router)
-app.include_router(analysis_router)  # ← NEW: Add this router registration
+app.include_router(analysis_router)
+app.include_router(web_router)
 
 
 @app.on_event("startup")
@@ -153,9 +155,10 @@ async def startup():
     routes = [
         route.path
         for route in app.routes
-        if hasattr(route, "methods") and route.path.startswith("/api")
+        if hasattr(route, "methods")
+        and (route.path.startswith("/api") or route.path.startswith("/web"))
     ]
-    logger.info(f"📋 Registered API routes ({len(routes)}):")
+    logger.info(f"📋 Registered routes ({len(routes)}):")
     for route in sorted(routes):
         logger.info(f"   {route}")
     logger.info("=" * 60)

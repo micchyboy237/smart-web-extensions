@@ -1,4 +1,4 @@
-// db.js - Place this in your extension (background.js, popup.js, etc.)
+// db.js - IndexedDB wrapper for MissAV Extension
 const DB_NAME = "MissAVExtensionDB";
 const DB_VERSION = 1;
 const STORE_NAME = "items";
@@ -10,18 +10,13 @@ const STORE_NAME = "items";
 function openDB() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
-
     request.onerror = () => reject(request.error);
-
     request.onsuccess = () => {
       const db = request.result;
-      // Global error handler
       db.onerror = (event) =>
         console.error("[DB] Database error:", event.target.error);
       resolve(db);
     };
-
-    // Schema setup / upgrade
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -29,7 +24,6 @@ function openDB() {
           keyPath: "id",
           autoIncrement: false,
         });
-        // Indexes for faster queries
         store.createIndex("codeIndex", "code", { unique: false });
         store.createIndex("episodeIndex", "episode", { unique: false });
         store.createIndex("videoIdIndex", "videoId", { unique: false });
@@ -108,13 +102,11 @@ async function getItem(id) {
 async function getAll(options = {}) {
   console.log("[DB] 📋 getAll() called with options:", options);
   const db = await openDB();
-
   return new Promise((resolve, reject) => {
     const items = [];
     const tx = db.transaction([STORE_NAME], "readonly");
     const store = tx.objectStore(STORE_NAME);
 
-    // Support for index-based queries
     if (options.index && options.value) {
       console.log(
         `[DB] 🔍 Using index "${options.index}" with value "${options.value}"`,
@@ -123,9 +115,7 @@ async function getAll(options = {}) {
       const keyRange = options.exactMatch
         ? IDBKeyRange.only(options.value)
         : IDBKeyRange.bound(options.value, options.value + "\uffff");
-
       const req = index.openCursor(keyRange, options.direction || "next");
-
       req.onsuccess = (event) => {
         const cursor = event.target.result;
         if (cursor) {
@@ -141,15 +131,12 @@ async function getAll(options = {}) {
           resolve(result);
         }
       };
-
       req.onerror = () => {
         console.error("[DB] ❌ getAll with index failed:", req.error);
         reject(req.error);
       };
     } else {
-      // Get all items using cursor
       const req = store.openCursor(null, options.direction || "next");
-
       req.onsuccess = (event) => {
         const cursor = event.target.result;
         if (cursor) {
@@ -166,7 +153,6 @@ async function getAll(options = {}) {
           resolve(finalResult);
         }
       };
-
       req.onerror = () => {
         console.error("[DB] ❌ getAll failed:", req.error);
         reject(req.error);
@@ -177,7 +163,6 @@ async function getAll(options = {}) {
       console.log("[DB] 🔒 Transaction complete, closing DB");
       db.close();
     };
-
     tx.onerror = () => {
       console.error("[DB] ❌ Transaction error in getAll:", tx.error);
       reject(tx.error);
@@ -197,22 +182,15 @@ function sortItems(items, sortBy, sortOrder = "asc") {
   return items.sort((a, b) => {
     let valueA = a[sortBy];
     let valueB = b[sortBy];
-
-    // Handle null/undefined values
     if (valueA == null) valueA = "";
     if (valueB == null) valueB = "";
-
-    // Handle numeric sorting for episode numbers
     if (sortBy === "episode") {
       valueA = parseInt(valueA) || 0;
       valueB = parseInt(valueB) || 0;
     }
-
-    // Compare values
     let comparison = 0;
     if (valueA < valueB) comparison = -1;
     if (valueA > valueB) comparison = 1;
-
     return sortOrder === "desc" ? -comparison : comparison;
   });
 }
@@ -277,22 +255,18 @@ async function deleteAll() {
     const tx = db.transaction([STORE_NAME], "readwrite");
     const store = tx.objectStore(STORE_NAME);
     const req = store.clear();
-
     req.onsuccess = () => {
       console.log("[DB] ✅ All items deleted successfully");
       resolve(true);
     };
-
     req.onerror = () => {
       console.error("[DB] ❌ deleteAll failed:", req.error);
       reject(req.error);
     };
-
     tx.oncomplete = () => {
       console.log("[DB] 🔒 Transaction complete, closing DB");
       db.close();
     };
-
     tx.onerror = () => {
       console.error("[DB] ❌ Transaction error in deleteAll:", tx.error);
       reject(tx.error);

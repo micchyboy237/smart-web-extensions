@@ -20,11 +20,12 @@ if __name__ == "__main__":
     print()
 
     reload_dirs: list[str] = [
+        "templates",
         "routes",
         "services",
         "utils",
         "models",
-        "app",  # ← Added: important for app/serve.py
+        "app",
     ]
 
     print("👁️ Auto-reload watching:")

@@ -18,10 +18,16 @@
     <div class="popup-container">
       <!-- Header -->
       <div class="header">
-        <h1><i class="fas fa-film"></i> MissAV Smart Search</h1>
-        <button id="themeToggle" class="icon-button" title="Toggle Dark Mode">
-          <i class="fas fa-moon"></i>
-        </button>
+        <h1>
+          <span class="header-icon"><i class="fas fa-film"></i></span>
+          MissAV Smart Search
+        </h1>
+        <div class="header-actions">
+          <span id="resultCount" class="result-badge hidden">0 results</span>
+          <button id="themeToggle" class="icon-button" title="Toggle Dark Mode">
+            <i class="fas fa-moon"></i>
+          </button>
+        </div>
       </div>
 
       <!-- Main Content: Two Columns -->
@@ -30,7 +36,9 @@
         <div class="search-column">
           <!-- Search Query -->
           <div class="form-group">
-            <label for="query">Search Query</label>
+            <label for="query">
+              <i class="fas fa-search"></i> Search Query
+            </label>
             <div class="search-input-wrapper">
               <input
                 type="text"
@@ -38,13 +46,16 @@
                 placeholder="e.g., 'popular juq videos from 300-500' or 'mxgs -fc2'"
                 autocomplete="off"
               />
-              <button id="clearQuery" class="icon-button" title="Clear">
+              <button
+                id="clearQuery"
+                class="icon-button clear-btn"
+                title="Clear"
+              >
                 <i class="fas fa-times"></i>
               </button>
             </div>
             <small class="hint"
-              >Supports natural language, codes (juq, mxgs), and filters
-              (-fc2).</small
+              >Natural language, codes (juq, mxgs), filters (-fc2)</small
             >
           </div>
 
@@ -57,8 +68,8 @@
             <div class="form-group">
               <label for="searchType">Search Type</label>
               <select id="searchType">
-                <option value="hybrid">Hybrid</option>
                 <option value="semantic">Semantic</option>
+                <option value="hybrid">Hybrid</option>
                 <option value="keyword">Keyword</option>
                 <option value="ensemble">Ensemble</option>
               </select>
@@ -104,7 +115,7 @@
                   placeholder="Min"
                   min="0"
                 />
-                <span>—</span>
+                <span class="range-separator">—</span>
                 <input
                   type="number"
                   id="episodeMax"
@@ -140,7 +151,7 @@
               type="number"
               id="maxPerCode"
               min="1"
-              placeholder="Optional"
+              placeholder="Unlimited"
             />
           </div>
 
@@ -150,10 +161,10 @@
               <i class="fas fa-search"></i> Smart Search
             </button>
             <button id="quickSearchBtn" class="secondary-button">
-              <i class="fas fa-bolt"></i> Quick Search
+              <i class="fas fa-bolt"></i> Quick
             </button>
             <button id="findSimilarBtn" class="secondary-button">
-              <i class="fas fa-random"></i> Find Similar
+              <i class="fas fa-random"></i> Similar
             </button>
             <button id="serverStatusBtn" class="secondary-button">
               <i class="fas fa-server"></i> Status
@@ -163,11 +174,23 @@
 
         <!-- Right Column: Results List -->
         <div class="results-column">
-          <h2><i class="fas fa-list"></i> Results</h2>
+          <div class="results-header">
+            <h2><i class="fas fa-list"></i> Results</h2>
+            <button
+              id="copyAllIds"
+              class="icon-button"
+              title="Copy all video IDs"
+            >
+              <i class="fas fa-copy"></i>
+            </button>
+          </div>
           <div id="resultsContainer" class="results-container">
             <div class="empty-results">
-              <i class="fas fa-search"></i>
-              <p>Enter a query and click "Smart Search"</p>
+              <div class="empty-icon"><i class="fas fa-film"></i></div>
+              <p class="empty-title">No results yet</p>
+              <p class="empty-subtitle">
+                Enter a query and click "Smart Search"
+              </p>
             </div>
           </div>
         </div>
@@ -177,13 +200,13 @@
       <div id="loadingOverlay" class="loading-overlay hidden">
         <div class="spinner">
           <i class="fas fa-spinner fa-spin"></i>
+          <span>Searching...</span>
         </div>
       </div>
 
       <!-- Toast Notifications -->
       <div id="toast" class="toast hidden"></div>
     </div>
-
     <script src="popup.js"></script>
   </body>
 </html>

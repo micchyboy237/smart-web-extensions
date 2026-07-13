@@ -214,8 +214,7 @@ class ChromaVideoService:
                     "code": video.get("code") or "",
                     "episode": video.get("episode") or "",
                     "video_id": video.get("videoId") or "",
-                    # "thumbnail": video.get("thumbnail") or "",
-                    "thumbnail": "",
+                    "thumbnail": video.get("thumbnail") or "",
                     "preview": video.get("preview") or "",
                 }
             )

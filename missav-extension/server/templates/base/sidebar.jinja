@@ -1,0 +1,70 @@
+<nav class="sidebar d-none d-md-block">
+    <div class="px-4 mb-3">
+        <small class="text-muted text-uppercase fw-semibold"
+               style="font-size: 0.7rem;
+                      letter-spacing: 2px">Navigation</small>
+    </div>
+    <ul class="nav flex-column">
+        <li class="nav-item">
+            <a class="nav-link {{ 'active' if active_page == 'home' else '' }}"
+               href="/web/">
+                <i class="bi bi-house-door"></i>
+                Dashboard
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link {{ 'active' if active_page == 'search' else '' }}"
+               href="/web/search">
+                <i class="bi bi-search"></i>
+                Smart Search
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link {{ 'active' if active_page == 'videos' else '' }}"
+               href="/web/videos">
+                <i class="bi bi-collection-play"></i>
+                Video Library
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link {{ 'active' if active_page == 'topics' else '' }}"
+               href="/web/topics">
+                <i class="bi bi-diagram-3"></i>
+                Topic Explorer
+            </a>
+        </li>
+    </ul>
+    <hr class="mx-3 my-3" style="border-color: rgba(255,255,255,0.1);">
+    <div class="px-4 mb-3">
+        <small class="text-muted text-uppercase fw-semibold"
+               style="font-size: 0.7rem;
+                      letter-spacing: 2px">Settings</small>
+    </div>
+    <ul class="nav flex-column">
+        <li class="nav-item">
+            <a class="nav-link {{ 'active' if active_page == 'preferences' else '' }}"
+               href="/web/preferences">
+                <i class="bi bi-sliders"></i>
+                Preferences
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" href="/docs" target="_blank">
+                <i class="bi bi-code-slash"></i>
+                API Docs
+                <i class="bi bi-box-arrow-up-right ms-1" style="font-size: 0.7rem;"></i>
+            </a>
+        </li>
+    </ul>
+    <div class="px-4 mt-auto pt-4">
+        <div class="card stat-card p-3">
+            <div class="d-flex align-items-center">
+                <i class="bi bi-database text-primary me-2"></i>
+                <div>
+                    <small class="text-muted">Total Videos</small>
+                    <h5 class="mb-0" id="sidebar-video-count">--</h5>
+                </div>
+            </div>
+        </div>
+    </div>
+</nav>

@@ -1,100 +1,151 @@
 let observer = null;
 let currentData = [];
+let retryTimeoutId = null; // Track pending retry to avoid duplicates
+
 // ====================== ID GENERATOR ======================
 // Generates a stable, deterministic ID from a URL.
 // Same URL always returns the exact same ID.
 // DIFFERENT URLs with same videoId will generate DIFFERENT IDs.
 function generateIdFromUrl(url, videoId) {
-  // console.log("[ID GEN] 🏷️ Generating ID for:", { url, videoId });
   if (!url && !videoId) {
     const fallbackId = "unknown-" + Date.now();
-    // console.log("[ID GEN] ⚠️ No URL or videoId, using fallback:", fallbackId);
     return fallbackId;
   }
-  // Use the FULL URL as the basis for ID generation
-  // This ensures juq-373-uncensored-leak and juq-373 get different IDs
   const input = url || videoId;
-  // console.log("[ID GEN] 📝 Input for hashing:", input);
   try {
-    // Normalize the URL but keep the FULL path
     let normalized;
     if (url) {
       try {
         const urlObj = new URL(url);
-        // Keep the full pathname to differentiate variants
         normalized = urlObj.origin + urlObj.pathname;
-        // console.log("[ID GEN] 🔗 Normalized URL:", normalized);
       } catch (e) {
         normalized = url;
-        // console.log("[ID GEN] ⚠️ URL parse failed, using raw URL");
       }
     } else {
       normalized = videoId;
     }
     // FNV-1a hash (32-bit) for consistent, unique IDs
-    let hash = 0x811c9dc5; // FNV offset basis
+    let hash = 0x811c9dc5;
     for (let i = 0; i < normalized.length; i++) {
       hash ^= normalized.charCodeAt(i);
-      hash = (hash * 0x01000193) >>> 0; // FNV prime, keep 32-bit
+      hash = (hash * 0x01000193) >>> 0;
     }
     const generatedId = "jav-" + hash.toString(36);
-    // console.log("[ID GEN] ✅ Generated ID:", generatedId);
     return generatedId;
   } catch (e) {
-    // console.error("[ID GEN] ❌ Error generating ID:", e);
-    // Fallback to base64 of the input
     const fallback =
       "jav-" +
       btoa(input)
         .replace(/[^a-zA-Z0-9]/g, "")
         .slice(0, 16);
-    // console.log("[ID GEN] ⚠️ Using fallback ID:", fallback);
     return fallback;
   }
 }
+
 // ====================== JAV ID EXTRACTOR ======================
 // Extracts videoId, code, and episode from URL or text
-// URL pattern examples:
-// - https://missav.ws/dm14/en/mxgs-893  → videoId: "mxgs-893", code: "mxgs", episode: "893"
-// - https://missav.ws/en/nsps-467       → videoId: "nsps-467", code: "nsps", episode: "467"
-// - https://missav.ws/dm13/en/bnsps-314 → videoId: "bnsps-314", code: "bnsps", episode: "314"
-// - https://missav.ws/en/juq-373-uncensored-leak → videoId: "juq-373-uncensored-leak", code: "juq", episode: "373"
+//
+// Supported formats:
+//   With hyphen:
+//     - "mxgs-893"              → videoId: "mxgs-893",    code: "mxgs",  episode: "893"
+//     - "juq-373-uncensored"    → videoId: "juq-373-uncensored", code: "juq", episode: "373"
+//     - "fc2-ppv-4909847"       → videoId: "fc2-ppv-4909847",   code: "fc2-ppv", episode: "4909847"
+//   Without hyphen:
+//     - "mcs0261"               → videoId: "mcs0261",     code: "mcs",   episode: "0261"
+//     - "abp123"                → videoId: "abp123",      code: "abp",   episode: "123"
+//     - "1pondo456"             → videoId: "1pondo456",   code: "1pondo", episode: "456"
+//     - "heyzo1234"             → videoId: "heyzo1234",   code: "heyzo", episode: "1234"
+//     - "carib5678"             → videoId: "carib5678",   code: "carib", episode: "5678"
 function extractJavInfo(url, text) {
   console.log("[MISSAV EXT] 🔍 extractJavInfo called");
   console.log("  URL:", url);
   console.log("  text:", text);
-  // Pattern for three-part codes with optional suffix: letters+optional-digits + hyphen + letters + hyphen + digits + optional suffix
-  // Examples: fc2-ppv-4909847, heyzo-1234, carib-5678-com, juq-373-uncensored-leak
+
+  // ---------------------------------------------------------
+  // Pattern 1: Three-part codes with hyphens + optional suffix
+  // Examples: fc2-ppv-4909847, fc2-ppv-4909847-uncensored
+  // ---------------------------------------------------------
   const threePartWithSuffix = /\b([a-z]+\d*-[a-z]+)-(\d+)(-[a-z0-9-]+)?\b/i;
-  // Pattern for simple two-part codes with optional suffix
-  // Examples: mxgs-893, club-914, sdde-123, 1pondo-456, juq-373, juq-373-uncensored
+
+  // ---------------------------------------------------------
+  // Pattern 2: Two-part codes with hyphens + optional suffix
+  // Examples: mxgs-893, juq-373, juq-373-uncensored-leak, club-914
+  // ---------------------------------------------------------
   const twoPartWithSuffix = /\b([a-z0-9]+)-(\d+)(-[a-z0-9-]+)?\b/i;
-  // Try URL first with three-part (more specific)
-  let match = url.match(threePartWithSuffix);
-  if (match) {
-    console.log("  ✅ Three-part URL match:", match[0]);
-  }
-  // Try URL with two-part
+
+  // ---------------------------------------------------------
+  // Pattern 3: Letters followed by digits (NO hyphen)
+  // Examples: mcs0261, abp123, heyzo1234, carib5678
+  // Captures: group 1 = letters (code), group 2 = digits (episode)
+  // ---------------------------------------------------------
+  const lettersThenDigits = /\b([a-z]+)(\d{3,6})\b/i;
+
+  // ---------------------------------------------------------
+  // Pattern 4: Digits then letters (NO hyphen)
+  // Examples: 1pondo456
+  // Captures: group 1 = digits+letters (code), group 2 = digits (episode)
+  // ---------------------------------------------------------
+  const digitsThenLetters = /\b(\d+[a-z]+)(\d{3,6})\b/i;
+
+  let match = null;
+  let patternUsed = "";
+
+  // --- Try URL first ---
+  match = url.match(threePartWithSuffix);
+  if (match) patternUsed = "threePartWithSuffix (URL)";
+
   if (!match) {
     match = url.match(twoPartWithSuffix);
-    if (match) {
-      console.log("  ✅ Two-part URL match:", match[0]);
-    }
+    if (match) patternUsed = "twoPartWithSuffix (URL)";
   }
-  // Text fallback
+
+  if (!match) {
+    match = url.match(lettersThenDigits);
+    if (match) patternUsed = "lettersThenDigits (URL)";
+  }
+
+  if (!match) {
+    match = url.match(digitsThenLetters);
+    if (match) patternUsed = "digitsThenLetters (URL)";
+  }
+
+  // --- Text fallback ---
   if (!match && text) {
-    match = text.match(threePartWithSuffix) || text.match(twoPartWithSuffix);
-    if (match) {
-      console.log("  ✅ Text fallback match:", match[0]);
-    }
+    match =
+      text.match(threePartWithSuffix) ||
+      text.match(twoPartWithSuffix) ||
+      text.match(lettersThenDigits) ||
+      text.match(digitsThenLetters);
+    if (match) patternUsed = "text fallback";
   }
+
+  // --- Build result ---
   if (match) {
-    // videoId = full match (e.g., "juq-373-uncensored-leak" or "juq-373")
-    const videoId = match[0].toLowerCase();
-    // code = first part only (e.g., "juq")
-    const code = match[1].toLowerCase();
-    // episode = the digits (e.g., "373")
-    const episode = match[2];
+    let videoId, code, episode;
+
+    if (patternUsed.includes("threePart") || patternUsed.includes("twoPart")) {
+      // Hyphenated formats: full match is the videoId, group 1 is code, group 2 is episode
+      videoId = match[0].toLowerCase();
+      code = match[1].toLowerCase();
+      episode = match[2];
+    } else if (patternUsed.includes("lettersThenDigits")) {
+      // No-hyphen format: "mcs0261" → group 1 = "mcs", group 2 = "0261"
+      videoId = match[0].toLowerCase();
+      code = match[1].toLowerCase();
+      episode = match[2];
+    } else if (patternUsed.includes("digitsThenLetters")) {
+      // No-hyphen format: "1pondo456" → group 1 = "1pondo" (code), group 2 = "456" (episode)
+      videoId = match[0].toLowerCase();
+      code = match[1].toLowerCase();
+      episode = match[2];
+    } else {
+      // Fallback for any other match
+      videoId = match[0].toLowerCase();
+      code = match[1] ? match[1].toLowerCase() : null;
+      episode = match[2] || null;
+    }
+
+    console.log(`  ✅ Match via ${patternUsed}:`, match[0]);
     console.log(
       "  📦 Result -> videoId:",
       videoId,
@@ -105,10 +156,17 @@ function extractJavInfo(url, text) {
     );
     return { videoId, code, episode };
   }
-  console.log("  ⚠️ No match found");
+
+  console.log("  ⚠️ No match found for any pattern");
   return { videoId: null, code: null, episode: null };
 }
-// Data extraction helpers
+
+// ====================== DOM HELPERS ======================
+
+/**
+ * Walk up the DOM from `element` until we find a container that has
+ * BOTH a <video> and an <img> inside it (the preview thumbnail card).
+ */
 function findVideoWithPreviewContainer(element) {
   if (!element || element === document.body) return null;
   const hasVideo = element.querySelector("video") !== null;
@@ -118,21 +176,133 @@ function findVideoWithPreviewContainer(element) {
   }
   return findVideoWithPreviewContainer(element.parentElement);
 }
+
+/**
+ * Extract the best available media URL from an <img> or <video> element.
+ * Checks multiple attribute fallbacks to handle lazy-loading (Alpine.js, etc.).
+ *
+ * CRITICAL: Validates that extracted URLs are real HTTP(S) URLs, not:
+ *   - Alpine.js expressions (e.g., "item.dvd_id ? cdnUrl(...) : '...'")
+ *   - base64 data URIs (data:image/...)
+ *   - blob URLs (blob:...)
+ *   - javascript: placeholders
+ *
+ * Priority for <img>:
+ *   1. currentSrc (browser-resolved URL — bypasses Alpine entirely)
+ *   2. src attribute (if it passes validation)
+ *   3. data-src attribute (lazy-load fallback, if it passes validation)
+ *
+ * Priority for <video>:
+ *   1. currentSrc
+ *   2. src attribute (validated)
+ *   3. data-src attribute (validated)
+ *   4. <source> child element's src
+ *   5. poster attribute (static thumbnail fallback)
+ */
 function getSrcOrDataSrc(element) {
   if (!element) return null;
-  const src = element.getAttribute("src")?.trim();
-  const dataSrc = element.getAttribute("data-src")?.trim();
-  return src || dataSrc || null;
+
+  const tagName = element.tagName ? element.tagName.toUpperCase() : "";
+
+  // --- Helper: validate a candidate URL ---
+  function isValidMediaUrl(url) {
+    if (!url || typeof url !== "string") return false;
+    const trimmed = url.trim();
+    if (!trimmed) return false;
+    // Reject Alpine.js expressions (contain spaces, parentheses, question marks with spaces, etc.)
+    if (/[()?:]/.test(trimmed) && /\s/.test(trimmed)) {
+      console.log(
+        `[MISSAV EXT] 🚫 Rejected Alpine expression: "${trimmed.substring(0, 80)}"`,
+      );
+      return false;
+    }
+    // Reject javascript: placeholders
+    if (trimmed.startsWith("javascript:")) {
+      console.log(`[MISSAV EXT] 🚫 Rejected javascript: placeholder`);
+      return false;
+    }
+    // Reject blob URLs (temporary, not persistable)
+    if (trimmed.startsWith("blob:")) {
+      console.log(
+        `[MISSAV EXT] 🚫 Rejected blob URL: "${trimmed.substring(0, 60)}"`,
+      );
+      return false;
+    }
+    // Reject data URIs (base64 inline — too large for DB, not a real thumbnail)
+    if (trimmed.startsWith("data:")) {
+      console.log(
+        `[MISSAV EXT] 🚫 Rejected data URI (base64) — length: ${trimmed.length}`,
+      );
+      return false;
+    }
+    // Must look like a real URL: starts with http:// or https://
+    if (!/^https?:\/\//i.test(trimmed)) {
+      console.log(
+        `[MISSAV EXT] 🚫 Rejected non-HTTP URL: "${trimmed.substring(0, 80)}"`,
+      );
+      return false;
+    }
+    return true;
+  }
+
+  // --- 1. currentSrc (browser-resolved — bypasses Alpine entirely) ---
+  if (element.currentSrc) {
+    const cs = element.currentSrc.trim();
+    if (isValidMediaUrl(cs)) {
+      console.log(`[MISSAV EXT] 🖼️ Got currentSrc from <${tagName}>:`, cs);
+      return cs;
+    }
+  }
+
+  // --- 2. src attribute ---
+  const src = element.getAttribute("src");
+  if (src && isValidMediaUrl(src)) {
+    console.log(`[MISSAV EXT] 🖼️ Got src from <${tagName}>:`, src.trim());
+    return src.trim();
+  }
+
+  // --- 3. data-src attribute (lazy-load fallback) ---
+  const dataSrc = element.getAttribute("data-src");
+  if (dataSrc && isValidMediaUrl(dataSrc)) {
+    console.log(
+      `[MISSAV EXT] 🖼️ Got data-src from <${tagName}>:`,
+      dataSrc.trim(),
+    );
+    return dataSrc.trim();
+  }
+
+  // --- 4. For <video>: check <source> children ---
+  if (tagName === "VIDEO") {
+    const sourceEl = element.querySelector("source");
+    if (sourceEl) {
+      const sourceSrc = sourceEl.getAttribute("src");
+      if (sourceSrc && isValidMediaUrl(sourceSrc)) {
+        console.log(
+          "[MISSAV EXT] 🖼️ Got src from <source> child:",
+          sourceSrc.trim(),
+        );
+        return sourceSrc.trim();
+      }
+    }
+    // --- 5. poster attribute (thumbnail fallback for videos) ---
+    const poster = element.getAttribute("poster");
+    if (poster && isValidMediaUrl(poster)) {
+      console.log("[MISSAV EXT] 🖼️ Got poster from <video>:", poster.trim());
+      return poster.trim();
+    }
+  }
+
+  console.log(`[MISSAV EXT] ⚠️ No valid media URL found for <${tagName}>`);
+  return null;
 }
+
+// ====================== DATA EXTRACTION ======================
+
 function extractData() {
   console.log("[MISSAV EXT] 📥 extractData() called");
   const anchors = document.querySelectorAll(".text-secondary");
   console.log("[MISSAV EXT] Found", anchors.length, ".text-secondary anchors");
 
-  // Dedupe by generated id. Same video can appear more than once on the
-  // page (e.g. main grid + "related videos" rail) — without this, the
-  // extension sends duplicate ids in one ingest batch, which ChromaDB
-  // rejects outright (rejects the WHOLE batch, not just the dupes).
   const seen = new Map(); // id -> item
 
   Array.from(anchors).forEach((a, index) => {
@@ -143,39 +313,44 @@ function extractData() {
       url = url.substring(0, hashIndex);
     }
     if (!url || !text) {
+      console.log(
+        `[MISSAV EXT] ⏭️ Skipping anchor #${index}: missing url or text`,
+      );
       return;
     }
 
     const { videoId, code, episode } = extractJavInfo(url, text);
     const id = generateIdFromUrl(url, videoId);
-
     const container = findVideoWithPreviewContainer(a);
+
     let thumbnail = null;
     let preview = null;
+
     if (container) {
       const img = container.querySelector("img");
-      thumbnail = img ? getSrcOrDataSrc(img) : null;
+      thumbnail = getSrcOrDataSrc(img);
+
       const video = container.querySelector("video");
       if (video) {
-        preview =
-          getSrcOrDataSrc(video) ||
-          video.querySelector("source")?.getAttribute("src")?.trim() ||
-          null;
+        preview = getSrcOrDataSrc(video);
       }
+      console.log(
+        `[MISSAV EXT] 📸 Item #${index} "${text.substring(0, 50)}..." → thumb: ${!!thumbnail}, preview: ${!!preview}`,
+      );
     } else {
-      console.log("[MISSAV EXT] ⚠️ No preview container for:", text);
+      console.log(
+        "[MISSAV EXT] ⚠️ No preview container for:",
+        text.substring(0, 50),
+      );
     }
 
     const item = { id, url, text, thumbnail, preview, videoId, code, episode };
-
     const existing = seen.get(id);
+
     if (!existing) {
       seen.set(id, item);
     } else {
-      // Same id already captured this pass — keep whichever copy has
-      // more data instead of blindly keeping the first/last one, since
-      // one occurrence on the page (e.g. related rail) may not have
-      // lazy-loaded its thumbnail/preview yet.
+      // Merge: keep whichever copy has more data
       const merged = {
         ...existing,
         thumbnail: existing.thumbnail || item.thumbnail,
@@ -188,24 +363,73 @@ function extractData() {
 
   const data = Array.from(seen.values());
   console.log("[MISSAV EXT] 📊 Total extracted items (deduped):", data.length);
+
+  // ====================== RETRY: Missing thumbnails ======================
+  // Alpine.js lazy-loading may not have resolved src/data-src yet on first
+  // paint. Schedule a ONE-SHOT retry ~500ms later for any items missing
+  // both thumbnail AND preview.
+  const missingMedia = data.filter((item) => !item.thumbnail && !item.preview);
+  if (missingMedia.length > 0) {
+    console.log(
+      `[MISSAV EXT] ⏳ ${missingMedia.length} items missing both thumbnail & preview — scheduling retry in 500ms`,
+    );
+    // Clear any previously scheduled retry to avoid stacking
+    if (retryTimeoutId) clearTimeout(retryTimeoutId);
+    retryTimeoutId = setTimeout(() => {
+      retryTimeoutId = null;
+      console.log("[MISSAV EXT] 🔄 Running lazy-load retry...");
+      const freshData = extractData();
+      const freshMap = new Map(freshData.map((item) => [item.id, item]));
+
+      let changed = false;
+      for (const item of currentData) {
+        const fresh = freshMap.get(item.id);
+        if (!fresh) continue;
+        if (!item.thumbnail && fresh.thumbnail) {
+          item.thumbnail = fresh.thumbnail;
+          changed = true;
+          console.log(`[MISSAV EXT] 🔄 Retry: got thumbnail for ${item.id}`);
+        }
+        if (!item.preview && fresh.preview) {
+          item.preview = fresh.preview;
+          changed = true;
+          console.log(`[MISSAV EXT] 🔄 Retry: got preview for ${item.id}`);
+        }
+      }
+      if (changed) {
+        console.log(
+          "[MISSAV EXT] 🔄 Lazy-load retry found new media — syncing",
+        );
+        onDataChange(currentData);
+      } else {
+        console.log("[MISSAV EXT] 🔄 Lazy-load retry: no new media found");
+      }
+    }, 500);
+  }
+
   return data;
 }
-// Deep comparison
+
+// ====================== DEEP COMPARISON ======================
+
 function dataEquals(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
+
+// ====================== DATA CHANGE HANDLER ======================
+
 /**
  * Handle data changes - sync to IndexedDB and Python server.
- * Server sync is relayed through the background service worker — see
- * syncToServer() below for why.
+ * Server sync is relayed through the background service worker.
  */
 async function onDataChange(newData) {
   console.log("🔄 Data CHANGED →", newData.length, "items");
   console.table(newData);
-  // ====================== STEP 1: Sync to Python Server (via background) ======================
-  // Fire-and-forget: don't block local DB operations
+
+  // STEP 1: Sync to Python Server (via background) — fire-and-forget
   syncToServer(newData);
-  // ====================== STEP 2: Save to Local IndexedDB ======================
+
+  // STEP 2: Save to Local IndexedDB
   newData.forEach((item) => {
     const itemWithId = {
       ...item,
@@ -214,37 +438,27 @@ async function onDataChange(newData) {
     console.log("[MISSAV EXT] 💾 Saving to DB:", {
       id: itemWithId.id,
       url: itemWithId.url,
-      text: itemWithId.text,
+      text: itemWithId.text?.substring(0, 60),
       videoId: itemWithId.videoId,
       code: itemWithId.code,
       episode: itemWithId.episode,
     });
-    createItem(itemWithId)
-      // .then((key) => console.log("✅ Saved item with key:", key))
-      .catch((err) => {
-        if (err.name === "ConstraintError") {
-          console.log("→ Duplicate ID, updating:", itemWithId.id);
-          updateItem(itemWithId)
-            .then(() => console.log("✅ Updated item:", itemWithId.id))
-            .catch((updateErr) =>
-              console.error("❌ Update failed:", updateErr),
-            );
-        } else {
-          console.error("❌ DB write failed for", item.url, err);
-        }
-      });
+    createItem(itemWithId).catch((err) => {
+      if (err.name === "ConstraintError") {
+        console.log("→ Duplicate ID, updating:", itemWithId.id);
+        updateItem(itemWithId).catch((updateErr) =>
+          console.error("❌ Update failed:", updateErr),
+        );
+      } else {
+        console.error("❌ DB write failed for", item.url, err);
+      }
+    });
   });
 }
+
 /**
- * Sync scraped videos to the Python server — via the background service
- * worker, NOT a direct fetch from this content script.
- *
- * Why: Chrome's Local Network Access permission is attributed to whichever
- * origin issues the fetch. A fetch here would be attributed to
- * https://missav.ws (a site you don't control), so it gets blocked. The
- * background service worker runs under the extension's own origin
- * (chrome-extension://<id>), which you CAN grant local-network permission
- * to. See service-worker.js for the actual serverClient.ingestVideos() call.
+ * Sync scraped videos to the Python server via the background service worker.
+ * See service-worker.js for the actual serverClient.ingestVideos() call.
  */
 async function syncToServer(videos) {
   if (!videos || videos.length === 0) {
@@ -254,7 +468,6 @@ async function syncToServer(videos) {
   console.log(
     `[MISSAV EXT] 📤 Relaying ${videos.length} videos to background for sync...`,
   );
-  // Ensure each video has a generated ID before sending
   const videosWithIds = videos.map((video) => ({
     ...video,
     id: video.id || generateIdFromUrl(video.url, video.videoId),
@@ -281,10 +494,11 @@ async function syncToServer(videos) {
     },
   );
 }
+
 // ====================== INITIAL DB LOAD & LOG ======================
+
 async function logExistingItems() {
   try {
-    // Updated to use getAll() instead of readAllItems()
     const allItems = await getAll();
     const count = await getCount();
     console.log(
@@ -292,26 +506,10 @@ async function logExistingItems() {
     );
     console.log(`📊 Database contains ${count} total records`);
     if (allItems.length > 0) {
-      // console.table(allItems);
-      // Show JAV info summary for existing items
       const withJavInfo = allItems.filter((item) => item.videoId);
       console.log(
-        `📊 ${withJavInfo.length}/${allItems.length} items have JAV info (videoId/code/episode)`,
+        `📊 ${withJavInfo.length}/${allItems.length} items have JAV info`,
       );
-      // Show example of different IDs for same code
-      const groupedByCode = {};
-      allItems.forEach((item) => {
-        if (item.code) {
-          if (!groupedByCode[item.code]) groupedByCode[item.code] = [];
-          groupedByCode[item.code].push(item.videoId);
-        }
-      });
-      // Object.entries(groupedByCode).forEach(([code, videoIds]) => {
-      //   if (videoIds.length > 1) {
-      //     console.log(`🔑 Code "${code}" has multiple videoIds:`, videoIds);
-      //   }
-      // });
-      // Get items sorted by episode for better overview
       const sortedByEpisode = await getAll({
         sortBy: "episode",
         sortOrder: "asc",
@@ -327,7 +525,9 @@ async function logExistingItems() {
     console.error("❌ Failed to read from IndexedDB:", err);
   }
 }
+
 // ====================== OBSERVER ======================
+
 function startObserving() {
   if (observer) observer.disconnect();
   currentData = extractData();
@@ -346,22 +546,23 @@ function startObserving() {
     characterData: true,
   });
 }
+
 // ====================== STORAGE ======================
+
 async function loadConfig() {
   const { config } = await chrome.storage.sync.get("config");
   await logExistingItems();
   startObserving();
 }
+
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.config) {
     startObserving();
   }
 });
+
 // ====================== POPUP COMMUNICATION ======================
-// Note: server-related actions (smartSearch, quickSearch, findSimilar,
-// getServerStatus, forceSync, updatePreferences) have moved to
-// service-worker.js. The popup should call chrome.runtime.sendMessage(...)
-// directly for those — no need to relay through this content script.
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getData") {
     sendResponse({ data: currentData });
@@ -428,8 +629,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 });
+
 // Start
 loadConfig();
+
 // Debug helpers
 window.getCurrentData = () => currentData;
 window.getItemFromDB = async (id) => await getItem(id);

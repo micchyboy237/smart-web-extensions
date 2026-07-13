@@ -20,22 +20,21 @@ const loadingOverlay = document.getElementById("loadingOverlay");
 const toast = document.getElementById("toast");
 const themeToggle = document.getElementById("themeToggle");
 const clearQueryBtn = document.getElementById("clearQuery");
+const resultCount = document.getElementById("resultCount");
+const copyAllIds = document.getElementById("copyAllIds");
 
 // ====================== STATE ======================
 let availableCodes = new Set();
 let currentTheme = "light";
+let currentResults = [];
+let toastTimer = null;
 
 // ====================== INITIALIZATION ======================
 document.addEventListener("DOMContentLoaded", async () => {
-  // Load theme
   await loadTheme();
-  // Load available codes from IndexedDB
   await loadAvailableCodes();
-  // Auto-focus search input
   queryInput.focus();
-  // Set up event listeners
   setupEventListeners();
-  // Update slider visuals
   updateSliderVisuals();
 });
 
@@ -52,7 +51,10 @@ function toggleTheme() {
   document.documentElement.setAttribute("data-theme", currentTheme);
   chrome.storage.sync.set({ theme: currentTheme });
   updateThemeIcon();
-  showToast(`Switched to ${currentTheme} mode`, "success");
+  showToast(
+    `${currentTheme === "dark" ? "🌙" : "☀️"} ${currentTheme} mode`,
+    "success",
+  );
 }
 
 function updateThemeIcon() {
@@ -92,7 +94,6 @@ function populateCodeSelects() {
       select.appendChild(option);
     });
   });
-  // Add filter event listeners
   includeCodesFilter.addEventListener("input", () =>
     filterOptions(includeCodesSelect, includeCodesFilter.value),
   );
@@ -113,37 +114,23 @@ function filterOptions(selectElement, filterText) {
 
 // ====================== EVENT LISTENERS ======================
 function setupEventListeners() {
-  // Theme toggle
   themeToggle.addEventListener("click", toggleTheme);
-
-  // Clear query
   clearQueryBtn.addEventListener("click", () => {
     queryInput.value = "";
     queryInput.focus();
   });
-
-  // Update diversity value display
   diversityFactorInput.addEventListener("input", () => {
     diversityValueSpan.textContent = diversityFactorInput.value;
     updateSliderVisuals();
   });
-
-  // Smart Search
   smartSearchBtn.addEventListener("click", () => performSmartSearch());
-
-  // Quick Search
   quickSearchBtn.addEventListener("click", () => performQuickSearch());
-
-  // Find Similar (requires a selected video)
   findSimilarBtn.addEventListener("click", () => {
     const videoId = prompt("Enter Video ID to find similar videos:");
     if (videoId) performFindSimilar(videoId);
   });
-
-  // Server Status
   serverStatusBtn.addEventListener("click", () => checkServerStatus());
-
-  // Keyboard shortcuts
+  copyAllIds.addEventListener("click", copyAllVideoIds);
   queryInput.addEventListener("keypress", (e) => {
     if (e.key === "Enter") performSmartSearch();
   });
@@ -151,7 +138,6 @@ function setupEventListeners() {
 
 // ====================== SLIDER VISUALS ======================
 function updateSliderVisuals() {
-  // Update diversity slider track fill
   const progress =
     (diversityFactorInput.value / diversityFactorInput.max) * 100;
   diversityFactorInput.style.setProperty("--progress", `${progress}%`);
@@ -171,8 +157,9 @@ async function performSmartSearch() {
       params,
     });
     if (response.success) {
-      displayResults(response.results || [], "Smart Search Results");
-      showToast(`Found ${response.results?.length || 0} results`, "success");
+      currentResults = response.results || [];
+      displayResults(currentResults, "Smart Search");
+      showToast(`Found ${currentResults.length} results`, "success");
     } else {
       showToast(response.error || "Smart search failed", "error");
     }
@@ -201,8 +188,9 @@ async function performQuickSearch() {
       },
     });
     if (response.success) {
-      displayResults(response.results || [], "Quick Search Results");
-      showToast(`Found ${response.results?.length || 0} results`, "success");
+      currentResults = response.results || [];
+      displayResults(currentResults, "Quick Search");
+      showToast(`Found ${currentResults.length} results`, "success");
     } else {
       showToast(response.error || "Quick search failed", "error");
     }
@@ -224,11 +212,9 @@ async function performFindSimilar(videoId) {
       },
     });
     if (response.success) {
-      displayResults(response.results || [], `Similar to ${videoId}`);
-      showToast(
-        `Found ${response.results?.length || 0} similar videos`,
-        "success",
-      );
+      currentResults = response.results || [];
+      displayResults(currentResults, `Similar to ${videoId}`);
+      showToast(`Found ${currentResults.length} similar videos`, "success");
     } else {
       showToast(response.error || "Find similar failed", "error");
     }
@@ -247,14 +233,25 @@ async function checkServerStatus() {
     });
     if (response.success) {
       const status = response.syncState;
+      currentResults = [];
+      updateResultBadge(0);
       resultsContainer.innerHTML = `
-        <div class="status-info">
+        <div class="status-card">
           <h4><i class="fas fa-server"></i> Server Status</h4>
-          <p><strong>Status:</strong> <span class="${status.isOnline ? "online" : "offline"}">
-            ${status.isOnline ? "Online ✅" : "Offline ❌"}
-          </span></p>
-          <p><strong>Pending Videos:</strong> ${status.pendingCount || 0}</p>
-          <p><strong>Last Sync:</strong> ${status.lastSyncTime || "Never"}</p>
+          <div class="status-row">
+            <span class="status-label">Status</span>
+            <span class="status-value ${status.isOnline ? "status-online" : "status-offline"}">
+              ${status.isOnline ? "● Online" : "○ Offline"}
+            </span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Pending Videos</span>
+            <span class="status-value">${status.pendingCount || 0}</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Last Sync</span>
+            <span class="status-value">${status.lastSyncTime || "Never"}</span>
+          </div>
         </div>
       `;
       showToast("Server status updated", "success");
@@ -298,51 +295,129 @@ function getEpisodeRange() {
   return null;
 }
 
+// ====================== DISPLAY RESULTS ======================
 function displayResults(results, title) {
+  updateResultBadge(results.length);
+
   if (!results.length) {
     resultsContainer.innerHTML = `
       <div class="empty-results">
-        <i class="fas fa-search"></i>
-        <p>No results found</p>
+        <div class="empty-icon"><i class="fas fa-search"></i></div>
+        <p class="empty-title">No results found</p>
+        <p class="empty-subtitle">Try adjusting your search query or filters</p>
       </div>
     `;
     return;
   }
-  let html = `<h4><i class="fas fa-list"></i> ${title} (${results.length})</h4>`;
+
+  let html = "";
   results.forEach((result, index) => {
     const metadata = result.metadata || {};
     const videoId = metadata.video_id || metadata.videoId || "N/A";
-    const code = metadata.code || "N/A";
-    const episode = metadata.episode || "N/A";
+    const code = metadata.code || "";
+    const episode = metadata.episode || "";
     const text = metadata.text || "No title";
-    const score = result.score ? result.score.toFixed(2) : "N/A";
-    const diversityScore = result.diversity_score
-      ? result.diversity_score.toFixed(2)
-      : "N/A";
+    const score = result.score ? (result.score * 100).toFixed(0) : null;
+    const thumbnail = getThumbnailUrl(metadata);
 
     html += `
-      <div class="result-item" data-video-id="${videoId}">
-        <h4>${text}</h4>
-        <div class="metadata">
-          <span><i class="fas fa-tag"></i> ${code}</span>
-          <span><i class="fas fa-hashtag"></i> ${episode}</span>
-          <span><i class="fas fa-star"></i> ${score}</span>
-          <span><i class="fas fa-palette"></i> ${diversityScore}</span>
-          <span class="score">#${index + 1}</span>
+      <div class="result-card" data-video-id="${escapeHtml(videoId)}" title="Click to copy ID: ${escapeHtml(videoId)}">
+        <div class="result-thumbnail">
+          ${
+            thumbnail
+              ? `<img src="${escapeHtml(thumbnail)}" alt="${escapeHtml(text)}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'no-thumb\\'><i class=\\'fas fa-image\\'></i></div>'" />`
+              : `<div class="no-thumb"><i class="fas fa-image"></i></div>`
+          }
+        </div>
+        <div class="result-content">
+          <div class="result-title" title="${escapeHtml(text)}">${escapeHtml(text)}</div>
+          <div class="result-meta">
+            ${code ? `<span class="meta-tag code"><i class="fas fa-tag"></i> ${escapeHtml(code)}</span>` : ""}
+            ${episode ? `<span class="meta-tag episode"><i class="fas fa-hashtag"></i> ${escapeHtml(episode)}</span>` : ""}
+            ${score !== null ? `<span class="meta-tag score"><i class="fas fa-star"></i> ${score}%</span>` : ""}
+            <span class="meta-tag rank">#${index + 1}</span>
+          </div>
         </div>
       </div>
     `;
   });
+
   resultsContainer.innerHTML = html;
 
-  // Add click to copy video ID
-  resultsContainer.querySelectorAll(".result-item").forEach((item) => {
-    item.addEventListener("click", () => {
-      const videoId = item.getAttribute("data-video-id");
-      navigator.clipboard.writeText(videoId);
-      showToast(`Copied: ${videoId}`, "success");
+  // Click handler: copy video ID
+  resultsContainer.querySelectorAll(".result-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      const videoId = card.getAttribute("data-video-id");
+      navigator.clipboard
+        .writeText(videoId)
+        .then(() => {
+          showToast(`📋 Copied: ${videoId}`, "success");
+        })
+        .catch(() => {
+          showToast(`ID: ${videoId}`, "success");
+        });
     });
   });
+}
+
+/**
+ * Extract the best available thumbnail URL from result metadata.
+ * Checks thumbnail field first, then falls back to preview (video).
+ */
+function getThumbnailUrl(metadata) {
+  if (!metadata) return null;
+  // Check thumbnail field
+  if (metadata.thumbnail && isValidHttpUrl(metadata.thumbnail)) {
+    return metadata.thumbnail;
+  }
+  // Fallback: preview video (less ideal but better than nothing)
+  if (metadata.preview && isValidHttpUrl(metadata.preview)) {
+    return metadata.preview;
+  }
+  return null;
+}
+
+/**
+ * Validate that a URL is a real HTTP(S) URL, not base64/blob/javascript.
+ */
+function isValidHttpUrl(str) {
+  if (!str || typeof str !== "string") return false;
+  return /^https?:\/\//i.test(str.trim());
+}
+
+function updateResultBadge(count) {
+  if (count > 0) {
+    resultCount.textContent = `${count} result${count !== 1 ? "s" : ""}`;
+    resultCount.classList.remove("hidden");
+  } else {
+    resultCount.classList.add("hidden");
+  }
+}
+
+async function copyAllVideoIds() {
+  if (!currentResults.length) {
+    showToast("No results to copy", "error");
+    return;
+  }
+  const ids = currentResults
+    .map((r) => (r.metadata || {}).video_id || r.metadata?.videoId || "")
+    .filter(Boolean);
+  if (!ids.length) {
+    showToast("No video IDs found", "error");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(ids.join("\n"));
+    showToast(`📋 Copied ${ids.length} video IDs`, "success");
+  } catch {
+    showToast("Failed to copy IDs", "error");
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
 }
 
 function showLoading(show) {
@@ -350,37 +425,10 @@ function showLoading(show) {
 }
 
 function showToast(message, type = "info") {
+  if (toastTimer) clearTimeout(toastTimer);
   toast.textContent = message;
   toast.className = `toast ${type} show`;
-  setTimeout(() => {
+  toastTimer = setTimeout(() => {
     toast.classList.remove("show");
-  }, 3000);
+  }, 2500);
 }
-
-// ====================== STYLES FOR STATUS INFO ======================
-const style = document.createElement("style");
-style.textContent = `
-  .status-info {
-    padding: 12px;
-  }
-  .status-info h4 {
-    margin: 0 0 12px 0;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 14px;
-  }
-  .status-info p {
-    margin: 6px 0;
-    font-size: 13px;
-  }
-  .online {
-    color: var(--success-color);
-    font-weight: 600;
-  }
-  .offline {
-    color: var(--error-color);
-    font-weight: 600;
-  }
-`;
-document.head.appendChild(style);

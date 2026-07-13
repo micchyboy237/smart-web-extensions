@@ -1,0 +1,23 @@
+{% from "base/macros.jinja" import search_result_item, empty_state %}
+{% if results %}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <span class="text-muted">
+            <i class="bi bi-check-circle text-success me-1"></i>
+            Found <strong>{{ total_results }}</strong> results in <strong>{{ "%.0f"|format(search_time_ms) }}ms</strong>
+        </span>
+        {% if query %}
+            <span class="badge bg-secondary">
+                <i class="bi bi-quote me-1"></i>"{{ query[:50] }}{% if query|length > 50 %}...{% endif %}"
+            </span>
+        {% endif %}
+    </div>
+    {% for result in results %}
+        {{ search_result_item(result, loop.index0) }}
+    {% endfor %}
+{% else %}
+    {{ empty_state('search',
+        'No Results Found',
+        'Try adjusting your search query or filters',
+        '/web/search',
+        'Modify Search') }}
+{% endif %}
