@@ -304,7 +304,7 @@ class ChromaVideoService:
                 ids=ids,
                 include=["embeddings"],
             )
-            if result["embeddings"]:
+            if result["embeddings"] is not None and len(result["embeddings"]) > 0:
                 return np.array(result["embeddings"])
         except Exception as e:
             logger.warning(f"Failed to get embeddings: {e}")
