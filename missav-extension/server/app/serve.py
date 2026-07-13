@@ -16,10 +16,6 @@ from routes.preferences import router as preferences_router
 from routes.search import router as search_router
 from routes.videos import router as videos_router
 from services import chroma_service as chroma_service_module
-from utils.search_strategies import (
-    DiversityAwareSearch,
-    EnsembleSearchStrategy,
-)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -116,8 +112,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 chroma_service = chroma_service_module.init_service(CHROMA_DIR)
-diversity_search = DiversityAwareSearch()
-ensemble_strategy = EnsembleSearchStrategy()
+
 app.include_router(health_router)
 app.include_router(videos_router)
 app.include_router(search_router)

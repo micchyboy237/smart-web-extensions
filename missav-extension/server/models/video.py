@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 class VideoMetadata(BaseModel):
     """Metadata for a single video extracted by the extension."""
 
-    id: str = Field(..., description="Unique deterministic ID from URL")
     url: str = Field(..., description="Full video URL")
     text: str = Field(..., description="Video title/description")
     thumbnail: Optional[str] = Field(None, description="Thumbnail image URL")

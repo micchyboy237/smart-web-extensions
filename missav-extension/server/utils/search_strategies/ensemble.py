@@ -103,3 +103,6 @@ class EnsembleSearchStrategy:
             float(combined.mean()),
         )
         return combined
+
+
+ensemble_strategy = EnsembleSearchStrategy()

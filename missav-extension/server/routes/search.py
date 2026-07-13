@@ -12,7 +12,7 @@ from models.video import (
     SearchResult,
 )
 from services import chroma_service
-from utils.search_strategies import QueryUnderstanding
+from utils.search_strategies import QueryUnderstanding, diversity_search
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,6 @@ async def smart_search(query: SearchQuery):
     - "new mxgs content not fc2" → include=mxgs, exclude=fc2
     - "something diverse like juq-373" → diversity=high, similar_to=juq-373
     """
-    from server import diversity_search
 
     start_time = time.time()
     logger.info(f"🔍 Search: '{query.query[:100]}...' (type={query.search_type})")
@@ -68,9 +67,12 @@ async def smart_search(query: SearchQuery):
 
             # Get embeddings for MMR if available
             embeddings = None
-            if query.search_type == "ensemble":
+            if query.diversity_factor > 0:
                 ids = [r["id"] for r in results]
                 embeddings = chroma_service.get_embeddings(ids)
+                logger.info(
+                    f"📊 Fetched {len(embeddings) if embeddings is not None else 0} embeddings for diversity"
+                )
 
             results = diversity_search.apply_diversity(results, embeddings)
             logger.info(
