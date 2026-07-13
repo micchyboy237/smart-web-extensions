@@ -92,6 +92,7 @@ async def smart_search(query: SearchQuery):
                 score=r["score"],
                 document=r.get("document", ""),
                 metadata=r.get("metadata", {}),
+                diversity_score=r.get("diversity_score"),
                 rank=idx + 1,
             )
             for idx, r in enumerate(results)

@@ -1,4 +1,14 @@
-"""Diversity-aware search strategy using MMR and metadata-based diversity."""
+"""Diversity-aware search strategy using MMR and metadata-based diversity.
+
+Self-contained implementation — no external MMR dependencies.
+Calculates per-result diversity_score for transparency.
+
+Performance optimizations:
+- Pre-trims candidates before expensive MMR (O(n²) → O(k²))
+- Reuses pre-computed embeddings from ChromaDB
+- Falls back to fast metadata interleaving when embeddings unavailable
+- Early exit when diversity_factor=0 or results ≤ 1
+"""
 
 import logging
 from collections import defaultdict
@@ -18,14 +28,11 @@ class DiversityAwareSearch:
     Implements Maximal Marginal Relevance (MMR) and code-limit enforcement
     to avoid showing too many similar videos from the same series.
 
-    Performance optimizations:
-    - Pre-trims candidates before expensive MMR computation (O(n²) → O(k²))
-    - Reuses pre-computed embeddings from ChromaDB when available
-    - Falls back to fast metadata interleaving when embeddings unavailable
-    - Early exit when diversity_factor=0 or results ≤ 1
+    Calculates diversity_score for each result:
+        diversity_score = 1.0 - avg_cosine_similarity_to_other_results
+        Higher = more unique/diverse in the result set.
     """
 
-    # Maximum candidates to process with MMR (O(n²) complexity)
     MAX_MMR_CANDIDATES: int = 40
 
     def __init__(
@@ -42,24 +49,22 @@ class DiversityAwareSearch:
         self.max_per_code = max_per_code
         self.scaler = MinMaxScaler()
 
+    # ── public API ──────────────────────────────────────────────────
+
     def apply_diversity(
         self,
         results: list[dict],
         embeddings: Optional[np.ndarray] = None,
     ) -> list[dict]:
         """
-        Apply diversity re-ranking to a list of search results.
-
-        When embeddings are provided, uses the MMR algorithm for
-        embedding-aware diversity. Otherwise falls back to metadata-based
-        interleaving by series code.
+        Apply diversity re-ranking and attach diversity_score to each result.
 
         Args:
             results: List of dicts with keys: id, score, metadata.
             embeddings: Optional pre-computed embedding vectors (N x D).
 
         Returns:
-            Re-ranked results with diversity applied.
+            Re-ranked results with diversity_score added to each dict.
         """
         if not results or self.diversity_factor <= 0:
             logger.debug(
@@ -67,26 +72,36 @@ class DiversityAwareSearch:
                 not results,
                 self.diversity_factor,
             )
+            for r in results:
+                r["diversity_score"] = 0.0
             return results
 
         logger.info(
-            "DiversityAwareSearch: applying diversity "
-            "factor=%.2f max_per_code=%s candidates=%d",
+            "DiversityAwareSearch: processing %d results "
+            "(factor=%.2f, max_per_code=%s)",
+            len(results),
             self.diversity_factor,
             self.max_per_code,
-            len(results),
         )
 
-        # Step 1: Enforce per-code limits (fast metadata operation)
+        # Step 1: per-code limit enforcement
         if self.max_per_code is not None:
             results = self._enforce_code_limit(results)
-            # Trim embeddings to match if provided
             if embeddings is not None and len(embeddings) > len(results):
                 kept_ids = {r["id"] for r in results}
                 indices = [i for i, r in enumerate(results) if r["id"] in kept_ids]
                 embeddings = embeddings[indices] if indices else None
 
-        # Step 2: Pre-trim candidates for MMR (O(n²) → O(k²) optimization)
+        # Step 2: calculate diversity scores BEFORE re-ranking
+        if embeddings is not None and len(embeddings) > 1:
+            diversity_scores = self._calculate_diversity_scores(results, embeddings)
+            for i, r in enumerate(results):
+                r["diversity_score"] = float(diversity_scores[i])
+        else:
+            for r in results:
+                r["diversity_score"] = 0.0
+
+        # Step 3: pre-trim for MMR performance
         if embeddings is not None and len(embeddings) > self.MAX_MMR_CANDIDATES:
             logger.debug(
                 "DiversityAwareSearch: trimming MMR candidates %d → %d",
@@ -96,11 +111,12 @@ class DiversityAwareSearch:
             results = results[: self.MAX_MMR_CANDIDATES]
             embeddings = embeddings[: self.MAX_MMR_CANDIDATES]
 
-        # Step 3: Apply diversity re-ranking
+        # Step 4: diversity re-ranking
         if embeddings is not None and len(embeddings) > 1:
             logger.debug(
-                "DiversityAwareSearch: using MMR (embeddings shape=%s)",
+                "DiversityAwareSearch: using MMR (embeddings shape=%s, lambda=%.2f)",
                 embeddings.shape,
+                1.0 - self.diversity_factor,
             )
             results = self._apply_mmr(results, embeddings)
         else:
@@ -115,8 +131,15 @@ class DiversityAwareSearch:
                 )
             results = self._metadata_diversity(results)
 
-        logger.info("DiversityAwareSearch: diversified to %d results", len(results))
+        logger.info(
+            "DiversityAwareSearch: diversified to %d results "
+            "(avg diversity_score=%.3f)",
+            len(results),
+            np.mean([r.get("diversity_score", 0.0) for r in results]),
+        )
         return results
+
+    # ── private helpers ──────────────────────────────────────────────
 
     def _enforce_code_limit(self, results: list[dict]) -> list[dict]:
         """Limit the number of results per series code."""
@@ -132,55 +155,78 @@ class DiversityAwareSearch:
             logger.debug("DiversityAwareSearch: code limit removed %d results", removed)
         return filtered
 
+    def _calculate_diversity_scores(
+        self,
+        results: list[dict],
+        embeddings: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Per-result diversity score.
+
+        diversity_score = 1.0 - mean cosine similarity to all other results.
+
+        Returns:
+            1-D array of shape (n,) — higher = more unique in the set.
+        """
+        n = len(results)
+        if n <= 1:
+            return np.ones(n, dtype=np.float64) if n == 1 else np.array([])
+
+        sim_matrix = cosine_similarity(embeddings)  # (n, n)
+
+        avg_similarities = np.zeros(n, dtype=np.float64)
+        for i in range(n):
+            others = np.concatenate([sim_matrix[i, :i], sim_matrix[i, i + 1 :]])
+            avg_similarities[i] = np.mean(others)
+
+        diversity_scores = 1.0 - avg_similarities
+
+        logger.debug(
+            "DiversityAwareSearch: diversity_scores "
+            "min=%.3f max=%.3f mean=%.3f std=%.3f",
+            float(diversity_scores.min()),
+            float(diversity_scores.max()),
+            float(diversity_scores.mean()),
+            float(diversity_scores.std()),
+        )
+        return diversity_scores
+
     def _apply_mmr(
         self,
         results: list[dict],
         embeddings: np.ndarray,
     ) -> list[dict]:
         """
-        Maximal Marginal Relevance (MMR) algorithm.
+        Maximal Marginal Relevance (MMR) — greedy re-ranking.
 
-        Iteratively selects the result that maximizes:
-            λ · relevance  -  (1 - λ) · max_similarity_to_selected
+        Iteratively selects the result that maximises:
+            λ · relevance  −  (1 − λ) · max_similarity_to_selected
 
-        where λ = 1 - diversity_factor.
-
-        Performance: O(k²) where k ≤ MAX_MMR_CANDIDATES.
+        where λ = 1 − diversity_factor.
         """
         n = len(results)
         if n <= 1:
             return results
 
-        # Normalize scores to [0, 1] for stable MMR calculation
         scores = np.array([r["score"] for r in results], dtype=np.float64)
         score_min = scores.min()
         score_max = scores.max()
         if score_max - score_min < 1e-8:
-            # All scores equal — skip expensive MMR, just apply code diversity
             logger.debug(
                 "DiversityAwareSearch: uniform scores, using metadata diversity only"
             )
             return self._metadata_diversity(results)
 
         scores_norm = (scores - score_min) / (score_max - score_min)
-
-        # Compute pairwise cosine similarity matrix
-        # Shape: (n, n), symmetric with ones on diagonal
         sim_matrix = cosine_similarity(embeddings)
-
-        # MMR weight: lambda balances relevance vs diversity
-        # lambda=1.0 → pure relevance, lambda=0.0 → pure diversity
         lambda_weight = 1.0 - self.diversity_factor
 
-        # Greedy MMR selection
-        selected_indices: list[int] = [0]  # Always pick highest-scored first
+        selected: list[int] = [0]
         remaining: list[int] = list(range(1, n))
 
         logger.debug(
-            "DiversityAwareSearch: MMR running "
-            "lambda=%.2f candidates=%d max_results=%d",
+            "DiversityAwareSearch: MMR running lambda=%.2f candidates=%d",
             lambda_weight,
-            n,
             n,
         )
 
@@ -188,45 +234,37 @@ class DiversityAwareSearch:
             mmr_scores = []
             for idx in remaining:
                 relevance = scores_norm[idx]
-                # Max similarity to any already-selected result
-                max_similarity = max(sim_matrix[idx][s] for s in selected_indices)
-                mmr = lambda_weight * relevance - self.diversity_factor * max_similarity
+                max_sim = max(sim_matrix[idx][s] for s in selected)
+                mmr = lambda_weight * relevance - self.diversity_factor * max_sim
                 mmr_scores.append(mmr)
 
             best_local = int(np.argmax(mmr_scores))
             best_idx = remaining[best_local]
-            selected_indices.append(best_idx)
+            selected.append(best_idx)
             remaining.remove(best_idx)
 
         logger.debug(
             "DiversityAwareSearch: MMR complete, selected %d/%d",
-            len(selected_indices),
+            len(selected),
             n,
         )
-        return [results[i] for i in selected_indices]
+        return [results[i] for i in selected]
 
     def _metadata_diversity(self, results: list[dict]) -> list[dict]:
         """
         Metadata-based diversity fallback.
 
-        Groups results by series code, then interleaves them so that
-        consecutive results come from different codes. When
-        diversity_factor < 1.0 a weighted sort blends the original
-        relevance order with the interleaved order.
-
-        Performance: O(n log n) — much faster than MMR's O(n²).
+        Round-robin interleaving by series code, blended with original
+        relevance order when diversity_factor < 1.0.
         """
-        # Group results by series code
         by_code: dict[str, list[dict]] = defaultdict(list)
         for r in results:
             code = r.get("metadata", {}).get("code", "unknown")
             by_code[code].append(r)
 
-        # Sort each group by relevance score (descending)
         for code in by_code:
             by_code[code].sort(key=lambda x: x["score"], reverse=True)
 
-        # Interleave: pick one from each code in round-robin fashion
         diversified: list[dict] = []
         codes = list(by_code.keys())
         max_len = max(len(group) for group in by_code.values())
@@ -235,7 +273,6 @@ class DiversityAwareSearch:
                 if i < len(by_code[code]):
                     diversified.append(by_code[code][i])
 
-        # Blend interleaved order with original relevance order
         if self.diversity_factor < 1.0:
             original_order = {r["id"]: idx for idx, r in enumerate(results)}
             diversified.sort(
@@ -249,5 +286,5 @@ class DiversityAwareSearch:
         return diversified
 
 
-# Create the singleton instance that routes/search.py expects
+# Singleton instance used by routes/search.py
 diversity_search = DiversityAwareSearch()
