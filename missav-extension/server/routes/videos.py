@@ -1,16 +1,56 @@
-# Jet_Apps/web-extensions/smart-web-extensions/missav-extension/server/routes/videos.py
 """Video ingest and retrieval endpoints."""
 
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException
-from models.video import VideoBatchIngest, VideoMetadata
+from fastapi import APIRouter, HTTPException, Query
+from models.video import VideoBatchIngest
 from services import chroma_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
+
+
+@router.get("")
+async def get_all_videos(
+    limit: int = Query(default=100, ge=1, le=1000, description="Max videos to return"),
+    offset: int = Query(default=0, ge=0, description="Number of videos to skip"),
+):
+    """
+    Get all videos with pagination.
+
+    Returns a paginated list of all videos stored in ChromaDB.
+    Use limit and offset for page-based navigation.
+
+    Query params:
+        limit: Max videos to return (default 100, max 1000)
+        offset: Skip first N videos (for pagination)
+
+    Returns:
+        {
+            "videos": [{id, document, metadata}, ...],
+            "total": 1234,
+            "limit": 100,
+            "offset": 0
+        }
+    """
+    logger.info(f"📋 Listing videos (limit={limit}, offset={offset})")
+    start_time = time.time()
+
+    try:
+        result = chroma_service.get_videos(limit=limit, offset=offset)
+
+        elapsed = (time.time() - start_time) * 1000
+        logger.info(
+            f"✅ Listed {len(result['videos'])}/{result['total']} videos "
+            f"in {elapsed:.2f}ms"
+        )
+
+        return result
+    except Exception as e:
+        logger.error(f"❌ Failed to list videos: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/ingest")
@@ -21,7 +61,6 @@ async def ingest_videos(batch: VideoBatchIngest):
     Called by the extension when new videos are detected on MissAV.
     Videos are stored in ChromaDB with embeddings for semantic search.
     """
-
     start_time = time.time()
     logger.info(f"📥 Ingesting {len(batch.videos)} videos from {batch.source}")
 
@@ -62,19 +101,12 @@ async def get_video(video_id: str):
     logger.info(f"🔍 Getting video: {video_id}")
 
     try:
-        results = chroma_service.collection.get(
-            ids=[video_id],
-            include=["documents", "metadatas"],
-        )
+        result = chroma_service.get_video(video_id)
 
-        if not results["ids"]:
+        if not result:
             raise HTTPException(status_code=404, detail=f"Video not found: {video_id}")
 
-        return {
-            "id": results["ids"][0],
-            "document": results["documents"][0],
-            "metadata": results["metadatas"][0],
-        }
+        return result
     except HTTPException:
         raise
     except Exception as e:

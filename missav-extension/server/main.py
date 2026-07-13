@@ -40,6 +40,9 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
         reload_dirs=reload_dirs,
+        reload_includes=[
+            "main.py",  # Top-level main.py
+        ],
         reload_excludes=[
             "*.sqlite3",
             "*.db",
@@ -47,6 +50,12 @@ if __name__ == "__main__":
             "chroma_data/*",
             "__pycache__/*",
             ".chroma_*",
+            "generated",  # Top-level generated dir
+            "**/generated",  # Any generated dir at any level
+            "**/generated/**",  # Everything inside any generated dir (best recursive match)
+            "**/generated/**/*",  # Extra safety for deep nesting
+            "**/main/**",
+            "**/main/**/*",
         ],
         log_level="info",
         access_log=True,

@@ -1,4 +1,3 @@
-# Jet_Apps/server/services/chroma_service.py
 """ChromaDB service for video storage and search."""
 
 import logging
@@ -94,6 +93,86 @@ class ChromaVideoService:
             "id": result["ids"][0],
             "document": result["documents"][0],
             "metadata": result["metadatas"][0],
+        }
+
+    def get_videos(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        where: Optional[dict] = None,
+    ) -> dict:
+        """
+        Get all videos with pagination and optional metadata filtering.
+
+        ChromaDB doesn't have a native "get all" with offset, so we use
+        collection.get() which returns all items when no filters are given,
+        then slice manually. For very large collections, consider using
+        the where filter to narrow results.
+
+        Args:
+            limit: Max results to return (default 100, max 1000)
+            offset: Number of results to skip (for pagination)
+            where: Optional metadata filter (ChromaDB where clause)
+
+        Returns:
+            dict with keys:
+                - videos: list of {id, document, metadata} dicts
+                - total: total count matching the filter
+                - limit: requested limit
+                - offset: requested offset
+        """
+        logger.info(
+            f"📋 [ChromaService] Getting videos (limit={limit}, offset={offset})"
+        )
+        start_time = time.time()
+
+        # Safety cap
+        limit = min(limit, 1000)
+
+        try:
+            # ChromaDB returns ALL items when you don't specify IDs
+            result = self.collection.get(
+                where=where,
+                include=["documents", "metadatas"],
+            )
+        except Exception as e:
+            logger.error(f"❌ [ChromaService] Failed to get videos: {e}")
+            return {
+                "videos": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+            }
+
+        total = len(result["ids"])
+
+        # Apply pagination via slicing
+        slice_end = offset + limit
+        ids_slice = result["ids"][offset:slice_end]
+        docs_slice = result["documents"][offset:slice_end]
+        metas_slice = result["metadatas"][offset:slice_end]
+
+        videos = []
+        for i in range(len(ids_slice)):
+            videos.append(
+                {
+                    "id": ids_slice[i],
+                    "document": docs_slice[i],
+                    "metadata": metas_slice[i],
+                }
+            )
+
+        elapsed = (time.time() - start_time) * 1000
+        logger.info(
+            f"✅ [ChromaService] Retrieved {len(videos)}/{total} videos "
+            f"in {elapsed:.2f}ms"
+        )
+
+        return {
+            "videos": videos,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
         }
 
     def add_videos(self, videos: list[dict]) -> int:
@@ -308,6 +387,14 @@ def add_videos(videos: list[dict]) -> int:
 
 def get_video(video_id: str) -> Optional[dict]:
     return get_service().get_video(video_id)
+
+
+def get_videos(
+    limit: int = 100,
+    offset: int = 0,
+    where: Optional[dict] = None,
+) -> dict:
+    return get_service().get_videos(limit=limit, offset=offset, where=where)
 
 
 def delete_videos(ids: list[str]) -> None:
