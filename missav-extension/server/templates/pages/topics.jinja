@@ -1,1 +1,142 @@
-
+{% extends "base/layout.jinja" %}
+{% from "base/macros.jinja" import topic_card, empty_state, stats_panel %}
+{% set active_page = "topics" %}
+{% block title %}Topic Explorer - MissAV Smart Search{% endblock %}
+{% block content %}
+  <div class="container-fluid px-0">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <div>
+        <h2 class="mb-1"><i class="bi bi-diagram-3 me-2"></i>Topic Explorer</h2>
+        <p class="text-muted mb-0">Discover content themes across your video collection</p>
+      </div>
+      <button class="btn btn-primary rounded-pill px-4"
+              hx-post="/api/analysis/topics"
+              hx-target="#topics-container"
+              hx-indicator="#extract-spinner"
+              hx-swap="innerHTML"
+              onclick="extractTopics()">
+        <span id="extract-spinner" class="htmx-indicator">
+          <span class="spinner-border spinner-border-sm me-1"></span>
+        </span>
+        <i class="bi bi-magic me-2"></i>Extract Topics
+      </button>
+    </div>
+    <div id="topics-container">
+      <div id="topics-loading" class="text-center py-5">
+        <i class="bi bi-diagram-3 display-4 d-block mb-3 text-muted"></i>
+        <h4>No Topics Extracted Yet</h4>
+        <p class="text-muted">Click "Extract Topics" to discover content themes using AI-powered topic modeling.</p>
+        <small class="text-muted">
+          <i class="bi bi-info-circle me-1"></i>
+          Topics are extracted from video titles and descriptions using BERTopic.
+        </small>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script>
+        async function extractTopics() {
+            const container = document.getElementById('topics-container');
+            container.innerHTML = `
+                <div class="text-center py-5">
+                    <div class="loading-spinner mx-auto mb-3"></div>
+                    <p class="text-muted">Extracting topics... This may take a moment.</p>
+                </div>
+            `;
+            
+            try {
+                const response = await fetch('/api/analysis/topics', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        min_topic_size: 3,
+                        top_n_words: 10
+                    })
+                });
+                
+                if (!response.ok) throw new Error('Extraction failed');
+                
+                const data = await response.json();
+                renderTopics(data.topics);
+            } catch (error) {
+                container.innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        Topic extraction failed: ${error.message}
+                    </div>
+                `;
+            }
+        }
+        
+        function renderTopics(topics) {
+            const container = document.getElementById('topics-container');
+            
+            if (!topics || topics.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-5">
+                        <i class="bi bi-inbox display-4 d-block mb-3 text-muted"></i>
+                        <h4>No Topics Found</h4>
+                        <p class="text-muted">Try adjusting the minimum topic size or adding more videos.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Sort by size descending
+            topics.sort((a, b) => b.size - a.size);
+            
+            let html = `
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <span class="text-muted">
+                        <i class="bi bi-check-circle text-success me-1"></i>
+                        Found <strong>${topics.length}</strong> topics
+                    </span>
+                </div>
+                <div class="row g-4">
+            `;
+            
+            topics.forEach((topic, index) => {
+                const repDoc = topic.representative_docs && topic.representative_docs.length > 0 
+                    ? topic.representative_docs[0] 
+                    : '';
+                const truncated = repDoc.length > 120 ? repDoc.substring(0, 120) + '...' : repDoc;
+                
+                html += `
+                    <div class="col-md-6 col-lg-4 animate-in" style="animation-delay: ${index * 0.05}s">
+                        <div class="card h-100" onclick="viewTopicVideos(${topic.topic_id})" style="cursor: pointer;">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-start mb-3">
+                                    <h6 class="card-title mb-0">${topic.name.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</h6>
+                                    <span class="badge bg-primary rounded-pill">${topic.size} videos</span>
+                                </div>
+                                <div class="mb-3">
+                                    ${topic.keywords.slice(0, 5).map(kw => 
+                                        `<span class="topic-pill me-1 mb-1">${kw}</span>`
+                                    ).join('')}
+                                </div>
+                                ${repDoc ? `<p class="card-text small text-muted text-truncate">${truncated}</p>` : ''}
+                                ${topic.representative_docs && topic.representative_docs.length > 1 ? 
+                                    `<small class="text-muted">+${topic.representative_docs.length - 1} more representative docs</small>` : ''}
+                            </div>
+                            <div class="card-footer bg-transparent border-top-0">
+                                <small class="text-muted">
+                                    <i class="bi bi-collection me-1"></i>${topic.size} videos in this topic
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            container.innerHTML = html;
+        }
+        
+        function viewTopicVideos(topicId) {
+            // Navigate to topic detail or show videos in a modal
+            showToast(`Loading videos for topic ${topicId}...`, 'info');
+            // Future: implement topic detail page
+        }
+  </script>
+{% endblock %}

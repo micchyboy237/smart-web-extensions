@@ -203,12 +203,12 @@ class ChromaVideoService:
             video_id = video.get("id") or video.get("videoId")
             if not video_id:
                 continue
-            # Create searchable document text
             doc_text = self._create_document_text(video)
             ids.append(video_id)
             documents.append(doc_text)
             metadatas.append(
                 {
+                    "id": video_id,  # <-- Mirrors the Chroma-native id
                     "url": video.get("url") or "",
                     "text": video.get("text") or "",
                     "code": video.get("code") or "",
@@ -241,41 +241,57 @@ class ChromaVideoService:
         top_k: int = 20,
         where: Optional[dict] = None,
         where_document: Optional[dict] = None,
+        candidate_ids: Optional[list[str]] = None,
     ) -> list[dict]:
         """
-        Semantic search with optional metadata filtering.
+        Semantic search with optional metadata filtering and ID restriction.
 
         Args:
             query: Search query
             top_k: Number of results
             where: Metadata filter (ChromaDB where clause)
             where_document: Document content filter
+            candidate_ids: Optional whitelist of video IDs to search within.
+                        When provided, only these IDs are considered.
+                        Used for "limit to page" mode.
 
         Returns:
             List of {id, score, document, metadata} dicts
         """
         start_time = time.time()
 
+        # --- Build combined where filter ---
+        combined_where = where
+
+        if candidate_ids:
+            id_filter = {"id": {"$in": candidate_ids}}
+            if combined_where:
+                combined_where = {"$and": [id_filter, combined_where]}
+            else:
+                combined_where = id_filter
+            logger.info(
+                f"🔍 [ChromaService] search: query='{query[:80]}', "
+                f"candidate_ids={len(candidate_ids)}, top_k={top_k}"
+            )
+
         results = self.collection.query(
             query_texts=[query],
             n_results=top_k,
-            where=where,
+            where=combined_where,
             where_document=where_document,
             include=["documents", "metadatas", "distances"],
         )
 
         elapsed = (time.time() - start_time) * 1000
         logger.info(
-            f"Search completed in {elapsed:.2f}ms, returned {len(results['ids'][0])} results"
+            f"✅ [ChromaService] search completed in {elapsed:.2f}ms, "
+            f"returned {len(results['ids'][0])} results"
         )
 
-        # Format results
         formatted = []
         for i in range(len(results["ids"][0])):
-            # Convert distance to similarity score (cosine distance → similarity)
             distance = results["distances"][0][i]
-            similarity = 1 - (distance / 2)  # Normalize cosine distance to [0,1]
-
+            similarity = 1 - (distance / 2)
             formatted.append(
                 {
                     "id": results["ids"][0][i],
@@ -363,8 +379,9 @@ def search(
     top_k: int = 20,
     where: Optional[dict] = None,
     where_document: Optional[dict] = None,
+    candidate_ids: Optional[list[str]] = None,
 ) -> list[dict]:
-    return get_service().search(query, top_k, where, where_document)
+    return get_service().search(query, top_k, where, where_document, candidate_ids)
 
 
 def get_embeddings(ids: list[str]) -> Optional[np.ndarray]:

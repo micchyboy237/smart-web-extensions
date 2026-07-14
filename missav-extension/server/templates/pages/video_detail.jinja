@@ -1,1 +1,105 @@
-
+{% extends "base/layout.jinja" %}
+{% set active_page = "videos" %}
+{% block title %}Video Detail - MissAV Smart Search{% endblock %}
+{% block content %}
+  <div class="container-fluid px-0">
+    <nav aria-label="breadcrumb" class="mb-3">
+      <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/web/videos" class="text-decoration-none">Video Library</a></li>
+        <li class="breadcrumb-item active">{{ video.id }}</li>
+      </ol>
+    </nav>
+    <div class="row g-4">
+      <div class="col-lg-8">
+        <div class="card">
+          <div class="card-body">
+            <h3 class="card-title mb-3">
+              {{ video.metadata.get('text', video.document[:100]) if video.metadata else video.document[:100] }}
+            </h3>
+            {% if video.metadata %}
+              <div class="row g-3 mb-4">
+                {% if video.metadata.get('code') %}
+                  <div class="col-auto">
+                    <span class="badge bg-primary fs-6">{{ video.metadata.code | upper }}</span>
+                  </div>
+                {% endif %}
+                {% if video.metadata.get('episode') %}
+                  <div class="col-auto">
+                    <span class="text-muted">
+                      <i class="bi bi-collection me-1"></i>Episode {{ video.metadata.episode }}
+                    </span>
+                  </div>
+                {% endif %}
+              </div>
+            {% endif %}
+            <h6 class="text-muted mb-2">Document</h6>
+            <p class="card-text">{{ video.document }}</p>
+            {% if video.metadata %}
+              <h6 class="text-muted mb-2 mt-4">Metadata</h6>
+              <div class="table-responsive">
+                <table class="table table-sm table-borderless">
+                  <tbody>
+                    {% for key, value in video.metadata.items() %}
+                      <tr>
+                        <td class="text-muted" style="width: 150px;">{{ key }}</td>
+                        <td>{{ value }}</td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-4">
+        <div class="card mb-3">
+          <div class="card-header bg-transparent">
+            <h6 class="mb-0"><i class="bi bi-info-circle me-2"></i>Video Info</h6>
+          </div>
+          <div class="card-body">
+            <dl class="row mb-0">
+              <dt class="col-sm-5 text-muted">ID</dt>
+              <dd class="col-sm-7">
+                <code>{{ video.id }}</code>
+                <i class="bi bi-clipboard ms-2 text-muted"
+                   style="cursor: pointer"
+                   onclick="copyToClipboard('{{ video.id }}')"></i>
+              </dd>
+              {% if video.metadata %}
+                {% if video.metadata.get('code') %}
+                  <dt class="col-sm-5 text-muted">Code</dt>
+                  <dd class="col-sm-7">
+                    {{ video.metadata.code | upper }}
+                  </dd>
+                {% endif %}
+              {% endif %}
+              <dt class="col-sm-5 text-muted">Score</dt>
+              <dd class="col-sm-7">
+                {% if video.score is defined %}
+                  <span class="result-score">{{ "%.3f"|format(video.score) }}</span>
+                {% else %}
+                  <span class="text-muted">N/A</span>
+                {% endif %}
+              </dd>
+            </dl>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header bg-transparent">
+            <h6 class="mb-0"><i class="bi bi-link-45deg me-2"></i>Actions</h6>
+          </div>
+          <div class="card-body">
+            <button class="btn btn-outline-primary btn-sm w-100 mb-2"
+                    onclick="copyToClipboard('{{ video.id }}')">
+              <i class="bi bi-clipboard me-1"></i>Copy Video ID
+            </button>
+            <a href="/web/search" class="btn btn-outline-secondary btn-sm w-100">
+              <i class="bi bi-search me-1"></i>Find Similar Videos
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

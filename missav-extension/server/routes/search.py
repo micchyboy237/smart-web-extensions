@@ -53,6 +53,7 @@ async def smart_search(query: SearchQuery):
             query=query.query,
             top_k=candidate_k,
             where=where_filter,
+            candidate_ids=query.limit_to_ids,
         )
 
         logger.info(f"📊 Retrieved {len(results)} candidates")

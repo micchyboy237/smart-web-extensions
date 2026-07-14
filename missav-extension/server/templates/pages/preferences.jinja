@@ -1,1 +1,172 @@
-
+{% extends "base/layout.jinja" %}
+{% set active_page = "preferences" %}
+{% block title %}Preferences - MissAV Smart Search{% endblock %}
+{% block content %}
+  <div class="container-fluid px-0">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <div>
+        <h2 class="mb-1"><i class="bi bi-sliders me-2"></i>Preferences</h2>
+        <p class="text-muted mb-0">Customize your search experience</p>
+      </div>
+    </div>
+    <div class="row g-4">
+      <div class="col-lg-6">
+        <div class="card">
+          <div class="card-header bg-transparent">
+            <h5 class="mb-0"><i class="bi bi-star me-2"></i>Favorite Codes</h5>
+          </div>
+          <div class="card-body">
+            <p class="text-muted small">Videos with these codes will be boosted in search results.</p>
+            <div class="input-group mb-3">
+              <input type="text"
+                     class="form-control"
+                     id="favorite-code-input"
+                     placeholder="e.g., juq, mxgs">
+              <button class="btn btn-primary" onclick="addFavoriteCode()">Add</button>
+            </div>
+            <div id="favorite-codes-list" class="d-flex flex-wrap gap-2">
+              <span class="text-muted small">No favorite codes set</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <div class="card">
+          <div class="card-header bg-transparent">
+            <h5 class="mb-0"><i class="bi bi-shield-x me-2"></i>Blocked Codes</h5>
+          </div>
+          <div class="card-body">
+            <p class="text-muted small">Videos with these codes will be excluded from results.</p>
+            <div class="input-group mb-3">
+              <input type="text"
+                     class="form-control"
+                     id="blocked-code-input"
+                     placeholder="e.g., fc2, heyzo">
+              <button class="btn btn-danger" onclick="addBlockedCode()">Block</button>
+            </div>
+            <div id="blocked-codes-list" class="d-flex flex-wrap gap-2">
+              <span class="text-muted small">No codes blocked</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header bg-transparent">
+            <h5 class="mb-0"><i class="bi bi-graph-up me-2"></i>Search Defaults</h5>
+          </div>
+          <div class="card-body">
+            <div class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label">Default Search Type</label>
+                <select class="form-select" id="default-search-type">
+                  <option value="hybrid">Hybrid (Recommended)</option>
+                  <option value="semantic">Semantic</option>
+                  <option value="keyword">Keyword</option>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">Default Diversity</label>
+                <select class="form-select" id="default-diversity">
+                  <option value="0.0">Relevance Only</option>
+                  <option value="0.3" selected>Balanced</option>
+                  <option value="0.6">More Diverse</option>
+                  <option value="0.9">Maximum Diversity</option>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">Results Per Page</label>
+                <select class="form-select" id="default-top-k">
+                  <option value="10">10</option>
+                  <option value="20" selected>20</option>
+                  <option value="30">30</option>
+                  <option value="50">50</option>
+                </select>
+              </div>
+            </div>
+            <button class="btn btn-success mt-3" onclick="savePreferences()">
+              <i class="bi bi-check-lg me-1"></i>Save Preferences
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script>
+        const favorites = new Set();
+        const blocked = new Set();
+        
+        function addFavoriteCode() {
+            const input = document.getElementById('favorite-code-input');
+            const code = input.value.trim().toLowerCase();
+            if (code && !favorites.has(code)) {
+                favorites.add(code);
+                renderChips('favorite-codes-list', favorites, 'favorite', 'bg-primary');
+                input.value = '';
+            }
+        }
+        
+        function addBlockedCode() {
+            const input = document.getElementById('blocked-code-input');
+            const code = input.value.trim().toLowerCase();
+            if (code && !blocked.has(code)) {
+                blocked.add(code);
+                renderChips('blocked-codes-list', blocked, 'blocked', 'bg-danger');
+                input.value = '';
+            }
+        }
+        
+        function renderChips(containerId, set, type, badgeClass) {
+            const container = document.getElementById(containerId);
+            if (set.size === 0) {
+                container.innerHTML = '<span class="text-muted small">No codes set</span>';
+                return;
+            }
+            container.innerHTML = Array.from(set).map(code => `
+                <span class="badge ${badgeClass} d-inline-flex align-items-center gap-1">
+                    ${code.toUpperCase()}
+                    <i class="bi bi-x" style="cursor: pointer;" onclick="removeCode('${type}', '${code}')"></i>
+                </span>
+            `).join('');
+        }
+        
+        function removeCode(type, code) {
+            if (type === 'favorite') {
+                favorites.delete(code);
+                renderChips('favorite-codes-list', favorites, 'favorite', 'bg-primary');
+            } else {
+                blocked.delete(code);
+                renderChips('blocked-codes-list', blocked, 'blocked', 'bg-danger');
+            }
+        }
+        
+        async function savePreferences() {
+            const prefs = {
+                user_id: 'default',
+                favorite_codes: Array.from(favorites),
+                blocked_codes: Array.from(blocked),
+                diversity_preference: parseFloat(document.getElementById('default-diversity').value),
+                watched_ids: [],
+                preferred_episode_range: null
+            };
+            
+            try {
+                const response = await fetch('/api/preferences', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(prefs)
+                });
+                
+                if (response.ok) {
+                    showToast('Preferences saved successfully!', 'success');
+                } else {
+                    showToast('Failed to save preferences', 'danger');
+                }
+            } catch (error) {
+                showToast('Error saving preferences: ' + error.message, 'danger');
+            }
+        }
+  </script>
+{% endblock %}

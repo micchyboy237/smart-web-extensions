@@ -74,9 +74,13 @@ class SearchQuery(BaseModel):
 
     # Search strategy
     search_type: str = Field(
-        default="hybrid",
+        default="semantic",
         pattern="^(semantic|keyword|hybrid|ensemble)$",
         description="Search strategy to use",
+    )
+    limit_to_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Only search within these specific video IDs (page-limited mode)",
     )
 
 

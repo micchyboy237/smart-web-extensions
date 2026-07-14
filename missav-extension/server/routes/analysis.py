@@ -2,7 +2,6 @@
 
 import logging
 import time
-from typing import List
 
 from fastapi import APIRouter, HTTPException
 from models.analysis import (
@@ -18,7 +17,6 @@ from services.analysis_service import (
 )
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
 
@@ -26,7 +24,6 @@ router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 async def analysis_health():
     """
     Check if the BERTopic analysis module is ready.
-
     Verifies the embedding server is reachable and the model
     is properly configured.
     """
@@ -56,17 +53,15 @@ async def analysis_health():
 async def extract_topics(request: TopicExtractionRequest):
     """
     Extract topics from video documents using BERTopic.
-
     This endpoint runs topic modeling on the video collection:
     1. Fetches video documents (all or specified IDs)
     2. Extracts topics using BERTopic with llama.cpp embeddings
-    3. Returns structured topic information
-
+    3. Returns structured topic information with representative docs
+    Topics are returned sorted by size (largest first).
     Use cases:
     - Discover content categories in your video collection
     - Find thematic patterns across series
     - Identify outlier videos that don't fit common themes
-
     Performance note:
     Topic extraction is CPU/memory intensive for large collections.
     Consider filtering video_ids for targeted analysis.
@@ -77,9 +72,7 @@ async def extract_topics(request: TopicExtractionRequest):
         f"(videos={request.video_ids or 'all'}, "
         f"min_topic_size={request.min_topic_size})"
     )
-
     try:
-        # Step 1: Gather documents
         if request.video_ids:
             documents = []
             for vid_id in request.video_ids:
@@ -91,13 +84,9 @@ async def extract_topics(request: TopicExtractionRequest):
                     status_code=404, detail="No videos found for the provided IDs"
                 )
         else:
-            # Fetch all videos (with a reasonable cap for analysis)
             all_videos = chroma_service.get_videos(limit=5000, offset=0)
             documents = [v["document"] for v in all_videos["videos"]]
-
         logger.info(f"📄 Gathered {len(documents)} documents for analysis")
-
-        # Step 2: Extract topics
         service = get_analysis_service()
         result = service.extract_topics(
             documents=documents,
@@ -105,9 +94,8 @@ async def extract_topics(request: TopicExtractionRequest):
             top_n_words=request.top_n_words,
             remove_stop_words=request.remove_stop_words,
             use_keybert=request.use_keybert,
+            n_representative_docs=request.n_representative_docs,
         )
-
-        # Step 3: Format response
         topics_list = []
         for topic in result["topics"]:
             topics_list.append(
@@ -116,20 +104,18 @@ async def extract_topics(request: TopicExtractionRequest):
                     name=topic["name"],
                     keywords=topic["keywords"],
                     size=topic["size"],
-                    representative_doc=topic["representative_doc"],
+                    representative_docs=topic.get("representative_docs", []),
                 )
             )
-
-        # Count outliers (topic -1)
+        # Sort by size descending
+        topics_list.sort(key=lambda t: t.size, reverse=True)
         outlier_count = sum(1 for label in result["topic_labels"] if label == -1)
-
         elapsed = (time.time() - start_time) * 1000
         logger.info(
             f"✅ Extracted {len(topics_list)} topics "
             f"from {len(documents)} documents "
             f"({outlier_count} outliers) in {elapsed:.0f}ms"
         )
-
         return TopicExtractionResponse(
             topics=topics_list,
             topic_count=len(topics_list),
@@ -137,7 +123,6 @@ async def extract_topics(request: TopicExtractionRequest):
             outlier_count=outlier_count,
             extraction_time_ms=elapsed,
         )
-
     except HTTPException:
         raise
     except Exception as e:
@@ -153,10 +138,7 @@ async def get_topic_videos(
 ):
     """
     Retrieve videos belonging to a specific topic.
-
-    After extracting topics, use this endpoint to explore
-    which videos fall under each topic.
-
+    Only works after running POST /api/analysis/topics in the same server session.
     Args:
         topic_id: The topic ID from extraction results
         limit: Max videos to return (default 20, max 100)
@@ -165,71 +147,27 @@ async def get_topic_videos(
     logger.info(
         f"🔍 Fetching videos for topic {topic_id} (limit={limit}, offset={offset})"
     )
-
     try:
         service = get_analysis_service()
-
-        # Get topic info
-        topic_info = service.get_topic_info(topic_id)
-        if not topic_info:
+        topic_docs = service.get_topic_documents(topic_id)
+        if not topic_docs:
             raise HTTPException(
                 status_code=404,
-                detail=f"Topic {topic_id} not found. Run extraction first.",
+                detail=f"Topic {topic_id} not found. Run POST /api/analysis/topics first.",
             )
-
-        # Get assigned documents
-        topic_docs = service.get_topic_documents(topic_id)
         total = len(topic_docs)
-
-        # Paginate
         paginated = topic_docs[offset : offset + limit]
-
         return TopicSearchResponse(
             topic_id=topic_id,
-            topic_name=topic_info.get("name", f"Topic_{topic_id}"),
-            keywords=topic_info.get("keywords", []),
+            topic_name=f"Topic_{topic_id}",
+            keywords=[],
             videos=paginated,
             total=total,
             limit=limit,
             offset=offset,
         )
-
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"❌ Topic video fetch failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/topics/search", response_model=List[TopicResult])
-async def search_topics_by_keyword(
-    keyword: str,
-    limit: int = 5,
-):
-    """
-    Search for topics matching a keyword.
-
-    Find topics that contain the given keyword in their
-    representative terms. Useful for discovering relevant
-    content categories.
-    """
-    logger.info(f"🔍 Searching topics for keyword: '{keyword}'")
-
-    try:
-        service = get_analysis_service()
-        matching_topics = service.search_topics(keyword, limit=limit)
-
-        return [
-            TopicResult(
-                topic_id=t["topic_id"],
-                name=t["name"],
-                keywords=t["keywords"],
-                size=t["size"],
-                representative_doc=t.get("representative_doc", ""),
-            )
-            for t in matching_topics
-        ]
-
-    except Exception as e:
-        logger.error(f"❌ Topic search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

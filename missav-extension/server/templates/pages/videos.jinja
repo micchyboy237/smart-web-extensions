@@ -1,1 +1,71 @@
-
+{% extends "base/layout.jinja" %}
+{% from "base/macros.jinja" import video_card, empty_state %}
+{% set active_page = "videos" %}
+{% block title %}Video Library - MissAV Smart Search{% endblock %}
+{% block content %}
+  <div class="container-fluid px-0">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <div>
+        <h2 class="mb-1"><i class="bi bi-collection-play me-2"></i>Video Library</h2>
+        <p class="text-muted mb-0">
+          Browsing {{ total }} videos
+          {% if total_pages > 1 %}(Page {{ page }} of {{ total_pages }}){% endif %}
+        </p>
+      </div>
+      <div>
+        <select class="form-select form-select-sm d-inline-block w-auto me-2"
+                onchange="changePerPage(this.value)">
+          <option value="24" {{ 'selected' if per_page == 24 }}>24 per page</option>
+          <option value="48" {{ 'selected' if per_page == 48 }}>48 per page</option>
+          <option value="96" {{ 'selected' if per_page == 96 }}>96 per page</option>
+        </select>
+      </div>
+    </div>
+    {% if videos %}
+      <div class="row g-4">
+        {% for video in videos %}
+          {{ video_card(video, loop.index0) }}
+        {% endfor %}
+      </div>
+      {% if total_pages > 1 %}
+        <nav class="mt-4">
+          <ul class="pagination justify-content-center">
+            <li class="page-item {{ 'disabled' if page <= 1 }}">
+              <a class="page-link"
+                 href="/web/videos?page={{ page - 1 }}&per_page={{ per_page }}">
+                <i class="bi bi-chevron-left"></i>
+              </a>
+            </li>
+            {% for p in range(1, total_pages + 1) %}
+              {% if p == page %}
+                <li class="page-item active"><span class="page-link">{{ p }}</span></li>
+              {% elif p <= 3 or p > total_pages - 3 or (p >= page - 1 and p <= page + 1) %}
+                <li class="page-item">
+                  <a class="page-link"
+                     href="/web/videos?page={{ p }}&per_page={{ per_page }}">{{ p }}</a>
+                </li>
+              {% elif p == 4 or p == total_pages - 3 %}
+                <li class="page-item disabled"><span class="page-link">...</span></li>
+              {% endif %}
+            {% endfor %}
+            <li class="page-item {{ 'disabled' if page >= total_pages }}">
+              <a class="page-link"
+                 href="/web/videos?page={{ page + 1 }}&per_page={{ per_page }}">
+                <i class="bi bi-chevron-right"></i>
+              </a>
+            </li>
+          </ul>
+        </nav>
+      {% endif %}
+    {% else %}
+      {{ empty_state('film', 'No Videos Yet', 'Videos will appear here once ingested from the browser extension.') }}
+    {% endif %}
+  </div>
+{% endblock %}
+{% block scripts %}
+  <script>
+        function changePerPage(value) {
+            window.location.href = `/web/videos?page=1&per_page=${value}`;
+        }
+  </script>
+{% endblock %}

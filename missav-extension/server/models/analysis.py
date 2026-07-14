@@ -13,9 +13,18 @@ class TopicResult(BaseModel):
     name: str = Field(..., description="Auto-generated topic name")
     keywords: List[str] = Field(..., description="Top keywords for the topic")
     size: int = Field(..., description="Number of documents in this topic")
-    representative_doc: str = Field(
-        ..., description="Most representative document snippet"
+    representative_docs: List[str] = Field(
+        default_factory=list,
+        description="Representative document snippets (sorted by representativeness)",
     )
+
+
+class TopicListResponse(BaseModel):
+    """Response with all cached topics."""
+
+    topics: List[TopicResult]
+    topic_count: int = Field(..., description="Total topics cached")
+    timestamp: datetime = Field(default_factory=datetime.now)
 
 
 class TopicExtractionRequest(BaseModel):
@@ -36,6 +45,11 @@ class TopicExtractionRequest(BaseModel):
     use_keybert: bool = Field(
         default=True,
         description="Use KeyBERT-inspired representation for better topics",
+    )
+    n_representative_docs: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Max representative docs per topic. None returns all available.",
     )
 
 

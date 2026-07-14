@@ -1,6 +1,6 @@
 # API Reference
 
-Here are comprehensive CURL examples covering all search features of your MissAV Smart Search API.
+Here are comprehensive CURL examples covering all features of your MissAV Smart Search API.
 
 ## API Endpoint Overview
 
@@ -10,7 +10,6 @@ Here are comprehensive CURL examples covering all search features of your MissAV
 | GET    | `/api/analysis/health`                   | Analysis module health      |
 | POST   | `/api/analysis/topics`                   | Extract topics via BERTopic |
 | GET    | `/api/analysis/topics/{topic_id}/videos` | Get videos for a topic      |
-| POST   | `/api/analysis/topics/search`            | Search topics by keyword    |
 | POST   | `/api/videos/ingest`                     | Ingest video batch          |
 | GET    | `/api/videos`                            | List all videos (paginated) |
 | GET    | `/api/videos/{video_id}`                 | Get single video            |
@@ -79,7 +78,8 @@ curl -X POST http://localhost:8000/api/analysis/topics \
     "min_topic_size": 3,
     "top_n_words": 10,
     "remove_stop_words": true,
-    "use_keybert": true
+    "use_keybert": true,
+    "n_representative_docs": null
   }'
 ```
 
@@ -92,15 +92,22 @@ curl -X POST http://localhost:8000/api/analysis/topics \
       "topic_id": 0,
       "name": "0_actress_drama_beautiful",
       "keywords": ["actress", "drama", "beautiful", "story", "romance"],
-      "size": 45,
-      "representative_doc": "JUQ-373 Beautiful Actress | Series: juq | Episode: 373..."
+      "size": 3,
+      "representative_docs": [
+        "JUQ-373 Beautiful Actress | Series: juq | Episode: 373...",
+        "SSIS-500 Romantic Drama Story | Series: ssis | Episode: 500...",
+        "MXGS-1200 Actress Debut | Series: mxgs | Episode: 1200..."
+      ]
     },
     {
       "topic_id": 1,
       "name": "1_new_release_recent",
       "keywords": ["new", "release", "recent", "latest", "debut"],
-      "size": 32,
-      "representative_doc": "MXGS-1200 New Release | Series: mxgs | Episode: 1200..."
+      "size": 2,
+      "representative_docs": [
+        "MXGS-1300 New Release | Series: mxgs | Episode: 1300...",
+        "JUQ-400 Latest Release | Series: juq | Episode: 400..."
+      ]
     }
   ],
   "topic_count": 2,
@@ -121,7 +128,8 @@ curl -X POST http://localhost:8000/api/analysis/topics \
     "min_topic_size": 2,
     "top_n_words": 5,
     "remove_stop_words": true,
-    "use_keybert": true
+    "use_keybert": true,
+    "n_representative_docs": null
   }'
 ```
 
@@ -134,7 +142,8 @@ curl -X POST http://localhost:8000/api/analysis/topics \
     "min_topic_size": 2,
     "top_n_words": 15,
     "remove_stop_words": true,
-    "use_keybert": true
+    "use_keybert": true,
+    "n_representative_docs": null
   }'
 ```
 
@@ -154,9 +163,13 @@ curl -X GET "http://localhost:8000/api/analysis/topics/0/videos?limit=10&offset=
   "keywords": ["actress", "drama", "beautiful", "story", "romance"],
   "videos": [
     {
-      "index": 0,
-      "topic_id": 0,
-      "document_snippet": "JUQ-373 Beautiful Actress | Series: juq..."
+      "id": "juq-373",
+      "document": "JUQ-373 Beautiful Actress | Series: juq | Episode: 373...",
+      "metadata": {
+        "code": "juq",
+        "episode": "373",
+        "text": "JUQ-373 Beautiful Actress"
+      }
     }
   ],
   "total": 45,
@@ -164,29 +177,6 @@ curl -X GET "http://localhost:8000/api/analysis/topics/0/videos?limit=10&offset=
   "offset": 0
 }
 ```
-
-### Search Topics by Keyword
-
-```bash
-# Find topics containing "actress" in their keywords
-curl -X POST "http://localhost:8000/api/analysis/topics/search?keyword=actress&limit=3"
-```
-
-**Response:**
-
-```json
-[
-  {
-    "topic_id": 0,
-    "name": "0_actress_drama_beautiful",
-    "keywords": ["actress", "drama", "beautiful", "story", "romance"],
-    "size": 45,
-    "representative_doc": "JUQ-373 Beautiful Actress | Series: juq | Episode: 373..."
-  }
-]
-```
-
----
 
 ## 3. Video Ingestion
 
@@ -341,6 +331,43 @@ curl -X POST http://localhost:8000/api/search \
   }'
 ```
 
+### Limit to Specific Video IDs (Page-Loaded Mode)
+
+Restrict search to only the videos currently loaded in the browser. The extension sends the video IDs scraped from the active tab, and the server searches exclusively within that subset using ChromaDB's `$in` filter.
+
+```bash
+curl -X POST http://localhost:8000/api/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "best scenes",
+    "top_k": 10,
+    "limit_to_ids": [
+      "jav-abc123", "jav-def456", "jav-ghi789",
+      "jav-jkl012", "jav-mno345", "jav-pqr678"
+    ]
+  }'
+```
+
+### Limit to Page with Additional Filters
+
+Combining `limit_to_ids` with other filters lets you narrow down the current page's videos even further.
+
+```bash
+curl -X POST http://localhost:8000/api/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "drama",
+    "top_k": 5,
+    "limit_to_ids": [
+      "jav-abc123", "jav-def456", "jav-ghi789",
+      "jav-jkl012", "jav-mno345", "jav-pqr678",
+      "jav-stu901", "jav-vwx234"
+    ],
+    "exclude_codes": ["fc2"],
+    "include_episode_range": [100, 500]
+  }'
+```
+
 ### High Diversity Search
 
 ```bash
@@ -396,6 +423,22 @@ curl -X POST http://localhost:8000/api/search \
   }'
 ```
 
+### Search Parameter Reference
+
+| Parameter               | Type         | Default    | Description                                                    |
+| ----------------------- | ------------ | ---------- | -------------------------------------------------------------- |
+| `query`                 | `string`     | required   | Natural language or keyword search query                       |
+| `search_type`           | `string`     | `"hybrid"` | One of: `semantic`, `keyword`, `hybrid`, `ensemble`            |
+| `top_k`                 | `int`        | `20`       | Number of results to return (1-100)                            |
+| `include_codes`         | `string[]`   | `[]`       | Only include videos with these series codes                    |
+| `exclude_codes`         | `string[]`   | `[]`       | Exclude videos with these series codes                         |
+| `include_episodes`      | `string[]`   | `[]`       | Only include specific episode numbers                          |
+| `include_episode_range` | `[int, int]` | `null`     | Episode range `[min, max]`                                     |
+| `exclude_ids`           | `string[]`   | `[]`       | Exclude specific video IDs (e.g., already watched)             |
+| `limit_to_ids`          | `string[]`   | `null`     | **Restrict search to only these video IDs** (page-loaded mode) |
+| `diversity_factor`      | `float`      | `0.3`      | 0 = relevance only, 1 = maximum diversity                      |
+| `max_per_code`          | `int`        | `null`     | Max results per series code (for diversity)                    |
+
 ---
 
 ## 6. User Preferences
@@ -447,3 +490,28 @@ curl -X GET http://localhost:8000/api/preferences/default
 | `diversity_factor`      | ❌                   | ✅ (MMR/Metadata) |
 | `max_per_code`          | ❌                   | ✅                |
 | `top_k`                 | ✅ (candidate fetch) | ✅ (final limit)  |
+
+## Topic Representative Docs
+
+| Field                 | Type        | Description                                                                                         |
+| --------------------- | ----------- | --------------------------------------------------------------------------------------------------- |
+| `representative_docs` | `List[str]` | Multiple representative document snippets, sorted by representativeness (most representative first) |
+| `size`                | `int`       | Total number of documents in this topic                                                             |
+
+**Example:**
+
+```json
+{
+  "topic_id": 0,
+  "name": "0_actress_drama_beautiful",
+  "keywords": ["actress", "drama", "beautiful"],
+  "size": 45,
+  "representative_docs": [
+    "Most representative document...",
+    "Second most representative document...",
+    "Third most representative document..."
+  ]
+}
+```
+
+> **Tip:** After running `POST /api/analysis/topics`, use `GET /api/analysis/topics` to browse cached results sorted by size (largest first) without re-extracting.
