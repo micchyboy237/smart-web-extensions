@@ -62,6 +62,53 @@ async def get_all_videos(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/by-ids")
+async def get_videos_by_ids(video_ids: list[str]):
+    """
+    Get multiple videos by their IDs.
+
+    Accepts a list of video ID strings in the request body.
+    Returns only the videos that were found. Missing IDs are silently skipped.
+
+    Request body example:
+        ["juq-373", "mxgs-884", "abp-123"]
+
+    Response:
+        {
+            "videos": [{id, document, metadata}, ...],
+            "requested": 3,
+            "found": 2,
+            "missing": ["abp-123"]
+        }
+    """
+    if not video_ids:
+        raise HTTPException(status_code=400, detail="video_ids list cannot be empty")
+
+    logger.info(f"📋 Batch fetching {len(video_ids)} videos by IDs")
+    start_time = time.time()
+
+    try:
+        videos = chroma_service.get_videos_by_ids(video_ids)
+        elapsed = (time.time() - start_time) * 1000
+
+        found_ids = {v["id"] for v in videos}
+        missing = [vid for vid in dict.fromkeys(video_ids) if vid not in found_ids]
+
+        logger.info(
+            f"✅ Batch fetch: {len(videos)}/{len(video_ids)} found in {elapsed:.2f}ms"
+        )
+
+        return {
+            "videos": videos,
+            "requested": len(video_ids),
+            "found": len(videos),
+            "missing": missing,
+        }
+    except Exception as e:
+        logger.error(f"❌ Batch fetch failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/ingest")
 async def ingest_videos(batch: VideoBatchIngest):
     """

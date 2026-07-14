@@ -155,19 +155,32 @@
             />
           </div>
 
-          <!-- Action Buttons -->
+          <!-- Limit to Current Page Toggle -->
+          <div class="form-group">
+            <label for="limitToPage">
+              <i class="fas fa-filter"></i> Limit to Current Page
+            </label>
+            <div class="toggle-row">
+              <label class="switch">
+                <input type="checkbox" id="limitToPage" />
+                <span class="slider round"></span>
+              </label>
+              <span class="toggle-label">Only search videos on this page</span>
+            </div>
+            <small
+              class="hint"
+              id="pageVideoCount"
+              style="display: none"
+            ></small>
+          </div>
+
+          <!-- Action Buttons-->
           <div class="button-group">
             <button id="smartSearchBtn" class="primary-button">
               <i class="fas fa-search"></i> Smart Search
             </button>
-            <button id="quickSearchBtn" class="secondary-button">
-              <i class="fas fa-bolt"></i> Quick
-            </button>
             <button id="findSimilarBtn" class="secondary-button">
               <i class="fas fa-random"></i> Similar
-            </button>
-            <button id="serverStatusBtn" class="secondary-button">
-              <i class="fas fa-server"></i> Status
             </button>
           </div>
         </div>

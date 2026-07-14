@@ -628,6 +628,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
     return true;
   }
+  if (request.action === "getPageVideoIds") {
+    // Return all video IDs currently extracted (from currentData)
+    const videoIds = currentData.map((item) => item.id).filter(Boolean);
+    console.log(`[MISSAV EXT] 📄 Returning ${videoIds.length} page video IDs`);
+    sendResponse({ videoIds });
+    return true;
+  }
 });
 
 // Start

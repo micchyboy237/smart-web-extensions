@@ -178,6 +178,7 @@ class MissAVServerClient {
       diversityFactor = 0.3,
       maxPerCode = null,
       searchType = "hybrid",
+      limitToIds = null,
     } = searchParams;
     console.log("[SERVER CLIENT] 🔍 Search request:", {
       query,
@@ -186,6 +187,7 @@ class MissAVServerClient {
       includeCodes,
       excludeCodes,
       diversityFactor,
+      limitToIds,
     });
     const payload = {
       query,
@@ -198,6 +200,7 @@ class MissAVServerClient {
       diversity_factor: diversityFactor,
       max_per_code: maxPerCode,
       search_type: searchType,
+      limit_to_ids: limitToIds,
     };
     try {
       const response = await this._fetchWithTimeout(

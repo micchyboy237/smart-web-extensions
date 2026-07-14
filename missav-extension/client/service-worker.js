@@ -64,19 +64,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  // ====================== QUICK SEARCH ======================
-  if (request.action === "quickSearch") {
-    console.log("[SW] 🔍 Quick search:", request.query);
-    serverClient
-      .quickSearch(request.query, request.options || {})
-      .then((results) => sendResponse({ success: true, ...results }))
-      .catch((err) => {
-        console.error("[SW] ❌ Quick search failed:", err.message);
-        sendResponse({ success: false, error: err.message });
-      });
-    return true;
-  }
-
   // ====================== FIND SIMILAR ======================
   if (request.action === "findSimilar") {
     console.log("[SW] 🔍 Find similar to:", request.videoId);
@@ -87,13 +74,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.error("[SW] ❌ Find similar failed:", err.message);
         sendResponse({ success: false, error: err.message });
       });
-    return true;
-  }
-
-  // ====================== SERVER STATUS ======================
-  if (request.action === "getServerStatus") {
-    console.log("[SW] 📊 Server status requested");
-    sendResponse({ success: true, syncState: serverClient.getSyncState() });
     return true;
   }
 

@@ -12,9 +12,7 @@ const diversityValueSpan = document.getElementById("diversityValue");
 const maxPerCodeInput = document.getElementById("maxPerCode");
 const searchTypeSelect = document.getElementById("searchType");
 const smartSearchBtn = document.getElementById("smartSearchBtn");
-const quickSearchBtn = document.getElementById("quickSearchBtn");
 const findSimilarBtn = document.getElementById("findSimilarBtn");
-const serverStatusBtn = document.getElementById("serverStatusBtn");
 const resultsContainer = document.getElementById("resultsContainer");
 const loadingOverlay = document.getElementById("loadingOverlay");
 const toast = document.getElementById("toast");
@@ -22,6 +20,8 @@ const themeToggle = document.getElementById("themeToggle");
 const clearQueryBtn = document.getElementById("clearQuery");
 const resultCount = document.getElementById("resultCount");
 const copyAllIds = document.getElementById("copyAllIds");
+const limitToPageCheckbox = document.getElementById("limitToPage");
+const pageVideoCount = document.getElementById("pageVideoCount");
 
 // ====================== STATE ======================
 let availableCodes = new Set();
@@ -36,6 +36,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   queryInput.focus();
   setupEventListeners();
   updateSliderVisuals();
+  await updatePageVideoIds();
 });
 
 // ====================== THEME ======================
@@ -124,15 +125,16 @@ function setupEventListeners() {
     updateSliderVisuals();
   });
   smartSearchBtn.addEventListener("click", () => performSmartSearch());
-  quickSearchBtn.addEventListener("click", () => performQuickSearch());
   findSimilarBtn.addEventListener("click", () => {
     const videoId = prompt("Enter Video ID to find similar videos:");
     if (videoId) performFindSimilar(videoId);
   });
-  serverStatusBtn.addEventListener("click", () => checkServerStatus());
   copyAllIds.addEventListener("click", copyAllVideoIds);
   queryInput.addEventListener("keypress", (e) => {
     if (e.key === "Enter") performSmartSearch();
+  });
+  limitToPageCheckbox.addEventListener("change", () => {
+    updatePageVideoCount();
   });
 }
 
@@ -141,6 +143,45 @@ function updateSliderVisuals() {
   const progress =
     (diversityFactorInput.value / diversityFactorInput.max) * 100;
   diversityFactorInput.style.setProperty("--progress", `${progress}%`);
+}
+
+// ====================== PAGE-LIMIT MODE ======================
+let pageVideoIds = [];
+
+/**
+ * Fetch video IDs currently visible on the page from the content script.
+ * Updates pageVideoIds and refreshes the count display.
+ */
+async function updatePageVideoIds() {
+  try {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    if (!tab) return;
+
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      action: "getPageVideoIds",
+    });
+    if (response?.videoIds) {
+      pageVideoIds = response.videoIds;
+      console.log(`[POPUP] 📄 Got ${pageVideoIds.length} video IDs from page`);
+      updatePageVideoCount();
+    }
+  } catch (err) {
+    console.log("[POPUP] ⚠️ Could not fetch page video IDs:", err.message);
+    pageVideoIds = [];
+    updatePageVideoCount();
+  }
+}
+
+function updatePageVideoCount() {
+  if (limitToPageCheckbox.checked) {
+    pageVideoCount.style.display = "block";
+    pageVideoCount.textContent = `Found ${pageVideoIds.length} videos on this page`;
+  } else {
+    pageVideoCount.style.display = "none";
+  }
 }
 
 // ====================== API CALLS ======================
@@ -170,37 +211,6 @@ async function performSmartSearch() {
   }
 }
 
-async function performQuickSearch() {
-  const query = queryInput.value.trim();
-  if (!query) {
-    showToast("Please enter a search query", "error");
-    return;
-  }
-  showLoading(true);
-  try {
-    const response = await chrome.runtime.sendMessage({
-      action: "quickSearch",
-      query,
-      options: {
-        topK: parseInt(topKInput.value) || 10,
-        searchType: searchTypeSelect.value,
-        diversityFactor: parseFloat(diversityFactorInput.value),
-      },
-    });
-    if (response.success) {
-      currentResults = response.results || [];
-      displayResults(currentResults, "Quick Search");
-      showToast(`Found ${currentResults.length} results`, "success");
-    } else {
-      showToast(response.error || "Quick search failed", "error");
-    }
-  } catch (err) {
-    showToast(`Quick search error: ${err.message}`, "error");
-  } finally {
-    showLoading(false);
-  }
-}
-
 async function performFindSimilar(videoId) {
   showLoading(true);
   try {
@@ -225,50 +235,10 @@ async function performFindSimilar(videoId) {
   }
 }
 
-async function checkServerStatus() {
-  showLoading(true);
-  try {
-    const response = await chrome.runtime.sendMessage({
-      action: "getServerStatus",
-    });
-    if (response.success) {
-      const status = response.syncState;
-      currentResults = [];
-      updateResultBadge(0);
-      resultsContainer.innerHTML = `
-        <div class="status-card">
-          <h4><i class="fas fa-server"></i> Server Status</h4>
-          <div class="status-row">
-            <span class="status-label">Status</span>
-            <span class="status-value ${status.isOnline ? "status-online" : "status-offline"}">
-              ${status.isOnline ? "● Online" : "○ Offline"}
-            </span>
-          </div>
-          <div class="status-row">
-            <span class="status-label">Pending Videos</span>
-            <span class="status-value">${status.pendingCount || 0}</span>
-          </div>
-          <div class="status-row">
-            <span class="status-label">Last Sync</span>
-            <span class="status-value">${status.lastSyncTime || "Never"}</span>
-          </div>
-        </div>
-      `;
-      showToast("Server status updated", "success");
-    } else {
-      showToast(response.error || "Failed to check server status", "error");
-    }
-  } catch (err) {
-    showToast(`Server status error: ${err.message}`, "error");
-  } finally {
-    showLoading(false);
-  }
-}
-
 // ====================== HELPERS ======================
 function buildSearchParams() {
   const episodeRange = getEpisodeRange();
-  return {
+  const params = {
     query: queryInput.value.trim(),
     topK: parseInt(topKInput.value) || 20,
     includeCodes: getSelectedOptions(includeCodesSelect),
@@ -280,6 +250,13 @@ function buildSearchParams() {
     maxPerCode: maxPerCodeInput.value ? parseInt(maxPerCodeInput.value) : null,
     searchType: searchTypeSelect.value,
   };
+
+  // Add limit_to_ids if toggle is enabled
+  if (limitToPageCheckbox.checked && pageVideoIds.length > 0) {
+    params.limitToIds = pageVideoIds;
+  }
+
+  return params;
 }
 
 function getSelectedOptions(selectElement) {
@@ -298,7 +275,6 @@ function getEpisodeRange() {
 // ====================== DISPLAY RESULTS ======================
 function displayResults(results, title) {
   updateResultBadge(results.length);
-
   if (!results.length) {
     resultsContainer.innerHTML = `
       <div class="empty-results">
@@ -309,8 +285,7 @@ function displayResults(results, title) {
     `;
     return;
   }
-
-  let html = "";
+  let html = '<div class="results-grid">';
   results.forEach((result, index) => {
     const metadata = result.metadata || {};
     const videoId = metadata.video_id || metadata.videoId || "N/A";
@@ -319,7 +294,6 @@ function displayResults(results, title) {
     const text = metadata.text || "No title";
     const score = result.score ? (result.score * 100).toFixed(0) : null;
     const thumbnail = getThumbnailUrl(metadata);
-
     html += `
       <div class="result-card" data-video-id="${escapeHtml(videoId)}" title="Click to copy ID: ${escapeHtml(videoId)}">
         <div class="result-thumbnail">
@@ -341,7 +315,7 @@ function displayResults(results, title) {
       </div>
     `;
   });
-
+  html += "</div>";
   resultsContainer.innerHTML = html;
 
   // Click handler: copy video ID

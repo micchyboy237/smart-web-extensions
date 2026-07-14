@@ -103,6 +103,63 @@ class ChromaVideoService:
             "metadata": result["metadatas"][0],
         }
 
+    def get_videos_by_ids(self, video_ids: list[str]) -> list[dict]:
+        """
+        Get multiple videos by their IDs in a single call.
+
+        Args:
+            video_ids: List of video IDs to fetch
+
+        Returns:
+            List of {id, document, metadata} dicts for found videos.
+            Missing IDs are silently skipped — check the returned list length.
+        """
+        if not video_ids:
+            logger.info(
+                "🔍 [ChromaService] get_videos_by_ids: empty list, returning []"
+            )
+            return []
+
+        # Deduplicate while preserving order
+        unique_ids = list(dict.fromkeys(video_ids))
+
+        logger.info(
+            f"🔍 [ChromaService] Fetching {len(unique_ids)} videos by ids: "
+            f"{unique_ids[:5]}{'...' if len(unique_ids) > 5 else ''}"
+        )
+        start_time = time.time()
+
+        result = self.collection.get(
+            ids=unique_ids,
+            include=["documents", "metadatas"],
+        )
+
+        videos = []
+        found_ids = set()
+        for i in range(len(result["ids"])):
+            vid = {
+                "id": result["ids"][i],
+                "document": result["documents"][i],
+                "metadata": result["metadatas"][i],
+            }
+            videos.append(vid)
+            found_ids.add(result["ids"][i])
+
+        # Log any missing IDs
+        missing = [vid for vid in unique_ids if vid not in found_ids]
+        if missing:
+            logger.warning(
+                f"⚠️ [ChromaService] {len(missing)} IDs not found: {missing[:10]}"
+                f"{'...' if len(missing) > 10 else ''}"
+            )
+
+        elapsed = (time.time() - start_time) * 1000
+        logger.info(
+            f"✅ [ChromaService] Found {len(videos)}/{len(unique_ids)} videos "
+            f"in {elapsed:.2f}ms"
+        )
+        return videos
+
     def get_videos(
         self,
         limit: Optional[int] = None,
@@ -409,6 +466,11 @@ def add_videos(videos: list[dict]) -> int:
 
 def get_video(video_id: str) -> Optional[dict]:
     return get_service().get_video(video_id)
+
+
+def get_videos_by_ids(video_ids: list[str]) -> list[dict]:
+    """Get multiple videos by their IDs. Returns only found videos."""
+    return get_service().get_videos_by_ids(video_ids)
 
 
 def get_videos(
