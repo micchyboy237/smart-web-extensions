@@ -8,6 +8,7 @@ from typing import Optional
 import numpy as np
 from chromadb import Documents, EmbeddingFunction, Embeddings, PersistentClient
 from chromadb.config import Settings
+from jet.adapters.llama_cpp import config as llm_config
 from jet.adapters.llama_cpp.embed_utils import embed
 
 try:
@@ -24,16 +25,23 @@ class LlamaCppEmbeddingFunction(EmbeddingFunction):
     """
     Chroma-compatible embedding function backed by the local llama.cpp
     embedding server (jet.adapters.llama_cpp.embed_utils.embed).
-    Reuses the existing batched/parallel embed() implementation instead
-    of letting Chroma download and run its own ONNX MiniLM model.
+
+    Used only for DOCUMENT embedding (add/upsert). Query embedding is
+    done separately in ChromaVideoService.search() so query vs. doc
+    prefixes can differ (see EMBED_QUERY_PREFIX / EMBED_DOC_PREFIX).
     """
 
     def __call__(self, input: Documents) -> Embeddings:
-        logger.info(f"🧠 [EmbeddingFn] Embedding {len(input)} texts via llama.cpp")
+        prefix = llm_config.EMBED_DOC_PREFIX or None
+        logger.info(
+            f"🧠 [EmbeddingFn] Embedding {len(input)} texts via llama.cpp "
+            f"(doc_prefix={prefix!r})"
+        )
         vectors = embed(
             list(input),
             return_format="list",
             show_progress=False,
+            prefix=prefix,
         )
         return vectors
 
@@ -259,10 +267,7 @@ class ChromaVideoService:
             List of {id, score, document, metadata} dicts
         """
         start_time = time.time()
-
-        # --- Build combined where filter ---
         combined_where = where
-
         if candidate_ids:
             id_filter = {"id": {"$in": candidate_ids}}
             if combined_where:
@@ -274,14 +279,24 @@ class ChromaVideoService:
                 f"candidate_ids={len(candidate_ids)}, top_k={top_k}"
             )
 
+        # NEW: embed the query ourselves with EMBED_QUERY_PREFIX, then pass
+        # query_embeddings so Chroma does NOT re-run the doc-prefixed
+        # embedding function on the raw query text.
+        query_prefix = llm_config.EMBED_QUERY_PREFIX or None
+        logger.info(f"🧠 [ChromaService] Embedding query with prefix={query_prefix!r}")
+        query_embedding = embed(
+            query,
+            return_format="list",
+            prefix=query_prefix,
+        )
+
         results = self.collection.query(
-            query_texts=[query],
+            query_embeddings=[query_embedding],  # was: query_texts=[query]
             n_results=top_k,
             where=combined_where,
             where_document=where_document,
             include=["documents", "metadatas", "distances"],
         )
-
         elapsed = (time.time() - start_time) * 1000
         logger.info(
             f"✅ [ChromaService] search completed in {elapsed:.2f}ms, "
