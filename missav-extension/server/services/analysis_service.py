@@ -371,3 +371,108 @@ def get_analysis_service() -> AnalysisService:
         logger.warning("⚠️ AnalysisService not initialized — creating with defaults")
         _analysis_instance = AnalysisService()
     return _analysis_instance
+
+
+# ── Module-level convenience functions ──────────────────────────────────
+
+
+def check_embedder() -> bool:
+    """
+    Verify embeddings are available via chroma_service.
+
+    Convenience wrapper — equivalent to get_analysis_service().check_embedder().
+    """
+    logger.info("🔍 [analysis_service] Module-level check_embedder() called")
+    result = get_analysis_service().check_embedder()
+    logger.info(f"✅ [analysis_service] Embedder check result: {result}")
+    return result
+
+
+def extract_topics(
+    video_ids: Optional[List[str]] = None,
+    min_topic_size: int = 3,
+    top_n_words: int = 10,
+    n_topics: Optional[int] = None,
+    n_representative_docs: Optional[int] = None,
+    **kwargs,
+) -> dict:
+    """
+    Extract topics from ChromaDB video embeddings.
+
+    Convenience wrapper — equivalent to get_analysis_service().extract_topics(...).
+    """
+    logger.info(
+        f"🔬 [analysis_service] Module-level extract_topics() called "
+        f"(video_ids={'provided' if video_ids else 'all'}, "
+        f"min_topic_size={min_topic_size}, top_n_words={top_n_words})"
+    )
+    service = get_analysis_service()
+    result = service.extract_topics(
+        video_ids=video_ids,
+        min_topic_size=min_topic_size,
+        top_n_words=top_n_words,
+        n_topics=n_topics,
+        n_representative_docs=n_representative_docs,
+        **kwargs,
+    )
+    topic_count = len(result.get("topics", []))
+    logger.info(f"✅ [analysis_service] Extracted {topic_count} topics")
+    return result
+
+
+def get_topic_documents(topic_id: int) -> List[dict]:
+    """
+    Get actual video documents assigned to a topic.
+
+    Convenience wrapper — equivalent to get_analysis_service().get_topic_documents(topic_id).
+    Only works after extract_topics() has been called in the same session.
+    """
+    logger.info(
+        f"📋 [analysis_service] Module-level get_topic_documents(topic_id={topic_id})"
+    )
+    service = get_analysis_service()
+    result = service.get_topic_documents(topic_id)
+    logger.info(
+        f"✅ [analysis_service] Found {len(result)} documents for topic {topic_id}"
+    )
+    return result
+
+
+def get_video_topic_map() -> Dict[str, int]:
+    """
+    Get the current video_id → topic_id mapping.
+
+    Only populated after extract_topics() has been called.
+    Returns a copy to prevent accidental mutation.
+    """
+    service = get_analysis_service()
+    mapping = dict(service._video_topic_map)
+    logger.debug(
+        f"🗺️ [analysis_service] get_video_topic_map: {len(mapping)} entries, "
+        f"{len(set(mapping.values()))} unique topics"
+    )
+    return mapping
+
+
+def get_topic_count() -> int:
+    """
+    Get the number of unique topics in the current session mapping.
+
+    Returns 0 if extract_topics() hasn't been called yet.
+    """
+    service = get_analysis_service()
+    count = len(set(service._video_topic_map.values()))
+    logger.info(f"📊 [analysis_service] Current topic count: {count}")
+    return count
+
+
+def reset_topics() -> None:
+    """
+    Clear the current topic mapping (resets session state).
+
+    Useful for re-running extraction with different parameters.
+    """
+    logger.info("🔄 [analysis_service] Resetting topic mapping")
+    service = get_analysis_service()
+    service._video_topic_map.clear()
+    logger.info("✅ [analysis_service] Topic mapping cleared")

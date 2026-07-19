@@ -7,9 +7,9 @@ from config import init_config
 
 init_config()
 
-import chroma_service
 from jet.adapters.llama_cpp.hybrid_utils import hybrid_search_with_keywords
 from rich.console import Console
+from services import chroma_service
 
 console = Console()
 
@@ -50,6 +50,12 @@ parser.add_argument(
     default=10,
     help="Number of final results to return (default: 10)",
 )
+parser.add_argument(
+    "--threshold",
+    type=float,
+    default=0.7,
+    help="Score threshold for initial semantic search (default: 0.7)",
+)
 args = parser.parse_args()
 
 query = args.query
@@ -60,6 +66,7 @@ embed_candidates = args.embed_candidates
 top_k = args.top_k
 where = None
 where_document = None
+score_threshold = args.threshold
 
 console.print(f"🔍 [Step 1/4] Semantic search for initial candidates: '{query}'")
 search_results = chroma_service.search(
@@ -67,6 +74,7 @@ search_results = chroma_service.search(
     top_k=embed_candidates,
     where=where,
     where_document=where_document,
+    score_threshold=score_threshold,
 )
 console.print(f"   Retrieved {len(search_results)} candidates")
 

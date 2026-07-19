@@ -6,9 +6,9 @@ from pathlib import Path
 from config import init_config
 
 init_config()
-import chroma_service
 from jet.adapters.llama_cpp.rerank_utils import rerank
 from rich.console import Console
+from services import chroma_service
 
 console = Console()
 
@@ -30,6 +30,12 @@ parser.add_argument(
     default=10,
     help="Number of final results after reranking (default: 10)",
 )
+parser.add_argument(
+    "--threshold",
+    type=float,
+    default=0.7,
+    help="Score threshold for initial semantic search (default: 0.7)",
+)
 args = parser.parse_args()
 
 query = args.query
@@ -37,6 +43,7 @@ candidates_count = args.candidates
 final_top_k = args.top_k
 where = None
 where_document = None
+score_threshold = args.threshold
 
 # Step 1: Get candidates from ChromaDB semantic search
 console.print(f"🔍 [Step 1/2] Semantic search for candidates: '{query}'")
@@ -45,6 +52,7 @@ search_results = chroma_service.search(
     top_k=candidates_count,
     where=where,
     where_document=where_document,
+    score_threshold=score_threshold,
 )
 console.print(f"   Retrieved {len(search_results)} candidates")
 

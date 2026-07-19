@@ -6,10 +6,10 @@ from pathlib import Path
 from config import init_config
 
 init_config()
-import chroma_service
 from jet.adapters.llama_cpp.ensemble_utils import ensemble_search
 from jet.transformers.object import make_serializable
 from rich.console import Console
+from services import chroma_service
 
 console = Console()
 
@@ -20,6 +20,24 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 parser = argparse.ArgumentParser(description="Ensemble search with ChromaService.")
 parser.add_argument("query", type=str, help="Search query (e.g. 'amazing videos')")
 parser.add_argument(
+    "--top-k",
+    type=int,
+    default=10,
+    help="Number of final ensemble results to return (default: 10)",
+)
+parser.add_argument(
+    "--candidates",
+    type=int,
+    default=100,
+    help="Number of initial semantic candidates (default: 100)",
+)
+parser.add_argument(
+    "--threshold",
+    type=float,
+    default=0.7,
+    help="Score threshold for initial semantic search (default: 0.7)",
+)
+parser.add_argument(
     "--weights",
     type=str,
     default=None,
@@ -28,11 +46,12 @@ parser.add_argument(
 args = parser.parse_args()
 
 query = args.query
-top_k = 100
+top_k = args.top_k
+candidates_count = args.candidates
 where = None
 where_document = None
+score_threshold = args.threshold
 
-# Parse weights if provided
 weights = None
 if args.weights:
     import json as json_module
@@ -40,43 +59,48 @@ if args.weights:
     weights = json_module.loads(args.weights)
     console.print(f"⚖️  Using custom weights: {weights}")
 
-# Step 1: Get initial candidates from ChromaDB semantic search
-console.print(f"🔍 [Step 1/3] Semantic search for query: '{query}'")
+console.print(
+    f"🔍 [Step 1/3] Semantic search for candidates: '{query}' "
+    f"(candidates={candidates_count}, threshold={score_threshold})"
+)
+
 search_results = chroma_service.search(
     query=query,
-    top_k=top_k,
+    top_k=candidates_count,
     where=where,
     where_document=where_document,
+    score_threshold=score_threshold,
 )
+
 console.print(f"   Retrieved {len(search_results)} candidates")
 
-# Step 2: Extract documents and try to get pre-computed embeddings
 docs = [item["metadata"]["text"] for item in search_results]
 doc_ids = [item["id"] for item in search_results]
 
-# Try to reuse embeddings from ChromaDB
+console.print("📊 [Step 2/3] Fetching stored embeddings from ChromaDB")
 doc_embs = chroma_service.get_embeddings(doc_ids)
+
 if doc_embs is not None:
     doc_embs_list = doc_embs.tolist()
-    console.print(
-        f"🔁 [Step 2/3] Reusing {len(doc_embs_list)} embeddings from ChromaDB"
-    )
+    console.print(f"   Reusing {len(doc_embs_list)} embeddings from ChromaDB")
 else:
     doc_embs_list = None
-    console.print("⚠️  [Step 2/3] No stored embeddings found, will compute fresh")
+    console.print("   ⚠️  No stored embeddings found, will compute fresh")
 
-# Step 3: Run ensemble search with all signals
-console.print("🧬 [Step 3/3] Running ensemble search (embedding + keyword + reranker)")
+ensemble_top_k = min(top_k, len(docs))
+console.print(
+    f"🧬 [Step 3/3] Running ensemble search (embedding + keyword + reranker, top_k={ensemble_top_k})"
+)
+
 ensemble_results = ensemble_search(
     query=query,
     documents=docs,
-    top_k=min(10, len(docs)),
+    top_k=ensemble_top_k,
     return_details=True,
     weights=weights,
     doc_embeddings=doc_embs_list,
 )
 
-# Format results
 formatted_results = []
 for rank, er in enumerate(ensemble_results, start=1):
     original_item = search_results[er["index"]]
@@ -91,13 +115,12 @@ for rank, er in enumerate(ensemble_results, start=1):
             "episode": metadata.get("episode", ""),
             "url": metadata.get("url", ""),
             "document": er["document"],
-            "original_rank": er["index"] + 1,  # +1 because ranks start at 1
+            "original_rank": er["index"] + 1,
             "original_semantic_score": original_item["score"],
             "signals": er.get("signals", {}),
         }
     )
 
-# Save outputs with clickable file links
 docs_file = OUTPUT_DIR / "candidates.json"
 with open(docs_file, "w", encoding="utf-8") as f:
     json.dump(docs, f, indent=2, ensure_ascii=False)
@@ -119,7 +142,6 @@ console.print(
     f"💾 Saved ensemble results to: [bold bright_blue][link=file://{ensemble_results_file.resolve()}]{ensemble_results_file.name}[/link][/bold bright_blue]"
 )
 
-# Summary
 console.print("\n✅ Ensemble search complete!")
 console.print(f"   Top {len(ensemble_results)} results with signal breakdown:")
 for result in formatted_results[:5]:

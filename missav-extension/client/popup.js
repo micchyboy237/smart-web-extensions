@@ -28,6 +28,7 @@ let availableCodes = new Set();
 let currentTheme = "light";
 let currentResults = [];
 let toastTimer = null;
+let defaultSimilarId = null; // Auto-detected video ID for prompt()
 
 // ====================== INITIALIZATION ======================
 document.addEventListener("DOMContentLoaded", async () => {
@@ -37,6 +38,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
   updateSliderVisuals();
   await updatePageVideoIds();
+  await detectDefaultSimilarId();
 });
 
 // ====================== THEME ======================
@@ -126,7 +128,8 @@ function setupEventListeners() {
   });
   smartSearchBtn.addEventListener("click", () => performSmartSearch());
   findSimilarBtn.addEventListener("click", () => {
-    const videoId = prompt("Enter Video ID to find similar videos:");
+    const defaultId = defaultSimilarId || "";
+    const videoId = prompt("Enter Video ID to find similar videos:", defaultId);
     if (videoId) performFindSimilar(videoId);
   });
   copyAllIds.addEventListener("click", copyAllVideoIds);
@@ -181,6 +184,34 @@ function updatePageVideoCount() {
     pageVideoCount.textContent = `Found ${pageVideoIds.length} videos on this page`;
   } else {
     pageVideoCount.style.display = "none";
+  }
+}
+
+async function detectDefaultSimilarId() {
+  console.log("[POPUP] 🔍 Detecting default similar video ID...");
+  try {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    if (!tab || !tab.url) {
+      console.log("[POPUP] ⚠️ No active tab URL found");
+      return;
+    }
+
+    // Uses the shared function from utils.js — returns the DB hashed ID
+    const dbId = detectDbIdFromUrl(tab.url);
+
+    if (dbId) {
+      defaultSimilarId = dbId;
+      console.log(`[POPUP] 🎯 Default similar DB ID set: "${dbId}"`);
+    } else {
+      defaultSimilarId = null;
+      console.log("[POPUP] ⚠️ No DB ID detected on current page");
+    }
+  } catch (err) {
+    console.log("[POPUP] ⚠️ Could not detect video ID:", err.message);
+    defaultSimilarId = null;
   }
 }
 

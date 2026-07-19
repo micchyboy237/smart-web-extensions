@@ -6,10 +6,9 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from chromadb import Documents, EmbeddingFunction, Embeddings, PersistentClient
-from chromadb.config import Settings
 from jet.adapters.llama_cpp import config as llm_config
 from jet.adapters.llama_cpp.embed_utils import embed
+from repositories.chroma_repository import ChromaVideoRepository
 
 try:
     from app.config import PERSIST_DIR
@@ -19,31 +18,6 @@ except ImportError:
     )
 
 logger = logging.getLogger(__name__)
-
-
-class LlamaCppEmbeddingFunction(EmbeddingFunction):
-    """
-    Chroma-compatible embedding function backed by the local llama.cpp
-    embedding server (jet.adapters.llama_cpp.embed_utils.embed).
-
-    Used only for DOCUMENT embedding (add/upsert). Query embedding is
-    done separately in ChromaVideoService.search() so query vs. doc
-    prefixes can differ (see EMBED_QUERY_PREFIX / EMBED_DOC_PREFIX).
-    """
-
-    def __call__(self, input: Documents) -> Embeddings:
-        prefix = llm_config.EMBED_DOC_PREFIX or None
-        logger.info(
-            f"🧠 [EmbeddingFn] Embedding {len(input)} texts via llama.cpp "
-            f"(doc_prefix={prefix!r})"
-        )
-        vectors = embed(
-            list(input),
-            return_format="list",
-            show_progress=False,
-            prefix=prefix,
-        )
-        return vectors
 
 
 class ChromaVideoService:
@@ -58,49 +32,28 @@ class ChromaVideoService:
         persist_directory: str = PERSIST_DIR,
         collection_name: str = "missav_videos",
     ):
-        """Initialize ChromaDB with PERSISTENT storage."""
-        # ✅ Use PersistentClient with 'path' parameter for disk storage
-        self.client = PersistentClient(
-            path=persist_directory,
-            settings=Settings(
-                anonymized_telemetry=False,
-            ),
+        """Initialize the service on top of the ChromaDB repository."""
+        self.repository = ChromaVideoRepository(
+            persist_directory=persist_directory,
+            collection_name=collection_name,
         )
-
-        logger.info(f"💾 [ChromaService] Persistent storage at: {persist_directory}")
-
-        self.embedding_function = LlamaCppEmbeddingFunction()
-
-        try:
-            self.collection = self.client.get_collection(
-                collection_name,
-                embedding_function=self.embedding_function,
-            )
-            logger.info(f"✅ Loaded existing collection: {collection_name}")
-        except Exception:
-            self.collection = self.client.create_collection(
-                name=collection_name,
-                metadata={"hnsw:space": "cosine"},
-                embedding_function=self.embedding_function,
-            )
-            logger.info(f"🆕 Created new collection: {collection_name}")
-
         self.collection_name = collection_name
+        logger.info(
+            f"🧩 [ChromaService] Ready (collection={collection_name}, "
+            f"dir={persist_directory})"
+        )
 
     def get_video(self, video_id: str) -> Optional[dict]:
         """Get a single video document + metadata by ID."""
         logger.info(f"🔍 [ChromaService] Fetching video by id: {video_id}")
-        result = self.collection.get(
-            ids=[video_id],
-            include=["documents", "metadatas"],
-        )
-        if not result["ids"]:
+        record = self.repository.get_by_id(video_id)
+        if record is None:
             logger.warning(f"⚠️ [ChromaService] No video found for id: {video_id}")
             return None
         return {
-            "id": result["ids"][0],
-            "document": result["documents"][0],
-            "metadata": result["metadatas"][0],
+            "id": record.id,
+            "document": record.document,
+            "metadata": record.metadata,
         }
 
     def get_videos_by_ids(self, video_ids: list[str]) -> list[dict]:
@@ -128,22 +81,12 @@ class ChromaVideoService:
             f"{unique_ids[:5]}{'...' if len(unique_ids) > 5 else ''}"
         )
         start_time = time.time()
-
-        result = self.collection.get(
-            ids=unique_ids,
-            include=["documents", "metadatas"],
-        )
-
-        videos = []
-        found_ids = set()
-        for i in range(len(result["ids"])):
-            vid = {
-                "id": result["ids"][i],
-                "document": result["documents"][i],
-                "metadata": result["metadatas"][i],
-            }
-            videos.append(vid)
-            found_ids.add(result["ids"][i])
+        page = self.repository.get_by_ids(unique_ids)
+        videos = [
+            {"id": r.id, "document": r.document, "metadata": r.metadata}
+            for r in page.records
+        ]
+        found_ids = {r.id for r in page.records}
 
         # Log any missing IDs
         missing = [vid for vid in unique_ids if vid not in found_ids]
@@ -195,44 +138,17 @@ class ChromaVideoService:
         if limit is not None:
             limit = min(limit, 1000)
 
-        try:
-            # ChromaDB returns ALL items when you don't specify IDs
-            result = self.collection.get(
-                where=where,
-                include=["documents", "metadatas"],
-            )
-        except Exception as e:
-            logger.error(f"❌ [ChromaService] Failed to get videos: {e}")
-            return {
-                "videos": [],
-                "total": 0,
-                "limit": limit if limit is not None else 0,
-                "offset": offset,
-            }
-
-        total = len(result["ids"])
-
-        # Apply pagination via slicing
+        page = self.repository.get_all(where=where)
+        total = page.total
         if limit is not None:
             slice_end = offset + limit
-            ids_slice = result["ids"][offset:slice_end]
-            docs_slice = result["documents"][offset:slice_end]
-            metas_slice = result["metadatas"][offset:slice_end]
+            records_slice = page.records[offset:slice_end]
         else:
-            # Return all results from offset onwards
-            ids_slice = result["ids"][offset:]
-            docs_slice = result["documents"][offset:]
-            metas_slice = result["metadatas"][offset:]
-
-        videos = []
-        for i in range(len(ids_slice)):
-            videos.append(
-                {
-                    "id": ids_slice[i],
-                    "document": docs_slice[i],
-                    "metadata": metas_slice[i],
-                }
-            )
+            records_slice = page.records[offset:]
+        videos = [
+            {"id": r.id, "document": r.document, "metadata": r.metadata}
+            for r in records_slice
+        ]
 
         elapsed = (time.time() - start_time) * 1000
         actual_limit = limit if limit is not None else len(videos)
@@ -288,11 +204,7 @@ class ChromaVideoService:
             return 0
         # Always upsert (insert new, update existing)
         try:
-            self.collection.upsert(
-                ids=ids,
-                documents=documents,
-                metadatas=metadatas,
-            )
+            self.repository.upsert(ids=ids, documents=documents, metadatas=metadatas)
             elapsed = (time.time() - start_time) * 1000
             logger.info(f"Upserted {len(ids)} videos in {elapsed:.2f}ms")
         except Exception as e:
@@ -306,39 +218,21 @@ class ChromaVideoService:
         top_k: int = 20,
         where: Optional[dict] = None,
         where_document: Optional[dict] = None,
-        candidate_ids: Optional[list[str]] = None,
     ) -> list[dict]:
         """
-        Semantic search with optional metadata filtering and ID restriction.
+        Semantic search with optional metadata filtering.
 
         Args:
             query: Search query
             top_k: Number of results
             where: Metadata filter (ChromaDB where clause)
             where_document: Document content filter
-            candidate_ids: Optional whitelist of video IDs to search within.
-                        When provided, only these IDs are considered.
-                        Used for "limit to page" mode.
 
         Returns:
             List of {id, score, document, metadata} dicts
         """
         start_time = time.time()
-        combined_where = where
-        if candidate_ids:
-            id_filter = {"id": {"$in": candidate_ids}}
-            if combined_where:
-                combined_where = {"$and": [id_filter, combined_where]}
-            else:
-                combined_where = id_filter
-            logger.info(
-                f"🔍 [ChromaService] search: query='{query[:80]}', "
-                f"candidate_ids={len(candidate_ids)}, top_k={top_k}"
-            )
 
-        # NEW: embed the query ourselves with EMBED_QUERY_PREFIX, then pass
-        # query_embeddings so Chroma does NOT re-run the doc-prefixed
-        # embedding function on the raw query text.
         query_prefix = llm_config.EMBED_QUERY_PREFIX or None
         logger.info(f"🧠 [ChromaService] Embedding query with prefix={query_prefix!r}")
         query_embedding = embed(
@@ -347,56 +241,45 @@ class ChromaVideoService:
             prefix=query_prefix,
         )
 
-        results = self.collection.query(
-            query_embeddings=[query_embedding],  # was: query_texts=[query]
+        query_result = self.repository.query_by_embedding(
+            query_embedding=query_embedding,
             n_results=top_k,
-            where=combined_where,
+            where=where,
             where_document=where_document,
-            include=["documents", "metadatas", "distances"],
         )
         elapsed = (time.time() - start_time) * 1000
         logger.info(
             f"✅ [ChromaService] search completed in {elapsed:.2f}ms, "
-            f"returned {len(results['ids'][0])} results"
+            f"returned {len(query_result.matches)} results"
         )
-
         formatted = []
-        for i in range(len(results["ids"][0])):
-            distance = results["distances"][0][i]
-            similarity = 1 - (distance / 2)
+        for match in query_result.matches:
+            similarity = 1 - (match.distance / 2)
             formatted.append(
                 {
-                    "id": results["ids"][0][i],
+                    "id": match.id,
                     "score": float(similarity),
-                    "document": results["documents"][0][i],
-                    "metadata": results["metadatas"][0][i],
+                    "document": match.document,
+                    "metadata": match.metadata,
                 }
             )
-
         return formatted
 
     def get_embeddings(self, ids: list[str]) -> Optional[np.ndarray]:
         """Get embeddings for specific video IDs."""
-        try:
-            result = self.collection.get(
-                ids=ids,
-                include=["embeddings"],
-            )
-            if result["embeddings"] is not None and len(result["embeddings"]) > 0:
-                return np.array(result["embeddings"])
-        except Exception as e:
-            logger.warning(f"Failed to get embeddings: {e}")
-        return None
+        result = self.repository.get_embeddings(ids)
+        if result.is_empty:
+            return None
+        return result.vectors
 
     def get_count(self) -> int:
         """Get total number of videos in collection."""
-        return self.collection.count()
+        return self.repository.count()
 
     def delete_videos(self, ids: list[str]) -> None:
         """Delete videos by ID."""
         if ids:
-            self.collection.delete(ids=ids)
-            logger.info(f"Deleted {len(ids)} videos")
+            self.repository.delete(ids)
 
     def _create_document_text(self, video: dict) -> str:
         """Create searchable text from video metadata."""
@@ -452,8 +335,45 @@ def search(
     where: Optional[dict] = None,
     where_document: Optional[dict] = None,
     candidate_ids: Optional[list[str]] = None,
+    score_threshold: Optional[float] = None,
 ) -> list[dict]:
-    return get_service().search(query, top_k, where, where_document, candidate_ids)
+    """
+    Semantic search with optional ID restriction and score filtering.
+
+    Args:
+        query: Search query
+        top_k: Number of results
+        where: Metadata filter (ChromaDB where clause)
+        where_document: Document content filter
+        candidate_ids: Optional whitelist of video IDs to search within.
+                       When provided, only these IDs are considered.
+                       Used for "limit to page" mode.
+        score_threshold: If set, drop results with similarity below this
+                         value. Applied after the query, so may return
+                         fewer than top_k.
+    """
+    combined_where = where
+    if candidate_ids:
+        id_filter = {"id": {"$in": candidate_ids}}
+        combined_where = (
+            {"$and": [id_filter, combined_where]} if combined_where else id_filter
+        )
+        logger.info(
+            f"🔍 [chroma_service] search: query='{query[:80]}', "
+            f"candidate_ids={len(candidate_ids)}, top_k={top_k}"
+        )
+
+    results = get_service().search(query, top_k, combined_where, where_document)
+
+    if score_threshold is not None:
+        before = len(results)
+        results = [r for r in results if r["score"] >= score_threshold]
+        logger.info(
+            f"🎯 [chroma_service] score_threshold={score_threshold} kept "
+            f"{len(results)}/{before} results"
+        )
+
+    return results
 
 
 def get_embeddings(ids: list[str]) -> Optional[np.ndarray]:

@@ -1,13 +1,7 @@
-// Jet_Apps/web-extensions/smart-web-extensions/missav-extension/manifest.json
-// server-client.js is no longer loaded into the content script — it's
-// imported by service-worker.js instead, so all server calls run in the
-// extension's own origin (chrome-extension://<id>) rather than the page's
-// origin (https://missav.ws). This is required for Chrome's Local Network
-// Access permission to be grantable to the extension itself.
 {
   "manifest_version": 4,
   "name": "MissAV Quick Viewer",
-  "version": "1.11",
+  "version": "1.12",
   "description": "Smart search and filter videos with AI-powered recommendations",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["http://192.168.68.30:8000/*"],
@@ -17,7 +11,7 @@
   "content_scripts": [
     {
       "matches": ["https://missav.ws/*"],
-      "js": ["db.js", "content.js"],
+      "js": ["utils.js", "db.js", "content.js"],
       "run_at": "document_end"
     }
   ],
