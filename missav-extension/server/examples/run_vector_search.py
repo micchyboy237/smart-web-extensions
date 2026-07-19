@@ -87,8 +87,8 @@ with open(search_results_file, "w", encoding="utf-8") as f:
 console.print(
     f"💾 Saved results to: [bold bright_blue][link=file://{search_results_file.resolve()}]{search_results_file.name}[/link][/bold bright_blue]"
 )
-console.print(f"\n✅ Vector search complete! Top {len(formatted_results[:5])} results:")
-for result in formatted_results[:5]:
+console.print(f"\n✅ Vector search complete! Top {len(search_results)} results:")
+for result in formatted_results[:top_k]:
     console.print(
         f"   #{result['rank']} [score:{result['score']:.4f}] {result['text'][:80]}..."
     )
