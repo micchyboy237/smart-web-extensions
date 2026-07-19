@@ -72,12 +72,7 @@ for rank, rr in enumerate(rerank_results, start=1):
         {
             "rank": rank,
             "score": rr["score"],
-            "id": original_item["id"],
-            "video_id": metadata.get("video_id", ""),
-            "code": metadata.get("code", ""),
-            "episode": metadata.get("episode", ""),
-            "url": metadata.get("url", ""),
-            "document": rr["text"],
+            **metadata,
             "original_rank": rr["index"] + 1,  # +1 because ranks start at 1
             "original_semantic_score": original_item["score"],
         }
@@ -112,5 +107,5 @@ for result in formatted_results[:5]:
     console.print(
         f"   #{result['rank']} [rerank:{result['score']:.4f}] "
         f"[semantic:{result['original_semantic_score']:.4f}] "
-        f"{result['document'][:80]}..."
+        f"{result['text'][:80]}..."
     )
