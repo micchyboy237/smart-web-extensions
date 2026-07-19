@@ -20,8 +20,8 @@ parser.add_argument("query", type=str, help="Search query (e.g. 'amazing videos'
 parser.add_argument(
     "--top-k",
     type=int,
-    default=100,
-    help="Number of results to return (default: 100)",
+    default=5,
+    help="Number of results to return (default: 5)",
 )
 parser.add_argument(
     "--threshold",
