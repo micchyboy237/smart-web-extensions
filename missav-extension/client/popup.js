@@ -11,8 +11,10 @@ const diversityFactorInput = document.getElementById("diversityFactor");
 const diversityValueSpan = document.getElementById("diversityValue");
 const maxPerCodeInput = document.getElementById("maxPerCode");
 const searchTypeSelect = document.getElementById("searchType");
+const autoShuffleCheckbox = document.getElementById("autoShuffle");
 const smartSearchBtn = document.getElementById("smartSearchBtn");
 const findSimilarBtn = document.getElementById("findSimilarBtn");
+const refreshResultsBtn = document.getElementById("refreshResults");
 const resultsContainer = document.getElementById("resultsContainer");
 const loadingOverlay = document.getElementById("loadingOverlay");
 const toast = document.getElementById("toast");
@@ -29,10 +31,27 @@ let currentTheme = "light";
 let currentResults = [];
 let toastTimer = null;
 let defaultSimilarId = null; // Auto-detected video ID for prompt()
+let favorites = new Set(); // Client-side favorites (stored in chrome.storage.local)
+let lastSearchParams = null; // Cache for refresh button
+let hoverPreviewTimers = new Map(); // Track preview video timers per card
+
+// ====================== DIVERSITY MAPPING ======================
+/**
+ * Maps the 0-1 slider value to server's diversity enum.
+ *   0.0 - 0.2  → "low"
+ *   0.3 - 0.7  → "medium"
+ *   0.8 - 1.0  → "high"
+ */
+function sliderToDiversityEnum(value) {
+  if (value <= 0.2) return "low";
+  if (value <= 0.7) return "medium";
+  return "high";
+}
 
 // ====================== INITIALIZATION ======================
 document.addEventListener("DOMContentLoaded", async () => {
   await loadTheme();
+  await loadFavorites();
   await loadAvailableCodes();
   queryInput.focus();
   setupEventListeners();
@@ -48,7 +67,6 @@ async function loadTheme() {
   document.documentElement.setAttribute("data-theme", currentTheme);
   updateThemeIcon();
 }
-
 function toggleTheme() {
   currentTheme = currentTheme === "light" ? "dark" : "light";
   document.documentElement.setAttribute("data-theme", currentTheme);
@@ -59,10 +77,53 @@ function toggleTheme() {
     "success",
   );
 }
-
 function updateThemeIcon() {
   const icon = themeToggle.querySelector("i");
   icon.className = currentTheme === "light" ? "fas fa-moon" : "fas fa-sun";
+}
+
+// ====================== FAVORITES (Client-Side) ======================
+async function loadFavorites() {
+  try {
+    const { favIds } = await chrome.storage.local.get("favIds");
+    favorites = new Set(favIds || []);
+    console.log(`[POPUP] ⭐ Loaded ${favorites.size} favorites`);
+  } catch (err) {
+    console.error("[POPUP] Failed to load favorites:", err);
+    favorites = new Set();
+  }
+}
+async function saveFavorites() {
+  try {
+    await chrome.storage.local.set({ favIds: Array.from(favorites) });
+    console.log(`[POPUP] ⭐ Saved ${favorites.size} favorites`);
+  } catch (err) {
+    console.error("[POPUP] Failed to save favorites:", err);
+  }
+}
+function toggleFavorite(videoId) {
+  if (favorites.has(videoId)) {
+    favorites.delete(videoId);
+  } else {
+    favorites.add(videoId);
+  }
+  saveFavorites();
+  // Update heart icon in the DOM
+  const card = document.querySelector(
+    `.result-card[data-video-id="${CSS.escape(videoId)}"]`,
+  );
+  if (card) {
+    const favBtn = card.querySelector(".fav-btn");
+    if (favBtn) {
+      favBtn.classList.toggle("active", favorites.has(videoId));
+      favBtn.querySelector("i").className = favorites.has(videoId)
+        ? "fas fa-heart"
+        : "far fa-heart";
+    }
+  }
+  console.log(
+    `[POPUP] ⭐ Favorite toggled: ${videoId} → ${favorites.has(videoId)}`,
+  );
 }
 
 // ====================== LOAD DATA ======================
@@ -85,7 +146,6 @@ async function loadAvailableCodes() {
     showLoading(false);
   }
 }
-
 function populateCodeSelects() {
   const sortedCodes = Array.from(availableCodes).sort();
   [includeCodesSelect, excludeCodesSelect].forEach((select) => {
@@ -104,7 +164,6 @@ function populateCodeSelects() {
     filterOptions(excludeCodesSelect, excludeCodesFilter.value),
   );
 }
-
 function filterOptions(selectElement, filterText) {
   const options = selectElement.options;
   for (let i = 0; i < options.length; i++) {
@@ -132,6 +191,7 @@ function setupEventListeners() {
     const videoId = prompt("Enter Video ID to find similar videos:", defaultId);
     if (videoId) performFindSimilar(videoId);
   });
+  refreshResultsBtn.addEventListener("click", () => refreshLastSearch());
   copyAllIds.addEventListener("click", copyAllVideoIds);
   queryInput.addEventListener("keypress", (e) => {
     if (e.key === "Enter") performSmartSearch();
@@ -150,11 +210,6 @@ function updateSliderVisuals() {
 
 // ====================== PAGE-LIMIT MODE ======================
 let pageVideoIds = [];
-
-/**
- * Fetch video IDs currently visible on the page from the content script.
- * Updates pageVideoIds and refreshes the count display.
- */
 async function updatePageVideoIds() {
   try {
     const [tab] = await chrome.tabs.query({
@@ -162,7 +217,6 @@ async function updatePageVideoIds() {
       currentWindow: true,
     });
     if (!tab) return;
-
     const response = await chrome.tabs.sendMessage(tab.id, {
       action: "getPageVideoIds",
     });
@@ -177,7 +231,6 @@ async function updatePageVideoIds() {
     updatePageVideoCount();
   }
 }
-
 function updatePageVideoCount() {
   if (limitToPageCheckbox.checked) {
     pageVideoCount.style.display = "block";
@@ -186,7 +239,6 @@ function updatePageVideoCount() {
     pageVideoCount.style.display = "none";
   }
 }
-
 async function detectDefaultSimilarId() {
   console.log("[POPUP] 🔍 Detecting default similar video ID...");
   try {
@@ -198,10 +250,7 @@ async function detectDefaultSimilarId() {
       console.log("[POPUP] ⚠️ No active tab URL found");
       return;
     }
-
-    // Uses the shared function from utils.js — returns the DB hashed ID
     const dbId = detectDbIdFromUrl(tab.url);
-
     if (dbId) {
       defaultSimilarId = dbId;
       console.log(`[POPUP] 🎯 Default similar DB ID set: "${dbId}"`);
@@ -222,26 +271,9 @@ async function performSmartSearch() {
     showToast("Please enter a search query", "error");
     return;
   }
-  showLoading(true);
-  try {
-    const response = await chrome.runtime.sendMessage({
-      action: "smartSearch",
-      params,
-    });
-    if (response.success) {
-      currentResults = response.results || [];
-      displayResults(currentResults, "Smart Search");
-      showToast(`Found ${currentResults.length} results`, "success");
-    } else {
-      showToast(response.error || "Smart search failed", "error");
-    }
-  } catch (err) {
-    showToast(`Smart search error: ${err.message}`, "error");
-  } finally {
-    showLoading(false);
-  }
+  lastSearchParams = params; // Cache for refresh
+  await executeSearch(params, "Smart Search");
 }
-
 async function performFindSimilar(videoId) {
   showLoading(true);
   try {
@@ -265,10 +297,44 @@ async function performFindSimilar(videoId) {
     showLoading(false);
   }
 }
+async function refreshLastSearch() {
+  if (!lastSearchParams) {
+    showToast("No previous search to refresh", "error");
+    return;
+  }
+  console.log("[POPUP] 🔄 Refreshing last search with auto_shuffle...");
+  // Force auto_shuffle on refresh for fresh ordering
+  const refreshParams = { ...lastSearchParams, autoShuffle: true };
+  await executeSearch(refreshParams, "Smart Search (refreshed)");
+}
+async function executeSearch(params, label) {
+  showLoading(true);
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: "smartSearch",
+      params,
+    });
+    if (response.success) {
+      currentResults = response.results || [];
+      displayResults(currentResults, label);
+      const seedInfo = response.shuffle_seed
+        ? ` (seed: ${response.shuffle_seed})`
+        : "";
+      showToast(`Found ${currentResults.length} results${seedInfo}`, "success");
+    } else {
+      showToast(response.error || "Smart search failed", "error");
+    }
+  } catch (err) {
+    showToast(`Smart search error: ${err.message}`, "error");
+  } finally {
+    showLoading(false);
+  }
+}
 
 // ====================== HELPERS ======================
 function buildSearchParams() {
   const episodeRange = getEpisodeRange();
+  const diversityValue = parseFloat(diversityFactorInput.value);
   const params = {
     query: queryInput.value.trim(),
     topK: parseInt(topKInput.value) || 20,
@@ -277,23 +343,23 @@ function buildSearchParams() {
     includeEpisodes: [],
     episodeRange: episodeRange,
     excludeIds: [],
-    diversityFactor: parseFloat(diversityFactorInput.value),
+    // NEW: diversity is now a string enum ("low"/"medium"/"high")
+    diversity: sliderToDiversityEnum(diversityValue),
     maxPerCode: maxPerCodeInput.value ? parseInt(maxPerCodeInput.value) : null,
     searchType: searchTypeSelect.value,
+    // NEW: auto_shuffle flag
+    autoShuffle: autoShuffleCheckbox.checked,
   };
-
   // Add limit_to_ids if toggle is enabled
   if (limitToPageCheckbox.checked && pageVideoIds.length > 0) {
     params.limitToIds = pageVideoIds;
   }
-
+  console.log("[POPUP] 📦 Search params:", params);
   return params;
 }
-
 function getSelectedOptions(selectElement) {
   return Array.from(selectElement.selectedOptions).map((opt) => opt.value);
 }
-
 function getEpisodeRange() {
   const min = episodeMinInput.value ? parseInt(episodeMinInput.value) : null;
   const max = episodeMaxInput.value ? parseInt(episodeMaxInput.value) : null;
@@ -305,6 +371,10 @@ function getEpisodeRange() {
 
 // ====================== DISPLAY RESULTS ======================
 function displayResults(results, title) {
+  // Clean up any lingering preview timers
+  hoverPreviewTimers.forEach((timer) => clearTimeout(timer));
+  hoverPreviewTimers.clear();
+
   updateResultBadge(results.length);
   if (!results.length) {
     resultsContainer.innerHTML = `
@@ -316,6 +386,7 @@ function displayResults(results, title) {
     `;
     return;
   }
+
   let html = '<div class="results-grid">';
   results.forEach((result, index) => {
     const metadata = result.metadata || {};
@@ -323,16 +394,31 @@ function displayResults(results, title) {
     const code = metadata.code || "";
     const episode = metadata.episode || "";
     const text = metadata.text || "No title";
-    const score = result.score ? (result.score * 100).toFixed(0) : null;
+    // Score is now 0-1 from server, convert to percentage for display
+    const score = result.score != null ? (result.score * 100).toFixed(0) : null;
     const thumbnail = getThumbnailUrl(metadata);
+    const previewUrl = getPreviewUrl(metadata);
+    const isFav = favorites.has(videoId);
+    const favIconClass = isFav ? "fas fa-heart" : "far fa-heart";
+    const favActiveClass = isFav ? " active" : "";
+
     html += `
-      <div class="result-card" data-video-id="${escapeHtml(videoId)}" title="Click to copy ID: ${escapeHtml(videoId)}">
-        <div class="result-thumbnail">
+      <div class="result-card" data-video-id="${escapeHtml(videoId)}" data-url="${escapeHtml(metadata.url || "")}">
+        <!-- Favorite button -->
+        <button class="fav-btn${favActiveClass}" data-video-id="${escapeHtml(videoId)}" title="${isFav ? "Remove from favorites" : "Add to favorites"}">
+          <i class="${favIconClass}"></i>
+        </button>
+        <!-- Thumbnail with preview overlay -->
+        <div class="result-thumbnail" data-preview="${escapeHtml(previewUrl || "")}">
           ${
             thumbnail
-              ? `<img src="${escapeHtml(thumbnail)}" alt="${escapeHtml(text)}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=\\'no-thumb\\'><i class=\\'fas fa-image\\'></i></div>'" />`
+              ? `<img src="${escapeHtml(thumbnail)}" alt="${escapeHtml(text)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';" />
+                 <div class="no-thumb" style="display:none;"><i class="fas fa-image"></i></div>`
               : `<div class="no-thumb"><i class="fas fa-image"></i></div>`
           }
+          <div class="preview-overlay">
+            <span class="play-icon"><i class="fas fa-play-circle"></i></span>
+          </div>
         </div>
         <div class="result-content">
           <div class="result-title" title="${escapeHtml(text)}">${escapeHtml(text)}</div>
@@ -349,33 +435,130 @@ function displayResults(results, title) {
   html += "</div>";
   resultsContainer.innerHTML = html;
 
-  // Click handler: copy video ID
+  // --- Attach event listeners ---
   resultsContainer.querySelectorAll(".result-card").forEach((card) => {
-    card.addEventListener("click", () => {
-      const videoId = card.getAttribute("data-video-id");
-      navigator.clipboard
-        .writeText(videoId)
-        .then(() => {
-          showToast(`📋 Copied: ${videoId}`, "success");
-        })
-        .catch(() => {
-          showToast(`ID: ${videoId}`, "success");
-        });
+    const videoId = card.getAttribute("data-video-id");
+    const url = card.getAttribute("data-url");
+
+    // 1) Click on card → open URL in new tab
+    card.addEventListener("click", (e) => {
+      // Don't open if clicking the fav button
+      if (e.target.closest(".fav-btn")) return;
+      if (url && url.startsWith("http")) {
+        console.log(`[POPUP] 🔗 Opening in new tab: ${url}`);
+        chrome.tabs.create({ url, active: false });
+      } else {
+        // Fallback: construct MissAV URL from videoId
+        const fallbackUrl = `https://missav.ws/en/${videoId}`;
+        console.log(`[POPUP] 🔗 Opening fallback URL: ${fallbackUrl}`);
+        chrome.tabs.create({ url: fallbackUrl, active: false });
+      }
     });
+
+    // 2) Hover → preview video
+    const thumbnailDiv = card.querySelector(".result-thumbnail");
+    const previewOverlay = thumbnailDiv?.querySelector(".preview-overlay");
+    if (thumbnailDiv && previewOverlay) {
+      card.addEventListener("mouseenter", () => {
+        startPreview(thumbnailDiv, previewOverlay, videoId);
+      });
+      card.addEventListener("mouseleave", () => {
+        stopPreview(thumbnailDiv, previewOverlay, videoId);
+      });
+    }
+
+    // 3) Favorite button click
+    const favBtn = card.querySelector(".fav-btn");
+    if (favBtn) {
+      favBtn.addEventListener("click", (e) => {
+        e.stopPropagation(); // Don't trigger card click
+        toggleFavorite(videoId);
+      });
+    }
   });
 }
 
 /**
+ * Start playing the preview video on hover (300ms delay to avoid flicker).
+ */
+function startPreview(thumbnailDiv, previewOverlay, videoId) {
+  const previewUrl = thumbnailDiv.getAttribute("data-preview");
+  if (!previewUrl) return;
+
+  // Clear any existing timer for this card
+  if (hoverPreviewTimers.has(videoId)) {
+    clearTimeout(hoverPreviewTimers.get(videoId));
+  }
+
+  const timer = setTimeout(() => {
+    // Check if video already exists
+    let videoEl = previewOverlay.querySelector("video");
+    if (!videoEl) {
+      videoEl = document.createElement("video");
+      videoEl.muted = true;
+      videoEl.loop = true;
+      videoEl.playsInline = true;
+      videoEl.setAttribute("playsinline", "");
+      // Hide the play icon when video loads
+      const playIcon = previewOverlay.querySelector(".play-icon");
+      videoEl.addEventListener("loadeddata", () => {
+        if (playIcon) playIcon.style.display = "none";
+      });
+      videoEl.addEventListener("error", () => {
+        console.log(`[POPUP] ⚠️ Preview video failed to load: ${previewUrl}`);
+        if (playIcon) playIcon.style.display = "flex";
+        videoEl.remove();
+      });
+      previewOverlay.appendChild(videoEl);
+    }
+    videoEl.src = previewUrl;
+    videoEl.play().catch((err) => {
+      console.log(`[POPUP] ⚠️ Preview play failed: ${err.message}`);
+    });
+    console.log(`[POPUP] ▶️ Preview started for: ${videoId}`);
+  }, 300);
+
+  hoverPreviewTimers.set(videoId, timer);
+}
+
+/**
+ * Stop preview video and clean up.
+ */
+function stopPreview(thumbnailDiv, previewOverlay, videoId) {
+  // Clear the pending timer
+  if (hoverPreviewTimers.has(videoId)) {
+    clearTimeout(hoverPreviewTimers.get(videoId));
+    hoverPreviewTimers.delete(videoId);
+  }
+
+  const videoEl = previewOverlay.querySelector("video");
+  if (videoEl) {
+    videoEl.pause();
+    videoEl.removeAttribute("src");
+    videoEl.load(); // Reset the video element
+    videoEl.remove();
+  }
+  // Show play icon again
+  const playIcon = previewOverlay.querySelector(".play-icon");
+  if (playIcon) playIcon.style.display = "flex";
+}
+
+/**
  * Extract the best available thumbnail URL from result metadata.
- * Checks thumbnail field first, then falls back to preview (video).
  */
 function getThumbnailUrl(metadata) {
   if (!metadata) return null;
-  // Check thumbnail field
   if (metadata.thumbnail && isValidHttpUrl(metadata.thumbnail)) {
     return metadata.thumbnail;
   }
-  // Fallback: preview video (less ideal but better than nothing)
+  return null;
+}
+
+/**
+ * Extract preview video URL from metadata.
+ */
+function getPreviewUrl(metadata) {
+  if (!metadata) return null;
   if (metadata.preview && isValidHttpUrl(metadata.preview)) {
     return metadata.preview;
   }
@@ -383,7 +566,7 @@ function getThumbnailUrl(metadata) {
 }
 
 /**
- * Validate that a URL is a real HTTP(S) URL, not base64/blob/javascript.
+ * Validate that a URL is a real HTTP(S) URL.
  */
 function isValidHttpUrl(str) {
   if (!str || typeof str !== "string") return false;

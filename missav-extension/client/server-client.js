@@ -175,20 +175,24 @@ class MissAVServerClient {
       excludeIds = [],
       includeEpisodes = [],
       episodeRange = null,
-      diversityFactor = 0.3,
+      diversity = "medium", // CHANGED: string enum instead of diversityFactor float
       maxPerCode = null,
       searchType = "hybrid",
       limitToIds = null,
+      autoShuffle = false, // NEW
     } = searchParams;
+
     console.log("[SERVER CLIENT] 🔍 Search request:", {
       query,
       topK,
       searchType,
       includeCodes,
       excludeCodes,
-      diversityFactor,
+      diversity,
+      autoShuffle,
       limitToIds,
     });
+
     const payload = {
       query,
       top_k: topK,
@@ -197,10 +201,11 @@ class MissAVServerClient {
       exclude_ids: excludeIds,
       include_episodes: includeEpisodes,
       include_episode_range: episodeRange,
-      diversity_factor: diversityFactor,
+      diversity, // CHANGED: sends string directly
       max_per_code: maxPerCode,
       search_type: searchType,
       limit_to_ids: limitToIds,
+      auto_shuffle: autoShuffle, // NEW
     };
     try {
       const response = await this._fetchWithTimeout(

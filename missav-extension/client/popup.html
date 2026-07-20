@@ -142,6 +142,23 @@
                 </div>
               </div>
             </div>
+            <!-- Auto Shuffle Toggle -->
+            <div class="form-group">
+              <label for="autoShuffle">
+                <i class="fas fa-random"></i> Auto Shuffle
+              </label>
+              <div class="toggle-row">
+                <label class="switch">
+                  <input type="checkbox" id="autoShuffle" />
+                  <span class="slider round"></span>
+                </label>
+                <span class="toggle-label">Fresh ordering on each search</span>
+              </div>
+              <small class="hint"
+                >Generates a random seed — each call returns a different
+                order</small
+              >
+            </div>
           </div>
 
           <!-- Max Per Code -->
@@ -189,13 +206,22 @@
         <div class="results-column">
           <div class="results-header">
             <h2><i class="fas fa-list"></i> Results</h2>
-            <button
-              id="copyAllIds"
-              class="icon-button"
-              title="Copy all video IDs"
-            >
-              <i class="fas fa-copy"></i>
-            </button>
+            <div style="display: flex; gap: 8px">
+              <button
+                id="refreshResults"
+                class="icon-button"
+                title="Refresh results"
+              >
+                <i class="fas fa-sync-alt"></i>
+              </button>
+              <button
+                id="copyAllIds"
+                class="icon-button"
+                title="Copy all video IDs"
+              >
+                <i class="fas fa-copy"></i>
+              </button>
+            </div>
           </div>
           <div id="resultsContainer" class="results-container">
             <div class="empty-results">
