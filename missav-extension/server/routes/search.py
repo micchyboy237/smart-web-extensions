@@ -1,212 +1,204 @@
-# Jet_Apps/web-extensions/smart-web-extensions/missav-extension/server/routes/search.py
 """Smart search endpoint with diversity and filters."""
 
 import logging
 import time
-from typing import Optional
+import uuid
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
-from models.video import (
-    SearchQuery,
-    SearchResponse,
-    SearchResult,
-)
+from pydantic import BaseModel, Field
 from services import chroma_service
-from utils.search_strategies import QueryUnderstanding, diversity_search
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["search"])
 
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
+
+class SearchRequest(BaseModel):
+    """Request body for the smart search endpoint."""
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        description="Natural language search query",
+        examples=["cute idol"],
+    )
+    top_k: int = Field(
+        default=20,
+        ge=1,
+        le=200,
+        description="Maximum number of results to return",
+    )
+    diversity: Literal["low", "medium", "high"] = Field(
+        default="medium",
+        description=(
+            "Diversity level for result selection. "
+            "'low' = pure relevance (0.0), "
+            "'medium' = balanced (0.5), "
+            "'high' = maximum diversity (1.0)"
+        ),
+    )
+    auto_shuffle: bool = Field(
+        default=False,
+        description=(
+            "When True, automatically generates a unique shuffle seed "
+            "so every call returns a different (but still diverse & "
+            "relevant) ordering. The seed is returned in the response "
+            "so the same shuffle can be reproduced later if desired."
+        ),
+    )
+    shuffle_seed: Optional[int] = Field(
+        default=None,
+        description=(
+            "Explicit shuffle seed for reproducible shuffles. "
+            "Has no effect when diversity='low'. "
+            "Ignored when auto_shuffle=True."
+        ),
+    )
+    candidate_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Restrict search to these video IDs (e.g., current page)",
+    )
+    score_threshold: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity score (0.0-1.0) to include a result",
+    )
+
+
+class SearchResultItem(BaseModel):
+    """A single search result."""
+
+    id: str
+    score: float
+    document: str
+    metadata: dict
+
+
+class SearchResponse(BaseModel):
+    """Response body for the smart search endpoint."""
+
+    results: list[SearchResultItem]
+    query: str
+    diversity: float
+    diversity_label: Literal["low", "medium", "high"]
+    shuffle_seed: Optional[int] = None
+    auto_shuffle: bool
+    total_found: int
+    time_ms: float
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Map friendly labels → numeric diversity values
+DIVERSITY_MAP: dict[str, float] = {
+    "low": 0.0,
+    "medium": 0.5,
+    "high": 1.0,
+}
+
+
+def _resolve_shuffle_seed(
+    auto_shuffle: bool, explicit_seed: Optional[int]
+) -> Optional[int]:
+    """
+    Resolve the effective shuffle seed.
+
+    Flow:
+    ┌──────────────┬────────────────┬──────────────────────────┐
+    │ auto_shuffle │ explicit_seed  │ Result                   │
+    ├──────────────┼────────────────┼──────────────────────────┤
+    │ True         │ any            │ random UUID-based seed   │
+    │ False        │ provided       │ explicit_seed            │
+    │ False        │ None           │ None (no shuffle)        │
+    └──────────────┴────────────────┴──────────────────────────┘
+    """
+    if auto_shuffle:
+        # Generate a unique, reproducible-from-response seed.
+        # Using UUID4 int is overkill but guarantees uniqueness per call.
+        seed = uuid.uuid4().int & 0x7FFFFFFF  # keep it positive 31-bit
+        logger.info(f"🔀 Auto-shuffle enabled — generated seed={seed}")
+        return seed
+    return explicit_seed
+
+
+# ---------------------------------------------------------------------------
+# Endpoint
+# ---------------------------------------------------------------------------
+
 
 @router.post("/search", response_model=SearchResponse)
-async def smart_search(query: SearchQuery):
+async def smart_search(req: SearchRequest):
     """
-    Smart search with inclusion/exclusion filters and diversity.
+    Smart semantic search with diversity-aware ranking and optional shuffling.
 
-    Supports:
-    - Semantic, keyword, hybrid, and ensemble search strategies
-    - Code and episode inclusion/exclusion
-    - Diversity-aware ranking (MMR algorithm)
-    - Query understanding for natural language queries
+    **Diversity levels:**
+    - `low`    → pure relevance (best semantic match first)
+    - `medium` → balanced (default, good mix of relevance & variety)
+    - `high`   → maximum diversity (most varied results)
 
-    Examples:
-    - "popular juq videos from 300-500" → code=juq, episode_range=[300,500]
-    - "new mxgs content not fc2" → include=mxgs, exclude=fc2
-    - "something diverse like juq-373" → diversity=high, similar_to=juq-373
+    **Shuffle behaviour:**
+    - Set `auto_shuffle=true` to get a fresh ordering on every call.
+      The generated seed is returned so you can replay the same shuffle.
+    - Pass an explicit `shuffle_seed` for reproducible shuffles.
+    - Shuffle has no effect when diversity is `low`.
+
+    **Candidate restriction:**
+    - Provide `candidate_ids` to limit search to a specific set of videos
+      (e.g., only videos visible on the current page).
     """
-
     start_time = time.time()
-    logger.info(f"🔍 Search: '{query.query[:100]}...' (type={query.search_type})")
 
+    # --- Resolve diversity -------------------------------------------------
+    diversity_value = DIVERSITY_MAP[req.diversity]
+    logger.info(
+        f"🔍 [search] query='{req.query[:100]}' top_k={req.top_k} "
+        f"diversity={req.diversity}({diversity_value}) "
+        f"auto_shuffle={req.auto_shuffle} candidate_ids={len(req.candidate_ids) if req.candidate_ids else 'all'}"
+    )
+
+    # --- Resolve shuffle seed ----------------------------------------------
+    effective_seed = _resolve_shuffle_seed(req.auto_shuffle, req.shuffle_seed)
+    if effective_seed is not None and diversity_value == 0.0:
+        logger.info("🔍 [search] Shuffle requested but diversity=low — shuffle ignored")
+
+    # --- Run search ---------------------------------------------------------
     try:
-        # Step 1: Understand the query (natural language parsing)
-        understanding = _parse_query_intent(query)
-
-        # Step 2: Build ChromaDB where filter (exclusions)
-        where_filter = _build_where_filter(query)
-
-        # Step 3: Execute search (get more candidates for diversity filtering)
-        candidate_k = min(query.top_k * 3, 100)
-
         results = chroma_service.search(
-            query=query.query,
-            top_k=candidate_k,
-            where=where_filter,
-            candidate_ids=query.limit_to_ids,
-        )
-
-        logger.info(f"📊 Retrieved {len(results)} candidates")
-
-        # Step 4: Apply post-retrieval filters (inclusions, ranges)
-        results = _apply_post_filters(results, query)
-
-        # Step 5: Apply diversity (MMR algorithm)
-        if query.diversity_factor > 0 and len(results) > 1:
-            diversity_search.diversity_factor = query.diversity_factor
-            diversity_search.max_per_code = query.max_per_code
-
-            # Get embeddings for MMR if available
-            embeddings = None
-            if query.diversity_factor > 0:
-                ids = [r["id"] for r in results]
-                embeddings = chroma_service.get_embeddings(ids)
-                logger.info(
-                    f"📊 Fetched {len(embeddings) if embeddings is not None else 0} embeddings for diversity"
-                )
-
-            results = diversity_search.apply_diversity(results, embeddings)
-            logger.info(
-                f"🎨 Diversified to {len(results)} results "
-                f"(factor={query.diversity_factor})"
-            )
-
-        # Step 6: Limit to requested top_k
-        results = results[: query.top_k]
-
-        # Step 7: Format response
-        elapsed = (time.time() - start_time) * 1000
-
-        search_results = [
-            SearchResult(
-                id=r["id"],
-                score=r["score"],
-                document=r.get("document", ""),
-                metadata=r.get("metadata", {}),
-                diversity_score=r.get("diversity_score"),
-                rank=idx + 1,
-            )
-            for idx, r in enumerate(results)
-        ]
-
-        return SearchResponse(
-            results=search_results,
-            total_candidates=candidate_k,
-            filters_applied={
-                "include_codes": query.include_codes,
-                "exclude_codes": query.exclude_codes,
-                "exclude_ids": query.exclude_ids,
-                "diversity_factor": query.diversity_factor,
-                "max_per_code": query.max_per_code,
-                "search_type": query.search_type,
-            },
-            search_time_ms=elapsed,
-            query_understanding=understanding,
+            query=req.query,
+            top_k=req.top_k,
+            candidate_ids=req.candidate_ids,
+            score_threshold=req.score_threshold,
+            diversity=diversity_value,
+            shuffle_seed=effective_seed,
         )
     except Exception as e:
-        logger.error(f"❌ Search failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ [search] Search failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
+    elapsed = (time.time() - start_time) * 1000
 
-def _parse_query_intent(query: SearchQuery) -> Optional[dict]:
-    """
-    Parse natural language query to extract intent and filters.
-    Only used for hybrid and ensemble search types.
-    """
-    if query.search_type not in ("hybrid", "ensemble"):
-        return None
+    # --- Build response -----------------------------------------------------
+    items = [SearchResultItem(**r) for r in results]
+    logger.info(
+        f"✅ [search] Returned {len(items)} results in {elapsed:.2f}ms "
+        f"(seed={effective_seed})"
+    )
 
-    understanding = QueryUnderstanding.parse(query.query)
-    logger.info(f"🧠 Query understanding: {understanding}")
-
-    # Apply extracted filters if not explicitly set by user
-    if not query.include_codes and understanding.get("extracted_codes"):
-        query.include_codes = understanding["extracted_codes"]
-    if not query.exclude_codes and understanding.get("exclude_codes"):
-        query.exclude_codes = understanding["exclude_codes"]
-    if understanding.get("diversity_hint") == "high":
-        query.diversity_factor = max(query.diversity_factor, 0.5)
-
-    return understanding
-
-
-def _build_where_filter(query: SearchQuery) -> Optional[dict]:
-    """
-    Build ChromaDB where filter from query parameters.
-
-    ChromaDB supports metadata filtering with $and, $or, $ne operators.
-    Only exclusion filters are applied here (inclusions done post-retrieval).
-    """
-    conditions = []
-
-    # Exclude codes (e.g., block fc2 series)
-    if query.exclude_codes:
-        for code in query.exclude_codes:
-            conditions.append({"code": {"$ne": code}})
-
-    # Exclude specific IDs (watched videos)
-    if query.exclude_ids:
-        for vid_id in query.exclude_ids:
-            conditions.append({"video_id": {"$ne": vid_id}})
-
-    if not conditions:
-        return None
-
-    return {"$and": conditions} if len(conditions) > 1 else conditions[0]
-
-
-def _apply_post_filters(
-    results: list[dict],
-    query: SearchQuery,
-) -> list[dict]:
-    """
-    Apply inclusion filters and range queries.
-
-    Done in Python because ChromaDB doesn't support complex inclusion
-    lists or range queries efficiently in the where clause.
-    """
-    filtered = []
-
-    for r in results:
-        metadata = r.get("metadata", {})
-        code = metadata.get("code", "")
-        episode = metadata.get("episode", "")
-
-        # Include only specific codes
-        if query.include_codes and code not in query.include_codes:
-            continue
-
-        # Include only specific episodes
-        if query.include_episodes and episode not in query.include_episodes:
-            continue
-
-        # Episode range filter
-        if query.include_episode_range:
-            try:
-                ep_num = int(episode)
-                if not (
-                    query.include_episode_range[0]
-                    <= ep_num
-                    <= query.include_episode_range[1]
-                ):
-                    continue
-            except (ValueError, TypeError):
-                continue
-
-        filtered.append(r)
-
-    removed = len(results) - len(filtered)
-    if removed > 0:
-        logger.debug(f"🔍 Post-filters removed {removed} results")
-
-    return filtered
+    return SearchResponse(
+        results=items,
+        query=req.query,
+        diversity=diversity_value,
+        diversity_label=req.diversity,
+        shuffle_seed=effective_seed,
+        auto_shuffle=req.auto_shuffle,
+        total_found=len(items),
+        time_ms=round(elapsed, 2),
+    )
