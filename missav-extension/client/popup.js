@@ -48,18 +48,6 @@ function sliderToDiversityEnum(value) {
   return "high";
 }
 
-// ====================== INITIALIZATION ======================
-document.addEventListener("DOMContentLoaded", async () => {
-  await loadTheme();
-  await loadFavorites();
-  await loadAvailableCodes();
-  queryInput.focus();
-  setupEventListeners();
-  updateSliderVisuals();
-  await updatePageVideoIds();
-  await detectDefaultSimilarId();
-});
-
 // ====================== THEME ======================
 async function loadTheme() {
   const { theme } = await chrome.storage.sync.get("theme");
@@ -80,50 +68,6 @@ function toggleTheme() {
 function updateThemeIcon() {
   const icon = themeToggle.querySelector("i");
   icon.className = currentTheme === "light" ? "fas fa-moon" : "fas fa-sun";
-}
-
-// ====================== FAVORITES (Client-Side) ======================
-async function loadFavorites() {
-  try {
-    const { favIds } = await chrome.storage.local.get("favIds");
-    favorites = new Set(favIds || []);
-    console.log(`[POPUP] ⭐ Loaded ${favorites.size} favorites`);
-  } catch (err) {
-    console.error("[POPUP] Failed to load favorites:", err);
-    favorites = new Set();
-  }
-}
-async function saveFavorites() {
-  try {
-    await chrome.storage.local.set({ favIds: Array.from(favorites) });
-    console.log(`[POPUP] ⭐ Saved ${favorites.size} favorites`);
-  } catch (err) {
-    console.error("[POPUP] Failed to save favorites:", err);
-  }
-}
-function toggleFavorite(videoId) {
-  if (favorites.has(videoId)) {
-    favorites.delete(videoId);
-  } else {
-    favorites.add(videoId);
-  }
-  saveFavorites();
-  // Update heart icon in the DOM
-  const card = document.querySelector(
-    `.result-card[data-video-id="${CSS.escape(videoId)}"]`,
-  );
-  if (card) {
-    const favBtn = card.querySelector(".fav-btn");
-    if (favBtn) {
-      favBtn.classList.toggle("active", favorites.has(videoId));
-      favBtn.querySelector("i").className = favorites.has(videoId)
-        ? "fas fa-heart"
-        : "far fa-heart";
-    }
-  }
-  console.log(
-    `[POPUP] ⭐ Favorite toggled: ${videoId} → ${favorites.has(videoId)}`,
-  );
 }
 
 // ====================== LOAD DATA ======================
@@ -199,6 +143,81 @@ function setupEventListeners() {
   limitToPageCheckbox.addEventListener("change", () => {
     updatePageVideoCount();
   });
+
+  // ====================== AUTO-SAVE STATE ON FORM CHANGES ======================
+  const formElements = [
+    queryInput,
+    topKInput,
+    searchTypeSelect,
+    includeCodesSelect,
+    excludeCodesSelect,
+    includeCodesFilter,
+    excludeCodesFilter,
+    episodeMinInput,
+    episodeMaxInput,
+    diversityFactorInput,
+    maxPerCodeInput,
+    autoShuffleCheckbox,
+    limitToPageCheckbox,
+  ];
+  const formRefs = getFormRefs();
+
+  formElements.forEach((el) => {
+    if (!el) return;
+    const eventType =
+      el.type === "checkbox" || el.tagName === "SELECT" ? "change" : "input";
+    el.addEventListener(eventType, () => {
+      PopupState.save({
+        formRefs,
+        currentResults,
+        lastSearchParams,
+      });
+    });
+  });
+}
+
+// ====================== FAVORITES ======================
+async function loadFavorites() {
+  try {
+    const { favIds } = await chrome.storage.local.get("favIds");
+    favorites = new Set(favIds || []);
+    console.log(`[POPUP] ⭐ Loaded ${favorites.size} favorites`);
+  } catch (err) {
+    console.error("[POPUP] Failed to load favorites:", err);
+    favorites = new Set();
+  }
+}
+async function saveFavorites() {
+  try {
+    await chrome.storage.local.set({ favIds: Array.from(favorites) });
+    console.log(`[POPUP] ⭐ Saved ${favorites.size} favorites`);
+  } catch (err) {
+    console.error("[POPUP] Failed to save favorites:", err);
+  }
+}
+function toggleFavorite(videoId) {
+  if (favorites.has(videoId)) {
+    favorites.delete(videoId);
+  } else {
+    favorites.add(videoId);
+  }
+  saveFavorites();
+  // Update heart icon in the DOM
+  const card = document.querySelector(
+    `.result-card[data-video-id="${CSS.escape(videoId)}"]`,
+  );
+  if (card) {
+    const favBtn = card.querySelector(".fav-btn");
+    if (favBtn) {
+      favBtn.classList.toggle("active", favorites.has(videoId));
+      favBtn.querySelector("i").className = favorites.has(videoId)
+        ? "fas fa-heart"
+        : "far fa-heart";
+    }
+  }
+  console.log(
+    `[POPUP] ⭐ Favorite toggled: ${videoId} → ${favorites.has(videoId)}`,
+  );
 }
 
 // ====================== SLIDER VISUALS ======================
@@ -308,6 +327,15 @@ async function refreshLastSearch() {
   await executeSearch(refreshParams, "Smart Search (refreshed)");
 }
 async function executeSearch(params, label) {
+  // Clear previous results immediately
+  currentResults = [];
+  lastSearchParams = null;
+  await PopupState.save({
+    formRefs: getFormRefs(),
+    currentResults: [],
+    lastSearchParams: null,
+  });
+
   showLoading(true);
   try {
     const response = await chrome.runtime.sendMessage({
@@ -476,6 +504,15 @@ function displayResults(results, title) {
       });
     }
   });
+
+  // --- Auto-save state after displaying results ---
+  setTimeout(() => {
+    PopupState.save({
+      formRefs: getFormRefs(),
+      currentResults,
+      lastSearchParams,
+    });
+  }, 0);
 }
 
 /**
@@ -620,3 +657,74 @@ function showToast(message, type = "info") {
     toast.classList.remove("show");
   }, 2500);
 }
+
+// ====================== FORM REFS (for state persistence) ======================
+/**
+ * Collect all form DOM references into one object.
+ * Passed to PopupState.save() / .load() so state-persistence.js
+ * never touches the DOM directly.
+ */
+function getFormRefs() {
+  return {
+    query: queryInput,
+    topK: topKInput,
+    searchType: searchTypeSelect,
+    includeCodes: includeCodesSelect,
+    excludeCodes: excludeCodesSelect,
+    includeCodesFilter: includeCodesFilter,
+    excludeCodesFilter: excludeCodesFilter,
+    episodeMin: episodeMinInput,
+    episodeMax: episodeMaxInput,
+    diversityFactor: diversityFactorInput,
+    maxPerCode: maxPerCodeInput,
+    autoShuffle: autoShuffleCheckbox,
+    limitToPage: limitToPageCheckbox,
+  };
+}
+
+// ====================== INITIALIZATION ======================
+document.addEventListener("DOMContentLoaded", async () => {
+  // 1. Init persistence layer (detects tab ID)
+  await PopupState.init();
+
+  // 2. Load theme & favorites (lightweight, no dependencies)
+  await loadTheme();
+  await loadFavorites();
+
+  // 3. Load available codes (populates multi-select <option>s)
+  await loadAvailableCodes();
+
+  // 4. Try to restore saved state (requires options to be populated first)
+  const formRefs = getFormRefs();
+  const saved = await PopupState.load({ formRefs });
+
+  if (saved) {
+    // State was restored — re-apply slider visuals + results
+    if (diversityFactorInput.value) {
+      diversityValueSpan.textContent = diversityFactorInput.value;
+      updateSliderVisuals();
+    }
+    if (saved.results && saved.results.length > 0) {
+      currentResults = saved.results;
+      displayResults(currentResults, "Restored Results");
+    }
+    if (saved.lastSearchParams) {
+      lastSearchParams = saved.lastSearchParams;
+    }
+    console.log("[POPUP] ✅ State restored from session storage");
+  } else {
+    // Fresh open — focus the query input
+    queryInput.focus();
+    console.log("[POPUP] 🆕 Fresh popup open (no saved state)");
+  }
+
+  // 5. Setup event listeners
+  setupEventListeners();
+
+  // 6. Update page-specific data
+  updateSliderVisuals();
+  await updatePageVideoIds();
+  await detectDefaultSimilarId();
+
+  console.log("[POPUP] ✅ Initialization complete");
+});
