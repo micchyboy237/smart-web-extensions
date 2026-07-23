@@ -4,7 +4,7 @@
 import logging
 
 from fastapi import APIRouter
-from models.video import UserPreference
+from models.user_preference import UserPreference
 
 logger = logging.getLogger(__name__)
 
