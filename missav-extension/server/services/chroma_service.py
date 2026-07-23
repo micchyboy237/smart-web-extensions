@@ -329,40 +329,28 @@ def search(
     Semantic search with optional ID restriction, score filtering,
     diversity-aware result selection, and shuffle support.
 
-    Results are always sorted by score descending before any diversity
-    re-ranking or top_k slicing is applied.
-
-    Args:
-        query: Search query
-        top_k: Maximum number of final results to return
-        where: Metadata filter (ChromaDB where clause)
-        where_document: Document content filter
-        candidate_ids: Optional whitelist of video IDs to search within.
-                       When provided, only these IDs are considered.
-                       Final results never exceed len(candidate_ids).
-        score_threshold: If set, drop results with similarity below this
-                         value. Applied after the query, so may return
-                         fewer than top_k.
-        diversity: Trade-off between diversity (1.0) and relevance (0.0).
-                   Only applied when > 0.
-        shuffle_seed: If set, returns a different — but still diverse and
-                      relevant — top_k selection. Pass a new value each
-                      time for fresh shuffles; same seed reproduces same
-                      shuffle. Only applied when diversity > 0.
+    Shuffle is now INDEPENDENT of diversity:
+    - If shuffle_seed is provided, shuffle activates regardless of diversity value
+    - Shuffle can work with diversity=0.0 (pure relevance)
+    - When both shuffle and diversity are active, shuffle samples first, then MMR diversifies
+    ...
     """
     diversity = max(0.0, min(1.0, diversity))
-    is_shuffle = shuffle_seed is not None and diversity > 0
 
-    # ── Cap top_k to candidate pool size ────────────────────────────
+    # Shuffle activates if seed is provided, regardless of diversity
+    is_shuffle = shuffle_seed is not None
+
     max_from_pool = len(candidate_ids) if candidate_ids else None
     effective_top_k = min(top_k, max_from_pool) if max_from_pool is not None else top_k
+
     logger.info(
-        f"🔍 [chroma_service] search: query='{query[:80]}', "
-        f"top_k={top_k}, effective_top_k={effective_top_k}, "
+        f"🔍 [chroma_service.search] Received: "
+        f"query='{query[:80]}', top_k={top_k}, "
+        f"diversity={diversity}, shuffle_seed={shuffle_seed}, "
+        f"is_shuffle={is_shuffle}, "
         f"candidate_ids={'present(' + str(len(candidate_ids)) + ')' if candidate_ids else 'None'}"
     )
 
-    # ── Build where filter for candidate_ids ────────────────────────
     combined_where = where
     if candidate_ids:
         id_filter = {"id": {"$in": candidate_ids}}
@@ -370,33 +358,37 @@ def search(
             {"$and": [id_filter, combined_where]} if combined_where else id_filter
         )
 
-    # ── Calculate fetch_k (overfetch for diversity/shuffle) ─────────
-    if diversity > 0:
-        raw_fetch_k = (
-            compute_shuffle_fetch_k(effective_top_k)
-            if is_shuffle
-            else compute_fetch_k(effective_top_k, diversity)
-        )
+    # Calculate fetch_k based on whether we're shuffling or diversifying
+    if is_shuffle:
+        # Shuffle needs a larger pool to sample from
+        raw_fetch_k = compute_shuffle_fetch_k(effective_top_k)
+        logger.info(f"🔀 [chroma_service] Shuffle mode: using shuffle_fetch_k")
+    elif diversity > 0:
+        # Normal diversity path
+        raw_fetch_k = compute_fetch_k(effective_top_k, diversity)
+        logger.info(f"🎨 [chroma_service] Diversity mode: using normal fetch_k")
     else:
+        # Pure relevance, no overfetching needed
         raw_fetch_k = effective_top_k
+        logger.info(f"🔍 [chroma_service] Relevance-only mode: no overfetching")
 
-    # Cap fetch_k to candidate pool size
     fetch_k = (
         min(raw_fetch_k, max_from_pool) if max_from_pool is not None else raw_fetch_k
     )
+
     logger.info(
         f"🔍 [chroma_service] fetch_k={fetch_k} "
-        f"(raw={raw_fetch_k}, max_from_pool={max_from_pool}, diversity={diversity})"
+        f"(raw={raw_fetch_k}, max_from_pool={max_from_pool}, "
+        f"diversity={diversity}, is_shuffle={is_shuffle})"
     )
 
-    # ── Query ChromaDB ──────────────────────────────────────────────
     results = get_service().search(query, fetch_k, combined_where, where_document)
+
     logger.info(
         f"🔍 [chroma_service] ChromaDB returned {len(results)} results "
         f"(fetch_k={fetch_k})"
     )
 
-    # ── Safety: explicit post-filter to candidate_ids ───────────────
     if candidate_ids:
         candidate_set = set(candidate_ids)
         before_filter = len(results)
@@ -407,7 +399,6 @@ def search(
                 f"{before_filter - len(results)} results not in candidate_ids"
             )
 
-    # ── Score threshold filter ──────────────────────────────────────
     if score_threshold is not None:
         before = len(results)
         results = [r for r in results if r["score"] >= score_threshold]
@@ -416,7 +407,6 @@ def search(
             f"{len(results)}/{before} results"
         )
 
-    # ── If we have ≤ effective_top_k results, return as-is ──────────
     if len(results) <= effective_top_k:
         logger.info(
             f"🔍 [chroma_service] {len(results)} results "
@@ -424,19 +414,46 @@ def search(
         )
         return results
 
-    # ── Shuffle path ────────────────────────────────────────────────
+    # Apply shuffle if seed is provided (regardless of diversity)
     if is_shuffle:
         logger.info(f"🔀 [chroma_service] Shuffling with seed={shuffle_seed}")
-        return shuffle_and_diversify(
-            results,
-            top_k=effective_top_k,
-            diversity=diversity,
-            seed=shuffle_seed,
-            get_embeddings_fn=get_embeddings,
-        )
 
-    # ── Diversity path ──────────────────────────────────────────────
+        # If diversity is also enabled, shuffle then diversify
+        if diversity > 0:
+            logger.info(
+                f"🔀🎨 [chroma_service] Shuffle + Diversity: "
+                f"shuffling first, then applying MMR with diversity={diversity}"
+            )
+            return shuffle_and_diversify(
+                results,
+                top_k=effective_top_k,
+                diversity=diversity,
+                seed=shuffle_seed,
+                get_embeddings_fn=get_embeddings,
+            )
+        else:
+            # Shuffle without diversity: just sample and return
+            logger.info(
+                f"🔀 [chroma_service] Shuffle only (no diversity): "
+                f"sampling with seed={shuffle_seed}"
+            )
+            from utils.search_diversity import sample_candidate_pool
+
+            sampled = sample_candidate_pool(
+                results,
+                sample_size=effective_top_k,
+                seed=shuffle_seed,
+                relevance_bias=1.0,  # Balanced bias for shuffle-only mode
+            )
+            # Sort by score after sampling to maintain some relevance ordering
+            sampled.sort(key=lambda r: r["score"], reverse=True)
+            return sampled
+
+    # Apply diversity without shuffle
     if diversity > 0:
+        logger.info(
+            f"🎨 [chroma_service] Diversifying (no shuffle) with diversity={diversity}"
+        )
         return diversify_results(
             results,
             top_k=effective_top_k,
@@ -444,10 +461,10 @@ def search(
             get_embeddings_fn=get_embeddings,
         )
 
-    # ── Plain relevance: top_k by score ─────────────────────────────
+    # Pure relevance, no shuffle, no diversity
     logger.info(
         f"🔍 [chroma_service] Returning top {effective_top_k} results by score "
-        f"(no diversity)"
+        f"(no diversity, no shuffle)"
     )
     return results[:effective_top_k]
 

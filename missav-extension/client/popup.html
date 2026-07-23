@@ -161,6 +161,26 @@
             </div>
           </div>
 
+          <!-- Enable Diversity Toggle -->
+          <div class="form-group">
+            <label for="enableDiversity">
+              <i class="fas fa-layer-group"></i> Enable Diversity
+            </label>
+            <div class="toggle-row">
+              <label class="switch">
+                <input type="checkbox" id="enableDiversity" />
+                <span class="slider round"></span>
+              </label>
+              <span class="toggle-label"
+                >Diversify results (MMR re-ranking)</span
+              >
+            </div>
+            <small class="hint"
+              >When off, returns pure relevance-ranked results. When on, uses
+              the diversity slider below.</small
+            >
+          </div>
+
           <!-- Max Per Code -->
           <div class="form-group">
             <label for="maxPerCode">Max per Code</label>

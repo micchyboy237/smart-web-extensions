@@ -41,7 +41,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         );
         sendResponse({ success: false, error: err.message });
       });
-    return true; // keep the message channel open for the async response
+    return true;
   }
 
   // ====================== SMART SEARCH ======================
@@ -66,9 +66,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // ====================== FIND SIMILAR ======================
   if (request.action === "findSimilar") {
-    console.log("[SW] 🔍 Find similar to:", request.videoId);
+    console.log("[SW] 🔍 Find similar:", {
+      videoId: request.params?.videoId,
+      options: request.params?.options,
+    });
     serverClient
-      .findSimilar(request.videoId, request.options || {})
+      .findSimilar(request.params.videoId, request.params.options || {})
       .then((results) => sendResponse({ success: true, ...results }))
       .catch((err) => {
         console.error("[SW] ❌ Find similar failed:", err.message);

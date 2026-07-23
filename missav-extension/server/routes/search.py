@@ -116,6 +116,8 @@ def _resolve_shuffle_seed(
     """
     Resolve the effective shuffle seed.
 
+    Shuffle is now INDEPENDENT of diversity settings.
+
     Flow:
     ┌──────────────┬────────────────┬──────────────────────────┐
     │ auto_shuffle │ explicit_seed  │ Result                   │
@@ -129,7 +131,13 @@ def _resolve_shuffle_seed(
         seed = uuid.uuid4().int & 0x7FFFFFFF
         logger.info(f"🔀 Auto-shuffle enabled — generated seed={seed}")
         return seed
-    return explicit_seed
+
+    if explicit_seed is not None:
+        logger.info(f"🔀 Using explicit shuffle seed={explicit_seed}")
+        return explicit_seed
+
+    logger.debug("🔀 No shuffle requested")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -142,46 +150,54 @@ async def smart_search(req: SearchRequest):
     """
     Smart semantic search with optional diversity-aware ranking and shuffling.
 
-    **Diversity control:**
-    - Set `enable_diversity=true` to activate diversity-aware result selection.
-    - When `enable_diversity=false` (default), returns pure relevance-ranked results.
-
-    **Diversity levels (only when enable_diversity=True):**
-    - `low`    → pure relevance (best semantic match first)
-    - `medium` → balanced (default, good mix of relevance & variety)
-    - `high`   → maximum diversity (most varied results)
-
-    **Shuffle behaviour (only when enable_diversity=True):**
+    **Shuffle behaviour (INDEPENDENT of diversity):**
     - Set `auto_shuffle=true` to get a fresh ordering on every call.
       The generated seed is returned so you can replay the same shuffle.
     - Pass an explicit `shuffle_seed` for reproducible shuffles.
-    - Shuffle has no effect when diversity is `low`.
+    - Shuffle works with ANY diversity setting (including "low"/disabled).
 
-    **Candidate restriction:**
-    - Provide `candidate_ids` to limit search to a specific set of videos
-      (e.g., only videos visible on the current page).
-    - Results are always sorted by score descending before diversity or
-      top_k slicing is applied.
+    **Diversity control:**
+    - Set `enable_diversity=true` to activate MMR-based diversity re-ranking.
+    - When `enable_diversity=false` (default), returns pure relevance-ranked results.
+    ...
     """
     start_time = time.time()
 
-    # Resolve effective diversity value
+    # Log incoming request parameters for debugging
+    logger.info(
+        f"📥 [search] Incoming request: "
+        f"enable_diversity={req.enable_diversity}, "
+        f"diversity={req.diversity}, "
+        f"auto_shuffle={req.auto_shuffle}, "
+        f"shuffle_seed={req.shuffle_seed}"
+    )
+
+    # Resolve diversity value
     if req.enable_diversity:
         diversity_value = DIVERSITY_MAP[req.diversity]
-        effective_seed = _resolve_shuffle_seed(req.auto_shuffle, req.shuffle_seed)
-        if effective_seed is not None and diversity_value == 0.0:
-            logger.info(
-                "🔍 [search] Shuffle requested but diversity=low — shuffle ignored"
-            )
+        logger.info(
+            f"⚙️ [search] Diversity ENABLED: level={req.diversity} ({diversity_value})"
+        )
     else:
         diversity_value = 0.0
-        effective_seed = None
-        logger.info("🔍 [search] Diversity disabled — using pure relevance ranking")
+        logger.info("🔍 [search] Diversity DISABLED — pure relevance ranking")
+
+    # Resolve shuffle seed (INDEPENDENT of diversity)
+    effective_seed = _resolve_shuffle_seed(req.auto_shuffle, req.shuffle_seed)
+
+    # Determine if shuffle will actually be applied
+    will_shuffle = effective_seed is not None
+    logger.info(
+        f"🔀 [search] Shuffle status: "
+        f"enabled={will_shuffle}, seed={effective_seed}, "
+        f"auto_shuffle={req.auto_shuffle}"
+    )
 
     logger.info(
-        f"🔍 [search] query='{req.query[:100]}' top_k={req.top_k} "
-        f"enable_diversity={req.enable_diversity} diversity={req.diversity}({diversity_value}) "
-        f"auto_shuffle={req.auto_shuffle} "
+        f"🔍 [search] Executing search: query='{req.query[:100]}' "
+        f"top_k={req.top_k} "
+        f"diversity={req.diversity}({diversity_value}) "
+        f"shuffle_seed={effective_seed} "
         f"candidate_ids={len(req.candidate_ids) if req.candidate_ids else 'all'}"
     )
 
@@ -203,7 +219,7 @@ async def smart_search(req: SearchRequest):
 
     logger.info(
         f"✅ [search] Returned {len(items)} results in {elapsed:.2f}ms "
-        f"(enable_diversity={req.enable_diversity}, seed={effective_seed})"
+        f"(diversity={diversity_value}, seed={effective_seed})"
     )
 
     return SearchResponse(
