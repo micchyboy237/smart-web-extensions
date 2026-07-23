@@ -224,7 +224,8 @@ class ChromaVideoService:
             where_document: Document content filter
 
         Returns:
-            List of {id, score, document, metadata} dicts
+            List of {id, score, document, metadata} dicts,
+            sorted by score descending (best match first).
         """
         start_time = time.time()
         query_prefix = llm_config.EMBED_QUERY_PREFIX or None
@@ -328,53 +329,85 @@ def search(
     Semantic search with optional ID restriction, score filtering,
     diversity-aware result selection, and shuffle support.
 
+    Results are always sorted by score descending before any diversity
+    re-ranking or top_k slicing is applied.
+
     Args:
         query: Search query
-        top_k: Number of results
+        top_k: Maximum number of final results to return
         where: Metadata filter (ChromaDB where clause)
         where_document: Document content filter
         candidate_ids: Optional whitelist of video IDs to search within.
                        When provided, only these IDs are considered.
-                       Used for "limit to page" mode.
+                       Final results never exceed len(candidate_ids).
         score_threshold: If set, drop results with similarity below this
                          value. Applied after the query, so may return
                          fewer than top_k.
-        diversity: Trade-off between diversity (1.0) and pure relevance
-                   (0.0) when selecting the final top_k results. Applied
-                   via MMR re-ranking (see services/search_diversity.py)
-                   over an overfetched candidate pool. Set to 0 to disable
-                   and return results ranked purely by relevance. Default 0.5.
+        diversity: Trade-off between diversity (1.0) and relevance (0.0).
+                   Only applied when > 0.
         shuffle_seed: If set, returns a different — but still diverse and
-                      relevant — top_k selection than the default
-                      (deterministic) ordering. Pass a new value (e.g. an
-                      incrementing counter or random int) each time the
-                      user wants a fresh shuffle; the same seed always
-                      reproduces the same shuffle. No caching is used, so
-                      each shuffled call re-queries Chroma with a larger
-                      candidate pool than usual. Has no effect if
-                      diversity is 0.
+                      relevant — top_k selection. Pass a new value each
+                      time for fresh shuffles; same seed reproduces same
+                      shuffle. Only applied when diversity > 0.
     """
     diversity = max(0.0, min(1.0, diversity))
     is_shuffle = shuffle_seed is not None and diversity > 0
 
+    # ── Cap top_k to candidate pool size ────────────────────────────
+    max_from_pool = len(candidate_ids) if candidate_ids else None
+    effective_top_k = min(top_k, max_from_pool) if max_from_pool is not None else top_k
+    logger.info(
+        f"🔍 [chroma_service] search: query='{query[:80]}', "
+        f"top_k={top_k}, effective_top_k={effective_top_k}, "
+        f"candidate_ids={'present(' + str(len(candidate_ids)) + ')' if candidate_ids else 'None'}"
+    )
+
+    # ── Build where filter for candidate_ids ────────────────────────
     combined_where = where
     if candidate_ids:
         id_filter = {"id": {"$in": candidate_ids}}
         combined_where = (
             {"$and": [id_filter, combined_where]} if combined_where else id_filter
         )
-        logger.info(
-            f"🔍 [chroma_service] search: query='{query[:80]}', "
-            f"candidate_ids={len(candidate_ids)}, top_k={top_k}"
+
+    # ── Calculate fetch_k (overfetch for diversity/shuffle) ─────────
+    if diversity > 0:
+        raw_fetch_k = (
+            compute_shuffle_fetch_k(effective_top_k)
+            if is_shuffle
+            else compute_fetch_k(effective_top_k, diversity)
         )
+    else:
+        raw_fetch_k = effective_top_k
 
+    # Cap fetch_k to candidate pool size
     fetch_k = (
-        compute_shuffle_fetch_k(top_k)
-        if is_shuffle
-        else compute_fetch_k(top_k, diversity)
+        min(raw_fetch_k, max_from_pool) if max_from_pool is not None else raw_fetch_k
     )
-    results = get_service().search(query, fetch_k, combined_where, where_document)
+    logger.info(
+        f"🔍 [chroma_service] fetch_k={fetch_k} "
+        f"(raw={raw_fetch_k}, max_from_pool={max_from_pool}, diversity={diversity})"
+    )
 
+    # ── Query ChromaDB ──────────────────────────────────────────────
+    results = get_service().search(query, fetch_k, combined_where, where_document)
+    logger.info(
+        f"🔍 [chroma_service] ChromaDB returned {len(results)} results "
+        f"(fetch_k={fetch_k})"
+    )
+
+    # ── Safety: explicit post-filter to candidate_ids ───────────────
+    if candidate_ids:
+        candidate_set = set(candidate_ids)
+        before_filter = len(results)
+        results = [r for r in results if r["id"] in candidate_set]
+        if len(results) < before_filter:
+            logger.warning(
+                f"⚠️ [chroma_service] Post-filtered out "
+                f"{before_filter - len(results)} results not in candidate_ids"
+            )
+
+    # ── Score threshold filter ──────────────────────────────────────
     if score_threshold is not None:
         before = len(results)
         results = [r for r in results if r["score"] >= score_threshold]
@@ -383,26 +416,79 @@ def search(
             f"{len(results)}/{before} results"
         )
 
-    if len(results) <= top_k:
+    # ── If we have ≤ effective_top_k results, return as-is ──────────
+    if len(results) <= effective_top_k:
+        logger.info(
+            f"🔍 [chroma_service] {len(results)} results "
+            f"(≤ effective_top_k={effective_top_k}), returning all"
+        )
         return results
 
+    # ── Shuffle path ────────────────────────────────────────────────
     if is_shuffle:
         logger.info(f"🔀 [chroma_service] Shuffling with seed={shuffle_seed}")
         return shuffle_and_diversify(
             results,
-            top_k=top_k,
+            top_k=effective_top_k,
             diversity=diversity,
             seed=shuffle_seed,
             get_embeddings_fn=get_embeddings,
         )
+
+    # ── Diversity path ──────────────────────────────────────────────
     if diversity > 0:
         return diversify_results(
             results,
-            top_k=top_k,
+            top_k=effective_top_k,
             diversity=diversity,
             get_embeddings_fn=get_embeddings,
         )
-    return results[:top_k]
+
+    # ── Plain relevance: top_k by score ─────────────────────────────
+    logger.info(
+        f"🔍 [chroma_service] Returning top {effective_top_k} results by score "
+        f"(no diversity)"
+    )
+    return results[:effective_top_k]
+
+
+def _reorder_by_candidate_ids(
+    results: list[dict], candidate_ids: list[str]
+) -> list[dict]:
+    """
+    Reorder search results to match the order of candidate_ids.
+    Results not in candidate_ids are placed at the end, sorted by score descending.
+
+    Args:
+        results: Search results from ChromaDB (similarity-ordered)
+        candidate_ids: The desired order of IDs
+
+    Returns:
+        Results reordered to match candidate_ids order
+    """
+    # Build a lookup by ID
+    results_by_id = {r["id"]: r for r in results}
+
+    reordered = []
+    seen_ids = set()
+
+    # First, add results in candidate_ids order
+    for cid in candidate_ids:
+        if cid in results_by_id and cid not in seen_ids:
+            reordered.append(results_by_id[cid])
+            seen_ids.add(cid)
+
+    # Then append any remaining results (not in candidate_ids), sorted by score
+    remaining = [r for r in results if r["id"] not in seen_ids]
+    remaining.sort(key=lambda r: r["score"], reverse=True)
+    reordered.extend(remaining)
+
+    logger.info(
+        f"📋 [_reorder_by_candidate_ids] Reordered {len(reordered)} results: "
+        f"{len(reordered) - len(remaining)} from candidate_ids + {len(remaining)} extra"
+    )
+
+    return reordered
 
 
 def get_embeddings(ids: list[str]) -> Optional[np.ndarray]:

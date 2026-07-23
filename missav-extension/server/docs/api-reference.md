@@ -341,7 +341,7 @@ curl -X POST http://localhost:8000/api/search \
   -d '{
     "query": "best scenes",
     "top_k": 10,
-    "limit_to_ids": [
+    "candidate_ids": [
       "jav-abc123", "jav-def456", "jav-ghi789",
       "jav-jkl012", "jav-mno345", "jav-pqr678"
     ]
@@ -350,7 +350,7 @@ curl -X POST http://localhost:8000/api/search \
 
 ### Limit to Page with Additional Filters
 
-Combining `limit_to_ids` with other filters lets you narrow down the current page's videos even further.
+Combining `candidate_ids` with other filters lets you narrow down the current page's videos even further.
 
 ```bash
 curl -X POST http://localhost:8000/api/search \
@@ -358,7 +358,7 @@ curl -X POST http://localhost:8000/api/search \
   -d '{
     "query": "drama",
     "top_k": 5,
-    "limit_to_ids": [
+    "candidate_ids": [
       "jav-abc123", "jav-def456", "jav-ghi789",
       "jav-jkl012", "jav-mno345", "jav-pqr678",
       "jav-stu901", "jav-vwx234"
@@ -435,7 +435,7 @@ curl -X POST http://localhost:8000/api/search \
 | `include_episodes`      | `string[]`   | `[]`       | Only include specific episode numbers                          |
 | `include_episode_range` | `[int, int]` | `null`     | Episode range `[min, max]`                                     |
 | `exclude_ids`           | `string[]`   | `[]`       | Exclude specific video IDs (e.g., already watched)             |
-| `limit_to_ids`          | `string[]`   | `null`     | **Restrict search to only these video IDs** (page-loaded mode) |
+| `candidate_ids`         | `string[]`   | `null`     | **Restrict search to only these video IDs** (page-loaded mode) |
 | `diversity_factor`      | `float`      | `0.3`      | 0 = relevance only, 1 = maximum diversity                      |
 | `max_per_code`          | `int`        | `null`     | Max results per series code (for diversity)                    |
 

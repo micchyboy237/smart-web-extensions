@@ -296,12 +296,23 @@ async function performSmartSearch() {
 async function performFindSimilar(videoId) {
   showLoading(true);
   try {
+    // Build options including limitToPage if checked
+    const options = {
+      topK: parseInt(topKInput.value) || 10,
+    };
+
+    // Pass candidate_ids if "Limit to Current Page" is enabled
+    if (limitToPageCheckbox.checked && pageVideoIds.length > 0) {
+      options.limitToIds = pageVideoIds;
+      console.log(
+        `[POPUP] 📄 FindSimilar: limiting to ${pageVideoIds.length} page videos`,
+      );
+    }
+
     const response = await chrome.runtime.sendMessage({
       action: "findSimilar",
       videoId,
-      options: {
-        topK: parseInt(topKInput.value) || 10,
-      },
+      options,
     });
     if (response.success) {
       currentResults = response.results || [];
@@ -378,7 +389,7 @@ function buildSearchParams() {
     // NEW: auto_shuffle flag
     autoShuffle: autoShuffleCheckbox.checked,
   };
-  // Add limit_to_ids if toggle is enabled
+  // Add candidate_ids if toggle is enabled
   if (limitToPageCheckbox.checked && pageVideoIds.length > 0) {
     params.limitToIds = pageVideoIds;
   }

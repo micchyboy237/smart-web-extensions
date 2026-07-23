@@ -204,7 +204,7 @@ class MissAVServerClient {
       diversity, // CHANGED: sends string directly
       max_per_code: maxPerCode,
       search_type: searchType,
-      limit_to_ids: limitToIds,
+      candidate_ids: limitToIds,
       auto_shuffle: autoShuffle, // NEW
     };
     try {
@@ -260,11 +260,21 @@ class MissAVServerClient {
     }
     // Search using the video's text/code as query
     const searchQuery = video.metadata?.text || video.metadata?.code || "";
+
+    console.log("[SERVER CLIENT] 🔍 Find similar:", {
+      videoId,
+      query: searchQuery,
+      limitToIds: options.limitToIds
+        ? `${options.limitToIds.length} IDs`
+        : "none",
+    });
+
     return this.search({
       query: searchQuery,
       topK: options.topK || 10,
       excludeIds: [videoId], // Exclude the video itself
       diversityFactor: 0.5, // Higher diversity for recommendations
+      limitToIds: options.limitToIds || null, // ← FORWARD limitToIds
       ...options,
     });
   }
