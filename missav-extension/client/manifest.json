@@ -1,7 +1,7 @@
 {
   "manifest_version": 4,
   "name": "MissAV Quick Viewer",
-  "version": "1.16",
+  "version": "1.17",
   "description": "Smart search and filter videos with AI-powered recommendations",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["http://192.168.68.30:8000/*"],
