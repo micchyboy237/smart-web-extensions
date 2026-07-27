@@ -1,3 +1,13 @@
+// ====================== STATE ======================
+let availableCodes = new Set();
+let currentTheme = "light";
+let currentResults = [];
+let toastTimer = null;
+let defaultSimilarId = null;
+let favorites = new Set();
+let lastSearchParams = null; // Unified: { action: "smartSearch"|"findSimilar", params: {...} }
+let hoverPreviewTimers = new Map();
+
 // ====================== DOM ELEMENTS ======================
 const queryInput = document.getElementById("query");
 const topKInput = document.getElementById("topK");
@@ -26,15 +36,26 @@ const copyAllIds = document.getElementById("copyAllIds");
 const limitToPageCheckbox = document.getElementById("limitToPage");
 const pageVideoCount = document.getElementById("pageVideoCount");
 
-// ====================== STATE ======================
-let availableCodes = new Set();
-let currentTheme = "light";
-let currentResults = [];
-let toastTimer = null;
-let defaultSimilarId = null;
-let favorites = new Set();
-let lastSearchParams = null; // Unified: { action: "smartSearch"|"findSimilar", params: {...} }
-let hoverPreviewTimers = new Map();
+// ====================== SOURCE TAB (extended-page mode) ======================
+const urlParams = new URLSearchParams(window.location.search);
+const sourceTabId = urlParams.get("tabId")
+  ? parseInt(urlParams.get("tabId"), 10)
+  : null;
+console.log("[POPUP] 🪟 Extended page mode. sourceTabId:", sourceTabId);
+
+async function getSourceTab() {
+  if (sourceTabId !== null) {
+    try {
+      return await chrome.tabs.get(sourceTabId);
+    } catch (err) {
+      console.warn("[POPUP] ⚠️ Source tab gone:", err.message);
+      return null;
+    }
+  }
+  // Legacy fallback if popup.html is ever opened without ?tabId (e.g. manual dev testing)
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab || null;
+}
 
 // ====================== DIVERSITY MAPPING ======================
 function sliderToDiversityEnum(value) {
@@ -174,6 +195,18 @@ function setupEventListeners() {
       });
     });
   });
+
+  // **UI/UX addition** — a way to jump back to the MissAV tab, since the viewer is now a standalone window. Add a handler:
+  const focusSourceTabBtn = document.getElementById("focusSourceTab");
+  focusSourceTabBtn?.addEventListener("click", async () => {
+    const tab = await getSourceTab();
+    if (tab) {
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+    } else {
+      showToast("Source tab was closed", "error");
+    }
+  });
 }
 
 // ====================== FAVORITES ======================
@@ -233,10 +266,7 @@ let pageVideoIds = [];
 
 async function updatePageVideoIds() {
   try {
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
+    const tab = await getSourceTab();
     if (!tab) return;
     const response = await chrome.tabs.sendMessage(tab.id, {
       action: "getPageVideoIds",
@@ -265,22 +295,18 @@ function updatePageVideoCount() {
 async function detectDefaultSimilarId() {
   console.log("[POPUP] 🔍 Detecting default similar video ID...");
   try {
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
+    const tab = await getSourceTab();
     if (!tab || !tab.url) {
-      console.log("[POPUP] ⚠️ No active tab URL found");
+      console.log("[POPUP] ⚠️ No source tab URL found");
       return;
     }
     const dbId = detectDbIdFromUrl(tab.url);
-    if (dbId) {
-      defaultSimilarId = dbId;
-      console.log(`[POPUP] 🎯 Default similar DB ID set: "${dbId}"`);
-    } else {
-      defaultSimilarId = null;
-      console.log("[POPUP] ⚠️ No DB ID detected on current page");
-    }
+    defaultSimilarId = dbId || null;
+    console.log(
+      dbId
+        ? `[POPUP] 🎯 Default similar DB ID: "${dbId}"`
+        : "[POPUP] ⚠️ No DB ID on source tab",
+    );
   } catch (err) {
     console.log("[POPUP] ⚠️ Could not detect video ID:", err.message);
     defaultSimilarId = null;
@@ -697,7 +723,7 @@ function getFormRefs() {
 
 // ====================== INITIALIZATION ======================
 document.addEventListener("DOMContentLoaded", async () => {
-  await PopupState.init();
+  await PopupState.init(sourceTabId);
   await loadTheme();
   await loadFavorites();
   await loadAvailableCodes();

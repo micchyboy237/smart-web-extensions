@@ -12,6 +12,52 @@
 // on the background entry — this is a classic (non-module) service worker.
 importScripts("server-client.js");
 
+// ====================== VIEWER WINDOW MANAGEMENT ======================
+let viewerWindowId = null;
+let viewerSourceTabId = null;
+
+chrome.action.onClicked.addListener(async (tab) => {
+  console.log("[SW] 🖱️ Action clicked, source tab:", tab.id);
+  // Reuse an already-open viewer window instead of stacking new ones
+  if (viewerWindowId !== null) {
+    try {
+      await chrome.windows.update(viewerWindowId, { focused: true });
+      console.log("[SW] 🔎 Focused existing viewer window:", viewerWindowId);
+      return;
+    } catch (err) {
+      console.log(
+        "[SW] ⚠️ Stale viewer window ref, opening fresh:",
+        err.message,
+      );
+      viewerWindowId = null;
+    }
+  }
+  viewerSourceTabId = tab.id;
+  const url = chrome.runtime.getURL(`popup.html?tabId=${tab.id}`);
+  const win = await chrome.windows.create({
+    url,
+    type: "popup",
+    width: 1200,
+    height: 800,
+    focused: true,
+  });
+  viewerWindowId = win.id;
+  console.log(
+    "[SW] 🪟 Opened viewer window",
+    viewerWindowId,
+    "for tab",
+    tab.id,
+  );
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  if (windowId === viewerWindowId) {
+    console.log("[SW] 🪟 Viewer window closed, clearing refs");
+    viewerWindowId = null;
+    viewerSourceTabId = null;
+  }
+});
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[SW] ✅ Service worker installed, server-client.js loaded");
 });

@@ -18,14 +18,21 @@ const PopupState = {
    * Initialize: detect current tab ID so we can scope state correctly.
    * Must be called before save/load. Returns the tab ID.
    */
-  async init() {
+  async init(tabId = null) {
+    if (tabId !== null) {
+      this._tabId = tabId;
+      console.log(`[STATE] 🆔 Initialized for tab (explicit): ${this._tabId}`);
+      return this._tabId;
+    }
     try {
       const [tab] = await chrome.tabs.query({
         active: true,
         currentWindow: true,
       });
       this._tabId = tab?.id || null;
-      console.log(`[STATE] 🆔 Initialized for tab: ${this._tabId}`);
+      console.log(
+        `[STATE] 🆔 Initialized for tab (query fallback): ${this._tabId}`,
+      );
       return this._tabId;
     } catch (err) {
       console.warn("[STATE] ⚠️ Could not get tab ID:", err.message);

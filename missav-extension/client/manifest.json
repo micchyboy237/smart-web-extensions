@@ -1,12 +1,12 @@
 {
-  "manifest_version": 4,
-  "name": "MissAV Quick Viewer",
-  "version": "1.17",
+  "manifest_version": 3,
+  "name": "MissAV Smart Search",
+  "version": "2.0",
   "description": "Smart search and filter videos with AI-powered recommendations",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["http://192.168.68.30:8000/*"],
   "action": {
-    "default_popup": "popup.html"
+    "default_title": "MissAV Smart Search"
   },
   "content_scripts": [
     {
