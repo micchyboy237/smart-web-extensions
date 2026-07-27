@@ -360,17 +360,25 @@ def search(
 
     # Calculate fetch_k based on whether we're shuffling or diversifying
     if is_shuffle:
-        # Shuffle needs a larger pool to sample from
         raw_fetch_k = compute_shuffle_fetch_k(effective_top_k)
         logger.info(f"🔀 [chroma_service] Shuffle mode: using shuffle_fetch_k")
     elif diversity > 0:
-        # Normal diversity path
         raw_fetch_k = compute_fetch_k(effective_top_k, diversity)
         logger.info(f"🎨 [chroma_service] Diversity mode: using normal fetch_k")
     else:
-        # Pure relevance, no overfetching needed
         raw_fetch_k = effective_top_k
         logger.info(f"🔍 [chroma_service] Relevance-only mode: no overfetching")
+
+    if score_threshold is not None and raw_fetch_k > effective_top_k:
+        # score_threshold is applied AFTER the DB fetch, so pad the pool
+        # to compensate for candidates we expect to filter out below it.
+        padded_fetch_k = int(raw_fetch_k * 1.5)
+        logger.info(
+            f"🎯 [chroma_service] score_threshold={score_threshold} set — "
+            f"padding fetch_k {raw_fetch_k} -> {padded_fetch_k} to leave "
+            f"enough candidates for diversify/shuffle after filtering"
+        )
+        raw_fetch_k = padded_fetch_k
 
     fetch_k = (
         min(raw_fetch_k, max_from_pool) if max_from_pool is not None else raw_fetch_k

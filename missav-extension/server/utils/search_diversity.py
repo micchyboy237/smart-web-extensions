@@ -31,6 +31,9 @@ BALANCED_RELEVANCE_BIAS = 1.0
 # would just keep re-picking from the same top slice of the pool.
 MIN_SAMPLE_WEIGHT = 0.05
 
+FETCH_K_CAP = 300  # was hardcoded 200 inside compute_fetch_k
+SHUFFLE_FETCH_K_CAP = 400  # was hardcoded 300 inside compute_shuffle_fetch_k
+
 
 class LlamaCppSemHashEncoder:
     """
@@ -64,8 +67,10 @@ def compute_fetch_k(top_k: int, diversity: float) -> int:
 
     MMR needs a pool larger than top_k to have anything to trade relevance
     against — fetching exactly top_k candidates and then "diversifying"
-    them is a no-op. Scales with top_k but is capped to avoid an
-    unnecessarily expensive Chroma query for large top_k values.
+    them is a no-op. The multiplier now scales with how much diversity was
+    requested (a diversity=0.1 nudge doesn't need the same pool as
+    diversity=1.0), and is capped to avoid an unnecessarily expensive
+    Chroma query for large top_k values.
 
     :param top_k: Number of final results the caller wants.
     :param diversity: Diversity weight (0 disables overfetching entirely).
@@ -73,7 +78,18 @@ def compute_fetch_k(top_k: int, diversity: float) -> int:
     """
     if diversity <= 0:
         return top_k
-    return min(max(top_k * 4, top_k + 20), 200)
+    # diversity=0.0 -> handled above. diversity=0.1 -> 3x, 0.5 -> ~5x, 1.0 -> 6x
+    multiplier = 3 + round(diversity * 3)
+    desired = top_k * multiplier
+    fetch_k = min(max(desired, top_k + 20), FETCH_K_CAP)
+    if desired > FETCH_K_CAP:
+        logger.warning(
+            f"⚠️ [SearchDiversity] compute_fetch_k capped: wanted {desired} "
+            f"candidates (top_k={top_k}, diversity={diversity}, "
+            f"multiplier={multiplier}x) but capped to {FETCH_K_CAP}. "
+            f"MMR is working with a smaller pool than intended for this top_k."
+        )
+    return fetch_k
 
 
 def compute_shuffle_fetch_k(top_k: int) -> int:
@@ -88,7 +104,15 @@ def compute_shuffle_fetch_k(top_k: int) -> int:
     :param top_k: Number of final results the caller wants.
     :return: Number of candidates to fetch from the vector store.
     """
-    return min(max(top_k * 10, top_k + 60), 300)
+    desired = top_k * 10
+    fetch_k = min(max(desired, top_k + 60), SHUFFLE_FETCH_K_CAP)
+    if desired > SHUFFLE_FETCH_K_CAP:
+        logger.warning(
+            f"⚠️ [SearchDiversity] compute_shuffle_fetch_k capped: wanted "
+            f"{desired} candidates (top_k={top_k}) but capped to "
+            f"{SHUFFLE_FETCH_K_CAP}. Shuffle variety is reduced for this top_k."
+        )
+    return fetch_k
 
 
 def sample_candidate_pool(
@@ -96,12 +120,19 @@ def sample_candidate_pool(
     sample_size: int,
     seed: int,
     relevance_bias: float = BALANCED_RELEVANCE_BIAS,
+    guaranteed_top: int = 1,
 ) -> list[dict]:
     """
     Weighted random sample (without replacement) of `results`, biased
     toward higher relevance scores. This is what makes "shuffle" vary
     across calls: a different random subset of the (still relevant)
     candidate pool is chosen each time, before MMR diversifies it.
+
+    The top `guaranteed_top` candidates by score are always kept — pure
+    weighted sampling can otherwise drop the single best match by chance,
+    which is a bad look for "shuffle" even though it's not a bug. The
+    remaining `sample_size - guaranteed_top` slots are filled by the
+    existing weighted random draw over everything else.
 
     Weighting scheme: scores are min-max normalized to [0, 1] across the
     pool, then raised to `relevance_bias` and floored at MIN_SAMPLE_WEIGHT
@@ -112,16 +143,28 @@ def sample_candidate_pool(
         relevance_bias < 1.0  -> favors variety more
                                   (shuffles can surface weaker matches)
 
-    :param results: Scored search results; each dict must have a "score" key.
+    :param results: Scored search results; each dict must have "id" and "score".
     :param sample_size: Number of results to sample.
     :param seed: Random seed — same seed always produces the same sample.
     :param relevance_bias: Exponent controlling relevance-vs-variety balance.
+    :param guaranteed_top: How many top-scored candidates to always keep.
+        Set to 0 to restore the old pure-random behavior.
     :return: Sampled subset of `results`, length == min(sample_size, len(results)).
     """
     if sample_size >= len(results):
         return results
 
-    scores = np.asarray([r["score"] for r in results], dtype=np.float64)
+    guaranteed_top = min(guaranteed_top, sample_size, len(results))
+    sorted_by_score = sorted(results, key=lambda r: r["score"], reverse=True)
+    guaranteed = sorted_by_score[:guaranteed_top]
+    guaranteed_ids = {r["id"] for r in guaranteed}
+    remaining_pool = [r for r in results if r["id"] not in guaranteed_ids]
+    remaining_sample_size = sample_size - guaranteed_top
+
+    if remaining_sample_size <= 0 or not remaining_pool:
+        return guaranteed
+
+    scores = np.asarray([r["score"] for r in remaining_pool], dtype=np.float64)
     score_range = scores.max() - scores.min()
     normalized = (
         (scores - scores.min()) / score_range
@@ -133,13 +176,17 @@ def sample_candidate_pool(
     weights = weights / weights.sum()
 
     rng = np.random.default_rng(seed)
-    indices = rng.choice(len(results), size=sample_size, replace=False, p=weights)
+    indices = rng.choice(
+        len(remaining_pool), size=remaining_sample_size, replace=False, p=weights
+    )
+    sampled_rest = [remaining_pool[i] for i in indices]
 
     logger.debug(
         f"🔀 [SearchDiversity] Sampled {sample_size}/{len(results)} candidates "
-        f"(seed={seed}, relevance_bias={relevance_bias})"
+        f"({guaranteed_top} guaranteed top-scored + {remaining_sample_size} "
+        f"weighted random, seed={seed}, relevance_bias={relevance_bias})"
     )
-    return [results[i] for i in indices]
+    return guaranteed + sampled_rest
 
 
 def diversify_results(
