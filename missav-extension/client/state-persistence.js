@@ -72,6 +72,7 @@ const PopupState = {
       maxPerCode: getVal(formRefs.maxPerCode),
       autoShuffle: getChecked(formRefs.autoShuffle),
       limitToPage: getChecked(formRefs.limitToPage),
+      excludeOpenTabs: getChecked(formRefs.excludeOpenTabs),
     };
   },
 
@@ -105,6 +106,7 @@ const PopupState = {
     setVal(formRefs.maxPerCode, snapshot.maxPerCode);
     setChecked(formRefs.autoShuffle, snapshot.autoShuffle);
     setChecked(formRefs.limitToPage, snapshot.limitToPage);
+    setChecked(formRefs.excludeOpenTabs, snapshot.excludeOpenTabs);
     // Multi-selects — must be called AFTER <option>s are populated
     restoreMulti(formRefs.includeCodes, snapshot.includeCodesSelected);
     restoreMulti(formRefs.excludeCodes, snapshot.excludeCodesSelected);

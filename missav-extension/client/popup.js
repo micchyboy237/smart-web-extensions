@@ -5,8 +5,9 @@ let currentResults = [];
 let toastTimer = null;
 let defaultSimilarId = null;
 let favorites = new Set();
-let lastSearchParams = null; // Unified: { action: "smartSearch"|"findSimilar", params: {...} }
+let lastSearchParams = null;
 let hoverPreviewTimers = new Map();
+let openTabUrls = new Set(); // Store URLs of currently open tabs
 
 // ====================== DOM ELEMENTS ======================
 const queryInput = document.getElementById("query");
@@ -35,6 +36,7 @@ const resultCount = document.getElementById("resultCount");
 const copyAllIds = document.getElementById("copyAllIds");
 const limitToPageCheckbox = document.getElementById("limitToPage");
 const pageVideoCount = document.getElementById("pageVideoCount");
+const excludeOpenTabsCheckbox = document.getElementById("excludeOpenTabs");
 
 // ====================== SOURCE TAB (extended-page mode) ======================
 const urlParams = new URLSearchParams(window.location.search);
@@ -55,6 +57,27 @@ async function getSourceTab() {
   // Legacy fallback if popup.html is ever opened without ?tabId (e.g. manual dev testing)
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab || null;
+}
+
+// ====================== OPEN TABS MANAGEMENT ======================
+async function refreshOpenTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: "*://missav.ws/*" });
+    openTabUrls.clear();
+    tabs.forEach((tab) => {
+      if (tab.url) openTabUrls.add(tab.url);
+    });
+    console.log(`[POPUP] 🪟 Refreshed ${openTabUrls.size} open MissAV tabs`);
+  } catch (err) {
+    console.error("[POPUP] ⚠️ Failed to query tabs:", err);
+  }
+}
+
+function isUrlOpen(url) {
+  if (!url) return false;
+  // Normalize URL by removing hash/fragments for comparison
+  const cleanUrl = url.split("#")[0];
+  return openTabUrls.has(cleanUrl) || openTabUrls.has(url);
 }
 
 // ====================== DIVERSITY MAPPING ======================
@@ -165,6 +188,18 @@ function setupEventListeners() {
     updatePageVideoCount(); // Then update the display
   });
 
+  limitToPageCheckbox.addEventListener("change", async () => {
+    await updatePageVideoIds();
+    updatePageVideoCount();
+  });
+
+  excludeOpenTabsCheckbox.addEventListener("change", () => {
+    refreshOpenTabs(); // Ensure we have the latest tab list
+    if (currentResults.length > 0) {
+      displayResults(currentResults, "Filtered Results"); // Re-display with filtering
+    }
+  });
+
   // Auto-save state on form changes
   const formElements = [
     queryInput,
@@ -179,8 +214,9 @@ function setupEventListeners() {
     diversityFactorInput,
     maxPerCodeInput,
     autoShuffleCheckbox,
-    enableDiversityCheckbox, // ← NEW
+    enableDiversityCheckbox,
     limitToPageCheckbox,
+    excludeOpenTabsCheckbox,
   ];
   const formRefs = getFormRefs();
   formElements.forEach((el) => {
@@ -344,8 +380,23 @@ async function performFindSimilar(videoId) {
     );
   }
 
-  console.log("[POPUP] 🔍 FindSimilar options:", options);
+  // Add excludeIds from open tabs
+  if (excludeOpenTabsCheckbox.checked) {
+    const excludeIdsFromTabs = Array.from(openTabUrls)
+      .map((url) => {
+        const info = extractJavInfo(url, null);
+        return info.videoId;
+      })
+      .filter(Boolean);
 
+    // Ensure we don't exclude the video we are searching for itself
+    options.excludeIds = excludeIdsFromTabs.filter((id) => id !== videoId);
+    console.log(
+      `[POPUP] 🪟 FindSimilar: excluding ${options.excludeIds.length} open tab IDs`,
+    );
+  }
+
+  console.log("[POPUP] 🔍 FindSimilar options:", options);
   await executeSearch(
     { action: "findSimilar", params: { videoId, options } },
     `Similar to ${videoId}`,
@@ -428,6 +479,32 @@ async function executeSearch(actionParams, label) {
 function buildSearchParams() {
   const episodeRange = getEpisodeRange();
   const diversityValue = parseFloat(diversityFactorInput.value);
+
+  // Extract video IDs from open tabs to exclude them on the server side
+  let excludeIdsFromTabs = [];
+  if (excludeOpenTabsCheckbox.checked) {
+    // We need to map the open URLs back to their video IDs.
+    // Since we only have URLs in openTabUrls, we'll rely on the server's
+    // ability to handle URL-based exclusion or convert them if possible.
+    // However, the server expects video_id (e.g., "mxgs-893").
+
+    // For now, we will keep the client-side filtering as the primary method
+    // because mapping arbitrary MissAV URLs back to IDs reliably in the popup
+    // without a DB lookup is complex.
+
+    // BUT, if we want to send them, we can try to extract IDs from the URLs:
+    excludeIdsFromTabs = Array.from(openTabUrls)
+      .map((url) => {
+        const info = extractJavInfo(url, null);
+        return info.videoId;
+      })
+      .filter(Boolean);
+
+    console.log(
+      `[POPUP] 🪟 Excluding ${excludeIdsFromTabs.length} video IDs from open tabs`,
+    );
+  }
+
   const params = {
     query: queryInput.value.trim(),
     topK: parseInt(topKInput.value) || 20,
@@ -435,7 +512,8 @@ function buildSearchParams() {
     excludeCodes: getSelectedOptions(excludeCodesSelect),
     includeEpisodes: [],
     episodeRange: episodeRange,
-    excludeIds: [],
+    // Merge existing excludeIds with tab IDs
+    excludeIds: [...excludeIdsFromTabs],
     enableDiversity: enableDiversityCheckbox.checked,
     diversity: sliderToDiversityEnum(diversityValue),
     maxPerCode: maxPerCodeInput.value ? parseInt(maxPerCodeInput.value) : null,
@@ -447,7 +525,6 @@ function buildSearchParams() {
   console.log("[POPUP] 📦 Building search params");
   console.log("  limitToPage checked:", limitToPageCheckbox.checked);
   console.log("  pageVideoIds length:", pageVideoIds.length);
-
   if (limitToPageCheckbox.checked && pageVideoIds.length > 0) {
     params.limitToIds = pageVideoIds;
     console.log(`  ✅ Adding ${pageVideoIds.length} candidate IDs to payload`);
@@ -474,13 +551,21 @@ function getEpisodeRange() {
 
 // ====================== DISPLAY RESULTS ======================
 function displayResults(results, title) {
-  // Clean up any lingering preview timers
   hoverPreviewTimers.forEach((timer) => clearTimeout(timer));
   hoverPreviewTimers.clear();
 
-  updateResultBadge(results.length);
+  // Filter out open tabs if the toggle is checked
+  let filteredResults = results;
+  if (excludeOpenTabsCheckbox.checked) {
+    filteredResults = results.filter((r) => !isUrlOpen(r.metadata?.url));
+    console.log(
+      `[POPUP] 🪟 Excluded ${results.length - filteredResults.length} open tabs`,
+    );
+  }
 
-  if (!results.length) {
+  updateResultBadge(filteredResults.length);
+
+  if (!filteredResults.length) {
     resultsContainer.innerHTML = `
       <div class="empty-results">
         <div class="empty-icon"><i class="fas fa-search"></i></div>
@@ -492,7 +577,7 @@ function displayResults(results, title) {
   }
 
   let html = '<div class="results-grid">';
-  results.forEach((result, index) => {
+  filteredResults.forEach((result, index) => {
     const metadata = result.metadata || {};
     const videoId = metadata.video_id || metadata.videoId || "N/A";
     const code = metadata.code || "";
@@ -502,11 +587,14 @@ function displayResults(results, title) {
     const thumbnail = getThumbnailUrl(metadata);
     const previewUrl = getPreviewUrl(metadata);
     const isFav = favorites.has(videoId);
+    const isOpen = isUrlOpen(metadata.url); // Check if this specific result is open
+
     const favIconClass = isFav ? "fas fa-heart" : "far fa-heart";
     const favActiveClass = isFav ? " active" : "";
 
     html += `
       <div class="result-card" data-video-id="${escapeHtml(videoId)}" data-url="${escapeHtml(metadata.url || "")}">
+        ${isOpen ? `<div class="open-tab-badge"><i class="fas fa-external-link-alt"></i> Open</div>` : ""}
         <button class="fav-btn${favActiveClass}" data-video-id="${escapeHtml(videoId)}" title="${isFav ? "Remove from favorites" : "Add to favorites"}">
           <i class="${favIconClass}"></i>
         </button>
@@ -716,8 +804,9 @@ function getFormRefs() {
     diversityFactor: diversityFactorInput,
     maxPerCode: maxPerCodeInput,
     autoShuffle: autoShuffleCheckbox,
-    enableDiversity: enableDiversityCheckbox, // ← NEW
+    enableDiversity: enableDiversityCheckbox,
     limitToPage: limitToPageCheckbox,
+    excludeOpenTabs: excludeOpenTabsCheckbox,
   };
 }
 
@@ -727,6 +816,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadTheme();
   await loadFavorites();
   await loadAvailableCodes();
+  await refreshOpenTabs();
 
   const formRefs = getFormRefs();
   const saved = await PopupState.load({ formRefs });
