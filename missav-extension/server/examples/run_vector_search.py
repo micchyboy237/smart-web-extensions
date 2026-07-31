@@ -18,24 +18,28 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 parser = argparse.ArgumentParser(description="Search ChromaService with a query.")
 parser.add_argument("query", type=str, help="Search query (e.g. 'amazing videos')")
 parser.add_argument(
+    "-k",
     "--top-k",
     type=int,
     default=5,
     help="Number of results to return (default: 5)",
 )
 parser.add_argument(
+    "-t",
     "--threshold",
     type=float,
-    default=0.7,
-    help="Score threshold for search results (default: 0.7)",
+    default=0.3,
+    help="Score threshold for search results (default: 0.3)",
 )
 parser.add_argument(
+    "-d",
     "--diversity",
     type=float,
     default=0.5,
     help="Diversity value for result selection (0.0=relevance only, 1.0=max diversity, default: 0.5)",
 )
 parser.add_argument(
+    "-s",
     "--shuffle-seed",
     type=int,
     default=None,
@@ -88,7 +92,7 @@ console.print(
     f"💾 Saved results to: [bold bright_blue][link=file://{search_results_file.resolve()}]{search_results_file.name}[/link][/bold bright_blue]"
 )
 console.print(f"\n✅ Vector search complete! Top {len(search_results)} results:")
-for result in formatted_results[:top_k]:
+for result in formatted_results[:5]:
     console.print(
         f"   #{result['rank']} [score:{result['score']:.4f}] {result['text'][:80]}..."
     )

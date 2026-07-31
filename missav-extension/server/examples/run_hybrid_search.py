@@ -17,24 +17,32 @@ shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 parser = argparse.ArgumentParser(description="Search ChromaService with a query.")
-parser.add_argument("query", type=str, help="Search query (e.g. 'amazing videos')")
 parser.add_argument(
-    "--top-k",
-    type=int,
-    default=10,
-    help="Number of final results to return (default: 10)",
+    "query",
+    type=str,
+    help="Search query (e.g. 'amazing videos')",
 )
 parser.add_argument(
+    "-k",
+    "--top-k",
+    type=int,
+    default=None,
+    required=False,
+    help="Number of final results to return (default: None = all)",
+)
+parser.add_argument(
+    "-c",
     "--embed-candidates",
     type=int,
     default=100,
     help="Number of initial semantic candidates (default: 100)",
 )
 parser.add_argument(
+    "-t",
     "--threshold",
     type=float,
-    default=0.7,
-    help="Score threshold for initial semantic search (default: 0.7)",
+    default=0.3,
+    help="Score threshold for initial semantic search (default: 0.3)",
 )
 args = parser.parse_args()
 
@@ -77,14 +85,13 @@ console.print(f"🧬 [Step 3/3] Running hybrid search (top_k={top_k})")
 hybrid_search_results = hybrid_search(
     query=query,
     documents=docs,
-    top_k=top_k,
-    embed_candidates=embed_candidates,
+    # top_n=top_k,
     doc_embeddings=doc_embs_list,
 )
 
 formatted_results = []
 for rank, hr in enumerate(hybrid_search_results, start=1):
-    original_item = search_results[hr["original_index"]]
+    original_item = search_results[hr["index"]]
     metadata = original_item["metadata"]
     formatted_results.append(
         {
@@ -95,7 +102,7 @@ for rank, hr in enumerate(hybrid_search_results, start=1):
             "code": metadata.get("code", ""),
             "episode": metadata.get("episode", ""),
             "url": metadata.get("url", ""),
-            "document": hr["document"],
+            "text": hr["text"],
         }
     )
 
@@ -124,6 +131,5 @@ console.print("\n✅ Hybrid search complete!")
 console.print(f"   Top {len(formatted_results[:5])} results:")
 for result in formatted_results[:5]:
     console.print(
-        f"   #{result['rank']} [score:{result['score']:.4f}] "
-        f"{result['document'][:80]}..."
+        f"   #{result['rank']} [score:{result['score']:.4f}] {result['text'][:80]}..."
     )
