@@ -11,7 +11,8 @@
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
-  min-width: 260px;
+  min-width: 300px;
+  max-width: 400px;
   border: 1px solid #333;
 }
 
@@ -19,6 +20,8 @@
   margin: 0 0 12px 0;
   font-size: 16px;
   color: #e94560;
+  display: flex;
+  align-items: center;
 }
 
 .pto-row {
@@ -65,4 +68,21 @@
   word-break: break-word;
   line-height: 1.4;
   min-height: 18px;
+}
+
+#pto-debug-log {
+  display: none;
+  background: #0d1117;
+  color: #8b949e;
+  font-family: "Consolas", "Monaco", monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border: 1px solid #21262d;
 }
