@@ -1,16 +1,31 @@
 (function () {
-  // Prevent double injection
   if (document.getElementById("pto-panel")) return;
 
   // --- CONFIGURATION ---
-  const DELAY_BETWEEN_TABS_MS = 800; // Delay to avoid browser popup blocker
-  const DELAY_FOR_PAGE_LOAD_MS = 2000; // Wait time after clicking Next page
+  const DELAY_BETWEEN_TABS_MS = 800;
+  const DELAY_FOR_PAGE_LOAD_MS = 2000;
   const EXCLUDED_FORUM_TEXT = "Non-Pinay Videos";
 
   // --- STATE ---
   let isRunning = false;
   let openedCount = 0;
   let targetCount = 0;
+
+  // --- COMMUNICATION WITH BACKGROUND WORKER ---
+  async function checkAndOpenTab(url) {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: "CHECK_AND_OPEN", url },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            resolve({ opened: false, error: chrome.runtime.lastError.message });
+          } else {
+            resolve(response || { opened: false, error: "No response" });
+          }
+        },
+      );
+    });
+  }
 
   // --- UI CREATION ---
   function createPanel() {
@@ -58,20 +73,19 @@
 
   function stopProcess() {
     isRunning = false;
-    updateStatus(`Stopped. Opened: ${openedCount}`);
+    updateStatus(`Stopped. Opened: ${openedCount} new tabs.`);
     toggleButtons(false);
   }
 
   async function processCurrentPage() {
     if (!isRunning || openedCount >= targetCount) {
       if (openedCount >= targetCount) {
-        updateStatus(`✅ Done! Opened ${openedCount} tabs.`);
+        updateStatus(`✅ Done! Opened ${openedCount} new tabs.`);
         stopProcess();
       }
       return;
     }
 
-    // 1. Get all thread rows on current page
     const rows = document.querySelectorAll(
       "li.block-row.js-inlineModContainer",
     );
@@ -79,57 +93,62 @@
     for (const row of rows) {
       if (!isRunning || openedCount >= targetCount) break;
 
-      // 2. Check for exclusion
+      // Exclusion check
       const forumLink = row.querySelector(
         '.contentRow-minor a[href^="/forums/"]',
       );
       const forumName = forumLink ? forumLink.textContent.trim() : "";
 
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
-        continue; // Skip this row
+        continue;
       }
 
-      // 3. Get thread link
+      // Get thread link
       const titleLink = row.querySelector("h3.contentRow-title a");
       if (!titleLink) continue;
 
       let href = titleLink.getAttribute("href");
       if (!href) continue;
 
-      // Ensure absolute URL
+      // Normalize to absolute URL
       if (href.startsWith("/")) {
         href = window.location.origin + href;
       }
 
-      // 4. Open tab
-      updateStatus(
-        `Opening ${openedCount + 1}/${targetCount}: ${titleLink.textContent.substring(0, 30)}...`,
-      );
-      window.open(href, "_blank");
-      openedCount++;
+      // ✅ Ask background worker to check ALL open tabs and open if unique
+      updateStatus(`Checking: ${titleLink.textContent.substring(0, 30)}...`);
+      const result = await checkAndOpenTab(href);
 
-      // Delay between opens to prevent browser blocking
+      if (result.opened) {
+        openedCount++;
+        updateStatus(
+          `Opened ${openedCount}/${targetCount}: ${titleLink.textContent.substring(0, 30)}...`,
+        );
+      } else if (result.duplicate) {
+        updateStatus(
+          `⏭️ Already open: ${titleLink.textContent.substring(0, 25)}...`,
+        );
+      } else {
+        updateStatus(`❌ Error: ${result.error || "Unknown"}`);
+      }
+
       await sleep(DELAY_BETWEEN_TABS_MS);
     }
 
-    // 5. If we still need more, go to next page
+    // Paginate if target not yet reached
     if (isRunning && openedCount < targetCount) {
       const nextBtn = document.querySelector(
         "a.pageNav-jump--next, a.pageNavSimple-el--next",
       );
 
       if (nextBtn) {
-        updateStatus(
-          `Page exhausted. Moving to next page... (${openedCount}/${targetCount})`,
-        );
+        updateStatus(`Moving to next page... (${openedCount}/${targetCount})`);
         await sleep(500);
         nextBtn.click();
-
-        // Wait for new page content to load
         await waitForPageLoad();
         await processCurrentPage();
       } else {
-        updateStatus(`⚠️ No more pages found. Opened ${openedCount} tabs.`);
+        updateStatus(`⚠️ No more pages. Opened ${openedCount} new tabs.`);
         stopProcess();
       }
     }
@@ -142,8 +161,6 @@
 
   function waitForPageLoad() {
     return new Promise((resolve) => {
-      // Simple approach: wait fixed time then check if rows exist
-      // For XF forums, DOM replacement happens via AJAX
       const checkInterval = setInterval(() => {
         const rows = document.querySelectorAll(
           "li.block-row.js-inlineModContainer",
@@ -154,7 +171,6 @@
         }
       }, 500);
 
-      // Fallback timeout
       setTimeout(() => {
         clearInterval(checkInterval);
         resolve();
@@ -176,6 +192,5 @@
       : "none";
   }
 
-  // Initialize
   createPanel();
 })();
