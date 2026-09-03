@@ -86,3 +86,13 @@
   word-break: break-all;
   border: 1px solid #21262d;
 }
+
+/* Active row highlight for visual tracking */
+.pto-active-row {
+  outline: 2px solid #e94560 !important;
+  background-color: rgba(233, 69, 96, 0.15) !important;
+  transition: all 0.3s ease;
+  scroll-margin-top: 100px; /* Adjust based on site header height */
+  position: relative;
+  z-index: 1;
+}

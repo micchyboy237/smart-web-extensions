@@ -111,6 +111,25 @@
     logEl.scrollTop = logEl.scrollHeight;
   }
 
+  // NEW: Helper to highlight and scroll to active row
+  function highlightRow(rowElement) {
+    // Remove previous highlight
+    const prev = document.querySelector(".pto-active-row");
+    if (prev) prev.classList.remove("pto-active-row");
+
+    // Add new highlight and scroll
+    if (rowElement) {
+      rowElement.classList.add("pto-active-row");
+      rowElement.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  // NEW: Cleanup helper
+  function clearHighlight() {
+    const active = document.querySelector(".pto-active-row");
+    if (active) active.classList.remove("pto-active-row");
+  }
+
   // ============================================================
   // CORE LOGIC
   // ============================================================
@@ -145,6 +164,7 @@
 
   function stopProcess() {
     isRunning = false;
+    clearHighlight(); // NEW: Clean up visual indicator on stop
     const summary = `Stopped. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
     log("⏹️ Process stopped:", summary);
     appendDebugLog(`STOP | ${summary}`);
@@ -155,6 +175,7 @@
   async function processCurrentPage() {
     if (!isRunning || openedCount >= targetCount) {
       if (openedCount >= targetCount) {
+        clearHighlight(); // NEW: Clean up on completion
         const summary = `✅ Done! Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
         log("✅ Target reached:", summary);
         appendDebugLog(`DONE | ${summary}`);
@@ -173,6 +194,9 @@
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (!isRunning || openedCount >= targetCount) break;
+
+      // NEW: Highlight current row and scroll into view
+      highlightRow(row);
 
       // --- Exclusion check ---
       const forumLink = row.querySelector(
