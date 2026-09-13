@@ -3,7 +3,7 @@
   "name": "DOM Selector & RAG Cleaner",
   "version": "2.0.0",
   "description": "Select elements, clean HTML for RAG, preview & send to endpoint",
-  "permissions": ["activeTab", "scripting"],
+  "permissions": ["activeTab", "scripting", "clipboardWrite", "offscreen"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_popup": "popup.html"

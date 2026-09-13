@@ -46,9 +46,11 @@
   backdrop-filter: blur(2px);
 }
 
+/* Ensure modal container also has forced colors */
 .ext-preview-container {
   position: relative;
-  background: #fff;
+  background: #ffffff;
+  color: #1a1a1a;
   border-radius: 12px;
   width: 90vw;
   max-width: 700px;
@@ -93,7 +95,7 @@
   flex: 1;
   overflow: auto;
   padding: 16px 20px;
-  background: #f8f9fa;
+  background: #ffffff; /* Force white - never inherit page theme */
 }
 
 .ext-preview-body pre {
@@ -102,8 +104,9 @@
   word-break: break-all;
   font-size: 12px;
   line-height: 1.6;
-  color: #202124;
+  color: #1a1a1a; /* Explicit dark text for readability */
   font-family: "SF Mono", Monaco, Consolas, monospace;
+  background: transparent; /* Prevent nested bg conflicts */
 }
 
 .ext-preview-footer {

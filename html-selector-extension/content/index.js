@@ -1,11 +1,9 @@
 /**
  * Content Script Orchestrator
- * Wires Picker, Cleaner, and Preview modules together
  */
 (() => {
-  const selectedItems = []; // Stores { raw, cleaned, textContent, metadata }
+  const selectedItems = [];
 
-  // Initialize picker with selection callback
   Picker.init((rawHtml) => {
     const result = RAGCleaner.clean(rawHtml);
     selectedItems.push({
@@ -20,7 +18,6 @@
     );
   });
 
-  // Message handler for popup communication
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     switch (msg.type) {
       case "TOGGLE_PICKER":
@@ -41,6 +38,11 @@
       case "PREVIEW_LAST":
         if (selectedItems.length > 0) {
           const last = selectedItems[selectedItems.length - 1];
+          // CRITICAL: deactivate picker BEFORE showing modal.
+          // Picker registers document 'click' with capture+stopImmediatePropagation
+          // which would swallow the Copy HTML button's click event.
+          console.log("[Orchestrator] Deactivating picker before preview...");
+          Picker.deactivate();
           Preview.show(last.cleaned, last.metadata);
           sendResponse({ success: true });
         } else {
@@ -54,10 +56,8 @@
     return true;
   });
 
-  // Notify popup when picker deactivates via Escape
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && Picker.getIsActive()) {
-      // Picker handles its own deactivation; just notify popup
       chrome.runtime
         .sendMessage({ type: "PICKER_DEACTIVATED" })
         .catch(() => {});

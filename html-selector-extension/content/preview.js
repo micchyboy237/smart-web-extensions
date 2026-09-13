@@ -1,12 +1,22 @@
 /**
  * Preview Modal Module
- * Shows cleaned HTML with copy-to-clipboard button
+ * Fix 1: Uses 'pointerup' on copy button — fires before picker's 'click' capture handler
+ * Fix 2: index.js must call Picker.deactivate() before Preview.show()
  */
 const Preview = (() => {
   let modal = null;
+  let escHandler = null;
 
   function show(cleanedHtml, metadata) {
-    if (modal) modal.remove();
+    if (modal) hide();
+
+    console.log("[Preview] show() called", {
+      htmlLength: cleanedHtml.length,
+      reduction: metadata.reduction,
+      isSecureContext: window.isSecureContext,
+      hasClipboardAPI: !!navigator.clipboard,
+      pageProtocol: window.location.protocol,
+    });
 
     modal = document.createElement("div");
     modal.id = "ext-preview-modal";
@@ -38,50 +48,120 @@ const Preview = (() => {
     `;
 
     document.body.appendChild(modal);
+    console.log("[Preview] Modal appended to DOM");
+
     _bindModalEvents(cleanedHtml);
-    console.log("[Preview] Modal opened");
+
+    const btn = modal.querySelector(".ext-copy-btn");
+    console.log("[Preview] Copy button in DOM after bind:", {
+      found: !!btn,
+      tagName: btn?.tagName,
+      label: btn?.querySelector("span")?.textContent?.trim(),
+    });
   }
 
   function hide() {
+    if (escHandler) {
+      document.removeEventListener("keydown", escHandler);
+      escHandler = null;
+    }
     if (modal) {
       modal.remove();
       modal = null;
-      console.log("[Preview] Modal closed");
+      console.log("[Preview] Modal closed & cleaned up");
     }
   }
 
   function _bindModalEvents(textToCopy) {
-    modal.querySelector(".ext-preview-close").addEventListener("click", hide);
-    modal
-      .querySelector(".ext-preview-backdrop")
-      .addEventListener("click", hide);
-
-    const copyBtn = modal.querySelector(".ext-copy-btn");
-    copyBtn.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(textToCopy);
-        const span = copyBtn.querySelector("span");
-        const original = span.textContent;
-        span.textContent = "Copied!";
-        copyBtn.classList.add("copied");
-        setTimeout(() => {
-          span.textContent = original;
-          copyBtn.classList.remove("copied");
-        }, 2000);
-        console.log("[Preview] Copied to clipboard");
-      } catch (err) {
-        console.error("[Preview] Copy failed:", err);
-      }
+    console.log("[Preview] _bindModalEvents() called", {
+      modalInDOM: !!document.getElementById("ext-preview-modal"),
+      textLength: textToCopy.length,
     });
 
-    // Close on Escape
-    const escHandler = (e) => {
-      if (e.key === "Escape") {
-        hide();
-        document.removeEventListener("keydown", escHandler);
-      }
+    const closeBtn = modal.querySelector(".ext-preview-close");
+    const backdrop = modal.querySelector(".ext-preview-backdrop");
+    const copyBtn = modal.querySelector(".ext-copy-btn");
+    const span = copyBtn?.querySelector("span");
+
+    console.log("[Preview] DOM query results:", {
+      closeBtn: !!closeBtn,
+      backdrop: !!backdrop,
+      copyBtn: !!copyBtn,
+      span: !!span,
+    });
+
+    if (!copyBtn) {
+      console.error(
+        "[Preview] FATAL: .ext-copy-btn not found — listeners not bound",
+      );
+      return;
+    }
+
+    closeBtn.addEventListener("click", hide);
+    backdrop.addEventListener("click", hide);
+
+    // KEY FIX: Use 'pointerup' instead of 'click'.
+    // The picker registers a document 'click' handler with capture:true +
+    // stopImmediatePropagation(), which kills all click events while active.
+    // 'pointerup' fires in a completely separate event chain — unaffected.
+    copyBtn.addEventListener("pointerup", (e) => {
+      e.stopPropagation();
+
+      console.log("[Preview] Copy button POINTERUP fired ✓", {
+        textLength: textToCopy.length,
+        timestamp: Date.now(),
+        documentHasFocus: document.hasFocus(),
+        isSecureContext: window.isSecureContext,
+        pickerStillActive: document.body.style.cursor === "crosshair",
+      });
+
+      const originalText = span.textContent;
+      span.textContent = "⏳ Copying...";
+
+      console.log("[Preview] Sending COPY_TO_CLIPBOARD to background...");
+
+      chrome.runtime.sendMessage(
+        { type: "COPY_TO_CLIPBOARD", text: textToCopy },
+        (response) => {
+          const lastErr = chrome.runtime.lastError;
+
+          console.log("[Preview] COPY_TO_CLIPBOARD response received", {
+            response,
+            lastError: lastErr?.message ?? null,
+          });
+
+          if (lastErr) {
+            console.error("[Preview] Runtime lastError:", lastErr.message);
+            span.textContent = "✗ Extension error";
+            setTimeout(() => {
+              span.textContent = originalText;
+            }, 2000);
+            return;
+          }
+
+          if (response?.success) {
+            span.textContent = "✓ Copied!";
+            copyBtn.classList.add("copied");
+            console.log("[Preview] ✓ Copy succeeded via background");
+          } else {
+            span.textContent = "✗ Copy failed";
+            console.error("[Preview] ✗ Copy failed, reason:", response?.error);
+          }
+
+          setTimeout(() => {
+            span.textContent = originalText;
+            copyBtn.classList.remove("copied");
+          }, 2000);
+        },
+      );
+    }); // no capture needed — pointerup is its own chain
+
+    escHandler = (e) => {
+      if (e.key === "Escape") hide();
     };
     document.addEventListener("keydown", escHandler);
+
+    console.log("[Preview] All event listeners bound ✓ (copy uses pointerup)");
   }
 
   function _escapeHtml(str) {
