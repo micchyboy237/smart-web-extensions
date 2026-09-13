@@ -58,7 +58,7 @@ const RAGCleaner = (() => {
     const allowedAttrs = [...BASE_KEEP_ATTRS];
     const forbiddenAttrs = ["onclick", "onerror", "onload", "style"];
 
-    // Always allow class/id through DOMPurify first; we filter numerics post-parse
+    // Always allow class/id/data-* through DOMPurify first; we filter numerics post-parse
     if (includeClassId) {
       allowedAttrs.push("class", "id");
     } else {
@@ -69,7 +69,7 @@ const RAGCleaner = (() => {
     const purified = DOMPurify.sanitize(rawHtml, {
       ALLOWED_TAGS: [..._getAllowedTags()],
       ALLOWED_ATTR: allowedAttrs,
-      ALLOW_DATA_ATTR: false,
+      ALLOW_DATA_ATTR: true, // Allow data-* through; filtered post-parse for non-semantic values
       FORBID_TAGS: [...STRIP_TAGS],
       FORBID_ATTR: forbiddenAttrs,
     });
@@ -82,23 +82,26 @@ const RAGCleaner = (() => {
       _filterNumericClassIds(doc);
     }
 
-    // Step 4: Flatten bare <div> wrappers (no class, id, or semantic attrs)
-    _flattenBareDivs(doc);
+    // Step 4: Strip non-semantic data-* attributes (numeric names or JSON values)
+    _filterNonSemanticDataAttrs(doc);
 
-    // Step 5: Remove hidden/invisible elements
+    // Step 5: Flatten redundant same-tag wrappers with no class/id and no immediate text
+    _flattenRedundantWrappers(doc);
+
+    // Step 6: Remove hidden/invisible elements
     _removeHiddenElements(doc);
 
-    // Step 6: Prune empty structural wrappers (div/span with no text & no meaningful descendants)
+    // Step 7: Prune empty structural wrappers (div/span with no text & no meaningful descendants)
     _pruneEmptyContainers(doc);
 
-    // Step 7: Collapse whitespace in remaining text nodes
+    // Step 8: Collapse whitespace in remaining text nodes
     _normalizeWhitespace(doc);
 
-    // Step 8: Extract clean outputs
+    // Step 9: Extract clean outputs
     let cleanedHtml = doc.body.innerHTML.trim();
     let textContent = doc.body.textContent.replace(/\s+/g, " ").trim();
 
-    // Step 9: Decode HTML entities for RAG-friendly output
+    // Step 10: Decode HTML entities for RAG-friendly output
     cleanedHtml = _decodeEntities(cleanedHtml);
     textContent = _decodeEntities(textContent);
 
@@ -158,36 +161,100 @@ const RAGCleaner = (() => {
   }
 
   /**
-   * Unwrap <div> elements that carry no semantic attributes (no class, id,
-   * role, aria-*, or data-*). These are pure layout wrappers that add
-   * nesting depth without meaning for RAG retrieval.
-   * Runs bottom-up in a loop so nested bare divs collapse correctly.
+   * Remove data-* attributes that carry no semantic value for RAG:
+   * 1. Attribute names containing digits (e.g., data-id-482, data-index-3)
+   * 2. Attribute values that look like JSON (start with { or [)
+   * Single pass over all elements for efficiency.
    */
-  function _flattenBareDivs(doc) {
-    const BARE_ATTR_RE = /^(class|id|role|aria-|data-)/i;
+  function _filterNonSemanticDataAttrs(doc) {
+    const NUMERIC_NAME_RE = /\d/;
+    const JSON_VALUE_RE = /^\s*[{[]/;
+    let strippedCount = 0;
+
+    const allElements = doc.body.querySelectorAll("*");
+    for (const el of allElements) {
+      // Collect attrs to remove first to avoid mutating during iteration
+      const attrsToRemove = [];
+      for (const attr of el.attributes) {
+        if (!attr.name.startsWith("data-")) continue;
+
+        // Reason 1: Numeric name → framework-generated index/hash
+        if (NUMERIC_NAME_RE.test(attr.name)) {
+          attrsToRemove.push(attr.name);
+          continue;
+        }
+
+        // Reason 2: JSON value → serialized app state, not semantic content
+        if (JSON_VALUE_RE.test(attr.value)) {
+          attrsToRemove.push(attr.name);
+        }
+      }
+
+      for (const attrName of attrsToRemove) {
+        el.removeAttribute(attrName);
+        strippedCount++;
+      }
+    }
+
+    console.log(
+      `[RAGCleaner] Non-semantic data-attr filter: stripped ${strippedCount} attribute(s)`,
+    );
+  }
+
+  /**
+   * Flatten elements that are pure structural wrappers:
+   * - No class, no id
+   * - No immediate non-whitespace text nodes
+   * - Either parent shares the same tag, OR all element children share the same tag
+   *   (catches nested same-tag chains where innermost has text)
+   * Runs iteratively so deeply nested chains collapse fully.
+   */
+  function _flattenRedundantWrappers(doc) {
     let flattenedCount = 0;
     let changed = true;
 
     while (changed) {
       changed = false;
-      // Snapshot current divs — live NodeList would mutate during unwrapping
-      const divs = [...doc.body.querySelectorAll("div")];
+      const elements = [...doc.body.querySelectorAll("*")];
 
-      for (const el of divs) {
-        // Check if ANY attribute carries semantic weight
-        let hasSemanticAttr = false;
-        for (const attr of el.attributes) {
-          if (BARE_ATTR_RE.test(attr.name)) {
-            hasSemanticAttr = true;
+      for (const el of elements) {
+        const parent = el.parentElement;
+        if (!parent || parent === doc.body) continue;
+
+        // Gate: must have no class and no id
+        if (el.hasAttribute("class") || el.hasAttribute("id")) continue;
+
+        // Gate: must have no immediate non-whitespace text node
+        let hasImmediateText = false;
+        for (const child of el.childNodes) {
+          if (
+            child.nodeType === Node.TEXT_NODE &&
+            child.textContent.trim().length > 0
+          ) {
+            hasImmediateText = true;
             break;
           }
         }
-        if (hasSemanticAttr) continue;
+        if (hasImmediateText) continue;
 
-        // Unwrap: move all child nodes into parent, then remove the div
-        const parent = el.parentNode;
-        if (!parent) continue; // detached node, skip
+        // Condition A: Parent is the same tag (original behavior)
+        const parentSameTag = el.tagName === parent.tagName;
 
+        // Condition B: All element children share this element's tag
+        // Catches <span><span>text</span></span> where outer qualifies
+        let allChildrenSameTag = false;
+        if (!parentSameTag) {
+          const elementChildren = [...el.children];
+          if (elementChildren.length > 0) {
+            allChildrenSameTag = elementChildren.every(
+              (child) => child.tagName === el.tagName,
+            );
+          }
+        }
+
+        if (!parentSameTag && !allChildrenSameTag) continue;
+
+        // Unwrap into parent
         while (el.firstChild) {
           parent.insertBefore(el.firstChild, el);
         }
@@ -198,7 +265,7 @@ const RAGCleaner = (() => {
     }
 
     console.log(
-      `[RAGCleaner] Bare div flattener: unwrapped ${flattenedCount} container(s)`,
+      `[RAGCleaner] Redundant wrapper flattener: unwrapped ${flattenedCount} element(s)`,
     );
   }
 
