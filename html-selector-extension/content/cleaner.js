@@ -58,6 +58,7 @@ const RAGCleaner = (() => {
     const allowedAttrs = [...BASE_KEEP_ATTRS];
     const forbiddenAttrs = ["onclick", "onerror", "onload", "style"];
 
+    // Always allow class/id through DOMPurify first; we filter numerics post-parse
     if (includeClassId) {
       allowedAttrs.push("class", "id");
     } else {
@@ -76,20 +77,28 @@ const RAGCleaner = (() => {
     // Step 2: Parse into DOM for structural cleanup
     const doc = new DOMParser().parseFromString(purified, "text/html");
 
-    // Step 3: Remove hidden/invisible elements
+    // Step 3: Strip numeric classes/ids when includeClassId is active
+    if (includeClassId) {
+      _filterNumericClassIds(doc);
+    }
+
+    // Step 4: Flatten bare <div> wrappers (no class, id, or semantic attrs)
+    _flattenBareDivs(doc);
+
+    // Step 5: Remove hidden/invisible elements
     _removeHiddenElements(doc);
 
-    // Step 4: Prune empty structural wrappers (div/span with no text & no meaningful descendants)
+    // Step 6: Prune empty structural wrappers (div/span with no text & no meaningful descendants)
     _pruneEmptyContainers(doc);
 
-    // Step 5: Collapse whitespace in remaining text nodes
+    // Step 7: Collapse whitespace in remaining text nodes
     _normalizeWhitespace(doc);
 
-    // Step 6: Extract clean outputs
+    // Step 8: Extract clean outputs
     let cleanedHtml = doc.body.innerHTML.trim();
     let textContent = doc.body.textContent.replace(/\s+/g, " ").trim();
 
-    // Step 7: Decode HTML entities for RAG-friendly output
+    // Step 9: Decode HTML entities for RAG-friendly output
     cleanedHtml = _decodeEntities(cleanedHtml);
     textContent = _decodeEntities(textContent);
 
@@ -104,6 +113,93 @@ const RAGCleaner = (() => {
 
     console.log("[RAGCleaner] Cleanup complete:", metadata);
     return { cleaned: cleanedHtml, textContent, metadata };
+  }
+
+  /**
+   * Remove class tokens and id values that contain digits.
+   * Numeric identifiers are typically framework-generated hashes or indices
+   * that carry no semantic meaning for RAG retrieval.
+   */
+  function _filterNumericClassIds(doc) {
+    const NUMERIC_RE = /\d/;
+    let strippedCount = 0;
+
+    // Filter class attributes
+    const withClass = doc.body.querySelectorAll("[class]");
+    for (const el of withClass) {
+      const original = el.getAttribute("class");
+      const filtered = original
+        .split(/\s+/)
+        .filter((token) => token && !NUMERIC_RE.test(token))
+        .join(" ");
+
+      if (!filtered) {
+        el.removeAttribute("class");
+        strippedCount++;
+      } else if (filtered !== original) {
+        el.setAttribute("class", filtered);
+        strippedCount++;
+      }
+    }
+
+    // Filter id attributes
+    const withId = doc.body.querySelectorAll("[id]");
+    for (const el of withId) {
+      const id = el.getAttribute("id");
+      if (NUMERIC_RE.test(id)) {
+        el.removeAttribute("id");
+        strippedCount++;
+      }
+    }
+
+    console.log(
+      `[RAGCleaner] Numeric class/id filter: stripped ${strippedCount} attribute(s)`,
+    );
+  }
+
+  /**
+   * Unwrap <div> elements that carry no semantic attributes (no class, id,
+   * role, aria-*, or data-*). These are pure layout wrappers that add
+   * nesting depth without meaning for RAG retrieval.
+   * Runs bottom-up in a loop so nested bare divs collapse correctly.
+   */
+  function _flattenBareDivs(doc) {
+    const BARE_ATTR_RE = /^(class|id|role|aria-|data-)/i;
+    let flattenedCount = 0;
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+      // Snapshot current divs — live NodeList would mutate during unwrapping
+      const divs = [...doc.body.querySelectorAll("div")];
+
+      for (const el of divs) {
+        // Check if ANY attribute carries semantic weight
+        let hasSemanticAttr = false;
+        for (const attr of el.attributes) {
+          if (BARE_ATTR_RE.test(attr.name)) {
+            hasSemanticAttr = true;
+            break;
+          }
+        }
+        if (hasSemanticAttr) continue;
+
+        // Unwrap: move all child nodes into parent, then remove the div
+        const parent = el.parentNode;
+        if (!parent) continue; // detached node, skip
+
+        while (el.firstChild) {
+          parent.insertBefore(el.firstChild, el);
+        }
+        el.remove();
+        flattenedCount++;
+        changed = true;
+      }
+    }
+
+    console.log(
+      `[RAGCleaner] Bare div flattener: unwrapped ${flattenedCount} container(s)`,
+    );
   }
 
   /**

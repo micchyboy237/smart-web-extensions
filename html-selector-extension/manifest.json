@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DOM Selector & RAG Cleaner",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "description": "Pick multiple elements, clean HTML for RAG, preview & send to endpoint — from a detached panel window",
   "permissions": ["clipboardWrite", "storage"],
   "host_permissions": ["<all_urls>"],
