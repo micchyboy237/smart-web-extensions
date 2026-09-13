@@ -11,6 +11,14 @@
       <button class="btn btn-danger btn-sm" id="disableBtn">Disable</button>
     </header>
 
+    <!-- Settings Section -->
+    <section class="section settings-section">
+      <label class="toggle-label">
+        <input type="checkbox" id="includeClassIdToggle" />
+        <span class="toggle-text">Include class &amp; id attributes</span>
+      </label>
+    </section>
+
     <section class="section">
       <label class="label" for="endpointUrl">Endpoint URL</label>
       <input
@@ -44,13 +52,15 @@
 
     <section class="section actions">
       <button class="btn btn-primary" id="copyBtn">Copy HTML</button>
+      <button class="btn btn-secondary" id="copySelectorsBtn">
+        Copy Selectors
+      </button>
       <button class="btn btn-accent" id="sendBtn">Send to Endpoint</button>
     </section>
 
     <div class="status" id="status">
       Picker active. Click elements on the page.
     </div>
-
     <script src="panel.js"></script>
   </body>
 </html>

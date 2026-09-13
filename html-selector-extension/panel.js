@@ -4,7 +4,6 @@
  * the ONE tab it was opened for — its id comes in via the URL query string.
  */
 const tabId = Number(new URLSearchParams(location.search).get("tabId"));
-
 const statusDot = document.getElementById("statusDot");
 const disableBtn = document.getElementById("disableBtn");
 const endpointInput = document.getElementById("endpointUrl");
@@ -13,10 +12,12 @@ const selListEl = document.getElementById("selList");
 const previewCode = document.getElementById("previewCode");
 const clearBtn = document.getElementById("clearBtn");
 const copyBtn = document.getElementById("copyBtn");
+const copySelectorsBtn = document.getElementById("copySelectorsBtn");
 const sendBtn = document.getElementById("sendBtn");
 const statusEl = document.getElementById("status");
+const includeClassIdToggle = document.getElementById("includeClassIdToggle");
 
-let currentPreview = "";
+let currentState = null;
 
 init();
 
@@ -25,6 +26,15 @@ async function init() {
     setStatus("❌ No tab associated with this panel.", "error");
     return;
   }
+
+  // Load persisted toggle setting
+  try {
+    const stored = await chrome.storage.sync.get({ includeClassId: false });
+    includeClassIdToggle.checked = stored.includeClassId;
+  } catch (err) {
+    console.warn("[Panel] Could not load storage setting:", err.message);
+  }
+
   try {
     const state = await chrome.tabs.sendMessage(tabId, { type: "GET_STATE" });
     render(state);
@@ -33,6 +43,17 @@ async function init() {
     console.error("[Panel] GET_STATE failed:", err.message);
   }
 }
+
+// Persist toggle change — content script listens to storage.onChanged
+includeClassIdToggle.addEventListener("change", async () => {
+  const val = includeClassIdToggle.checked;
+  try {
+    await chrome.storage.sync.set({ includeClassId: val });
+    console.log(`[Panel] includeClassId set to ${val}`);
+  } catch (err) {
+    console.error("[Panel] Failed to save setting:", err.message);
+  }
+});
 
 // Closing the window is enough — background.js's windows.onRemoved listener
 // handles deactivating the picker and clearing the badge.
@@ -44,17 +65,32 @@ clearBtn.addEventListener("click", async () => {
 });
 
 copyBtn.addEventListener("click", async () => {
-  if (!currentPreview) {
+  if (!currentState?.preview) {
     setStatus("⚠️ Nothing to copy yet", "warning");
     return;
   }
   try {
-    // Real focused document window → navigator.clipboard just works here,
-    // no offscreen-document workaround needed.
-    await navigator.clipboard.writeText(currentPreview);
+    await navigator.clipboard.writeText(currentState.preview);
     setStatus("✅ Copied cleaned HTML to clipboard");
   } catch (err) {
     console.error("[Panel] Clipboard write failed:", err.message);
+    setStatus("❌ Copy failed: " + err.message, "error");
+  }
+});
+
+// Copy selectors as a JSON array
+copySelectorsBtn.addEventListener("click", async () => {
+  if (!currentState?.items?.length) {
+    setStatus("⚠️ No elements selected", "warning");
+    return;
+  }
+  try {
+    const selectors = currentState.items.map((item) => item.selector);
+    const json = JSON.stringify(selectors, null, 2);
+    await navigator.clipboard.writeText(json);
+    setStatus(`✅ Copied ${selectors.length} selector(s) as JSON`);
+  } catch (err) {
+    console.error("[Panel] Selector copy failed:", err.message);
     setStatus("❌ Copy failed: " + err.message, "error");
   }
 });
@@ -65,14 +101,15 @@ sendBtn.addEventListener("click", async () => {
     setStatus("⚠️ Enter an endpoint URL", "warning");
     return;
   }
-  if (!currentPreview) {
+  if (!currentState?.preview) {
     setStatus("⚠️ No elements selected", "warning");
     return;
   }
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   const payload = {
-    html: currentPreview, // exact text shown in the preview box above
-    elementCount: Number(selCountEl.textContent),
+    html: currentState.preview,
+    selectors: currentState.items.map((i) => i.selector),
+    elementCount: currentState.count,
     sourceUrl: tab?.url ?? null,
     sentAt: new Date().toISOString(),
   };
@@ -98,9 +135,14 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 });
 
 function render(state) {
+  currentState = state;
   statusDot.style.background = state.active ? "#34a853" : "#9aa0a6";
-  currentPreview = state.preview || "";
   selCountEl.textContent = state.count;
+
+  // Sync toggle if state reports a value (handles external/storage changes)
+  if (typeof state.includeClassId === "boolean") {
+    includeClassIdToggle.checked = state.includeClassId;
+  }
 
   selListEl.innerHTML = "";
   if (state.items.length === 0) {
@@ -111,12 +153,10 @@ function render(state) {
   } else {
     for (const item of state.items) {
       const li = document.createElement("li");
-
       const label = document.createElement("span");
       label.className = "sel-label";
-      label.title = item.label;
+      label.title = `${item.selector}\n${item.label}`;
       label.textContent = item.label;
-
       const removeBtn = document.createElement("button");
       removeBtn.className = "sel-remove";
       removeBtn.type = "button";
@@ -128,13 +168,11 @@ function render(state) {
           id: item.id,
         }),
       );
-
       li.append(label, removeBtn);
       selListEl.appendChild(li);
     }
   }
-
-  previewCode.textContent = currentPreview || "// Nothing selected yet";
+  previewCode.textContent = state.preview || "// Nothing selected yet";
 }
 
 function setStatus(msg, type = "info") {

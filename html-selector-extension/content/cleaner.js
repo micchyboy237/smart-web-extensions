@@ -4,7 +4,6 @@
  * Based on HtmlRAG research: preserve structure, remove noise
  */
 const RAGCleaner = (() => {
-  // Elements that add zero retrieval value
   const STRIP_TAGS = new Set([
     "script",
     "style",
@@ -21,8 +20,7 @@ const RAGCleaner = (() => {
     "base",
   ]);
 
-  // Attributes worth keeping for RAG context
-  const KEEP_ATTRS = new Set([
+  const BASE_KEEP_ATTRS = new Set([
     "href",
     "alt",
     "title",
@@ -33,21 +31,46 @@ const RAGCleaner = (() => {
     "headers",
   ]);
 
+  // Tags that are inherently meaningful even without text content
+  // (e.g., an <img> with alt text, an <a> with href, a <hr> separator)
+  const SELF_MEANINGFUL_TAGS = new Set([
+    "img",
+    "a",
+    "hr",
+    "br",
+    "input",
+    "figure",
+    "figcaption",
+  ]);
+
   /**
    * Clean HTML string for RAG ingestion
    * @param {string} rawHtml - Raw outerHTML
+   * @param {{ includeClassId?: boolean }} [options={}]
    * @returns {{ cleaned: string, textContent: string, metadata: object }}
    */
-  function clean(rawHtml) {
-    console.log("[RAGCleaner] Starting cleanup, input length:", rawHtml.length);
+  function clean(rawHtml, options = {}) {
+    const { includeClassId = false } = options;
+    console.log(
+      `[RAGCleaner] Starting cleanup | includeClassId: ${includeClassId} | input length: ${rawHtml.length}`,
+    );
 
-    // Step 1: DOMPurify baseline sanitization (XSS protection)
+    const allowedAttrs = [...BASE_KEEP_ATTRS];
+    const forbiddenAttrs = ["onclick", "onerror", "onload", "style"];
+
+    if (includeClassId) {
+      allowedAttrs.push("class", "id");
+    } else {
+      forbiddenAttrs.push("class", "id");
+    }
+
+    // Step 1: DOMPurify baseline sanitization
     const purified = DOMPurify.sanitize(rawHtml, {
       ALLOWED_TAGS: [..._getAllowedTags()],
-      ALLOWED_ATTR: [...KEEP_ATTRS],
+      ALLOWED_ATTR: allowedAttrs,
       ALLOW_DATA_ATTR: false,
       FORBID_TAGS: [...STRIP_TAGS],
-      FORBID_ATTR: ["onclick", "onerror", "onload", "style", "class", "id"],
+      FORBID_ATTR: forbiddenAttrs,
     });
 
     // Step 2: Parse into DOM for structural cleanup
@@ -56,12 +79,19 @@ const RAGCleaner = (() => {
     // Step 3: Remove hidden/invisible elements
     _removeHiddenElements(doc);
 
-    // Step 4: Collapse whitespace in text nodes
+    // Step 4: Prune empty structural wrappers (div/span with no text & no meaningful descendants)
+    _pruneEmptyContainers(doc);
+
+    // Step 5: Collapse whitespace in remaining text nodes
     _normalizeWhitespace(doc);
 
-    // Step 5: Extract clean outputs
-    const cleanedHtml = doc.body.innerHTML.trim();
-    const textContent = doc.body.textContent.replace(/\s+/g, " ").trim();
+    // Step 6: Extract clean outputs
+    let cleanedHtml = doc.body.innerHTML.trim();
+    let textContent = doc.body.textContent.replace(/\s+/g, " ").trim();
+
+    // Step 7: Decode HTML entities for RAG-friendly output
+    cleanedHtml = _decodeEntities(cleanedHtml);
+    textContent = _decodeEntities(textContent);
 
     const metadata = {
       originalLength: rawHtml.length,
@@ -69,14 +99,59 @@ const RAGCleaner = (() => {
       reduction: `${((1 - cleanedHtml.length / rawHtml.length) * 100).toFixed(1)}%`,
       hasLinks: doc.querySelectorAll("a[href]").length > 0,
       hasImages: doc.querySelectorAll("img[alt]").length > 0,
+      includeClassId,
     };
 
     console.log("[RAGCleaner] Cleanup complete:", metadata);
     return { cleaned: cleanedHtml, textContent, metadata };
   }
 
+  /**
+   * Remove div/span elements that have no text content AND no self-meaningful
+   * descendants. Preserves containers that wrap actual content.
+   * Runs bottom-up so nested empties collapse correctly.
+   */
+  function _pruneEmptyContainers(doc) {
+    const PRUNE_CANDIDATES = new Set(["div", "span"]);
+    let changed = true;
+
+    // Iterate until stable — removing a child may make its parent empty
+    while (changed) {
+      changed = false;
+      const candidates = doc.body.querySelectorAll("div, span");
+
+      for (const el of candidates) {
+        if (!PRUNE_CANDIDATES.has(el.tagName.toLowerCase())) continue;
+
+        const hasText = el.textContent.trim().length > 0;
+        const hasMeaningfulDescendant = el.querySelector(
+          [...SELF_MEANINGFUL_TAGS].map((t) => t).join(", "),
+        );
+
+        if (!hasText && !hasMeaningfulDescendant) {
+          // If the element has children, unwrap them into the parent
+          // to avoid losing non-empty siblings that were nested inside
+          const parent = el.parentNode;
+          while (el.firstChild) {
+            parent.insertBefore(el.firstChild, el);
+          }
+          el.remove();
+          changed = true;
+        }
+      }
+    }
+  }
+
+  /**
+   * Decode HTML entities using the browser's built-in parser.
+   */
+  function _decodeEntities(str) {
+    const textarea = document.createElement("textarea");
+    textarea.innerHTML = str;
+    return textarea.value;
+  }
+
   function _getAllowedTags() {
-    // Semantic tags valuable for RAG chunking
     return [
       "p",
       "br",
@@ -113,6 +188,8 @@ const RAGCleaner = (() => {
       "main",
       "details",
       "summary",
+      "div",
+      "span",
     ];
   }
 
@@ -131,7 +208,6 @@ const RAGCleaner = (() => {
     );
     const textNodes = [];
     while (walker.nextNode()) textNodes.push(walker.currentNode);
-
     textNodes.forEach((node) => {
       node.textContent = node.textContent.replace(/\s+/g, " ");
     });

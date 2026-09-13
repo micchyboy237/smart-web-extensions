@@ -11,11 +11,9 @@
   --muted: #5f6368;
   --border: #dadce0;
 }
-
 * {
   box-sizing: border-box;
 }
-
 body {
   margin: 0;
   font-family: system-ui, sans-serif;
@@ -26,7 +24,6 @@ body {
   height: 100vh;
   overflow: hidden;
 }
-
 .section {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
@@ -42,7 +39,6 @@ header.section {
   align-items: center;
   justify-content: space-between;
 }
-
 h1 {
   font-size: 15px;
   margin: 0;
@@ -57,7 +53,6 @@ h1 {
   background: var(--green);
   display: inline-block;
 }
-
 .label {
   font-size: 11px;
   text-transform: uppercase;
@@ -67,7 +62,6 @@ h1 {
   display: block;
   margin-bottom: 6px;
 }
-
 input[type="url"] {
   width: 100%;
   padding: 8px;
@@ -75,7 +69,6 @@ input[type="url"] {
   border-radius: 4px;
   font-size: 13px;
 }
-
 .btn {
   padding: 9px 14px;
   border: none;
@@ -116,7 +109,6 @@ input[type="url"] {
 .btn-danger:hover {
   background: var(--red-dark);
 }
-
 .sel-list {
   list-style: none;
   margin: 0;
@@ -143,7 +135,6 @@ input[type="url"] {
   font-style: italic;
   justify-content: center !important;
 }
-
 .sel-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -168,7 +159,6 @@ input[type="url"] {
 .sel-remove:hover {
   background: var(--red-dark);
 }
-
 .preview-section {
   flex: 1;
   display: flex;
@@ -188,7 +178,6 @@ input[type="url"] {
   font-family: "SF Mono", Monaco, Consolas, monospace;
   white-space: pre;
 }
-
 .actions {
   display: flex;
   gap: 8px;
@@ -196,11 +185,34 @@ input[type="url"] {
 .actions .btn {
   flex: 1;
 }
-
 .status {
   padding: 8px 16px;
   font-size: 12px;
   color: var(--muted);
   background: #f8f9fa;
   border-top: 1px solid var(--border);
+}
+
+/* Settings Toggle */
+.settings-section {
+  padding: 10px 16px;
+}
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+  user-select: none;
+}
+.toggle-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--blue);
+  cursor: pointer;
+  margin: 0;
+}
+.toggle-text {
+  line-height: 1.3;
 }
