@@ -1,13 +1,52 @@
 /**
  * Background Service Worker
- *
- * CLIPBOARD STRATEGY (Chrome MV3):
- *   navigator.clipboard is NOT available in extension service workers.
- *   The only working path is: SW → offscreen doc → execCommand('copy').
- *   We skip the SW clipboard attempt entirely to avoid misleading errors.
+ * Owns the lifecycle of the detached "panel" window (one per tab) and
+ * relays HTTP requests that a normal page/content script can't make cleanly.
  */
+
+// tabId -> windowId of that tab's currently-open panel window
+const openPanels = new Map();
+
+chrome.action.onClicked.addListener(async (tab) => {
+  if (openPanels.has(tab.id)) {
+    await _closePanel(tab.id);
+  } else {
+    await _openPanel(tab);
+  }
+});
+
+// User closed the panel window with the OS close button (not our Disable button,
+// which also just calls window.close() — this listener catches both cases).
+chrome.windows.onRemoved.addListener((closedWindowId) => {
+  for (const [tabId, windowId] of openPanels.entries()) {
+    if (windowId === closedWindowId) {
+      openPanels.delete(tabId);
+      _setPickerActive(tabId, false);
+      chrome.action.setBadgeText({ tabId, text: "" });
+      console.log(`[BG] Panel window closed for tab ${tabId}`);
+    }
+  }
+});
+
+// If the source tab itself closes, take its panel window down too.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const windowId = openPanels.get(tabId);
+  if (!windowId) return;
+  openPanels.delete(tabId);
+  try {
+    await chrome.windows.remove(windowId);
+  } catch (_) {
+    /* window may already be gone */
+  }
+  console.log(`[BG] Source tab ${tabId} closed, panel window removed`);
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // ── HTTP Relay ──────────────────────────────────────────────────────────────
+  if (msg.type === "REQUEST_DISABLE" && sender.tab) {
+    _closePanel(sender.tab.id);
+    return false;
+  }
+
   if (msg.type === "SEND_TO_ENDPOINT") {
     fetch(msg.url, {
       method: "POST",
@@ -24,105 +63,59 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })
       .then(sendResponse)
       .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true;
+    return true; // async response
   }
 
-  // ── Clipboard Write ─────────────────────────────────────────────────────────
-  if (msg.type === "COPY_TO_CLIPBOARD") {
-    console.log("[BG] COPY_TO_CLIPBOARD received", {
-      textLength: msg.text?.length,
-      senderTabId: sender.tab?.id,
-      senderUrl: sender.tab?.url,
-    });
-
-    _writeViaOffscreen(msg.text)
-      .then(() => {
-        console.log("[BG] Clipboard write pipeline succeeded");
-        sendResponse({ success: true });
-      })
-      .catch((err) => {
-        console.error("[BG] Clipboard write pipeline failed:", err.message);
-        sendResponse({ success: false, error: err.message });
-      });
-
-    return true; // keep channel open for async response
-  }
+  return false;
 });
 
-/**
- * Ensure exactly one offscreen document is alive, then ask it
- * to write `text` to the clipboard via execCommand.
- *
- * Chrome MV3 constraint: only one offscreen doc per extension at a time.
- * We guard creation with a module-level promise to prevent race conditions.
- *
- * @param {string} text
- */
-let _creating = null; // in-flight createDocument promise guard
-
-async function _writeViaOffscreen(text) {
-  await _ensureOffscreenDocument();
-
-  console.log("[BG] Sending OFFSCREEN_COPY to offscreen doc", {
-    textLength: text.length,
+async function _openPanel(tab) {
+  console.log(`[BG] Opening panel for tab ${tab.id}`);
+  let left, top;
+  try {
+    const sourceWindow = await chrome.windows.get(tab.windowId);
+    left = (sourceWindow.left ?? 0) + (sourceWindow.width ?? 1200) - 420;
+    top = sourceWindow.top ?? 40;
+  } catch (_) {
+    left = 100;
+    top = 100;
+  }
+  const win = await chrome.windows.create({
+    url: chrome.runtime.getURL(`panel.html?tabId=${tab.id}`),
+    type: "popup",
+    width: 420,
+    height: 720,
+    left,
+    top,
   });
+  openPanels.set(tab.id, win.id);
+  chrome.action.setBadgeText({ tabId: tab.id, text: "ON" });
+  chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: "#34a853" });
+  await _setPickerActive(tab.id, true);
+}
 
-  const response = await chrome.runtime.sendMessage({
-    type: "OFFSCREEN_COPY",
-    text,
-  });
-
-  console.log("[BG] OFFSCREEN_COPY response:", response);
-
-  if (!response?.success) {
-    throw new Error(response?.error ?? "Offscreen copy returned no success");
+async function _closePanel(tabId) {
+  console.log(`[BG] Closing panel for tab ${tabId}`);
+  const windowId = openPanels.get(tabId);
+  openPanels.delete(tabId);
+  await _setPickerActive(tabId, false);
+  chrome.action.setBadgeText({ tabId, text: "" });
+  if (windowId) {
+    try {
+      await chrome.windows.remove(windowId);
+    } catch (_) {
+      /* already closed */
+    }
   }
 }
 
-/**
- * Creates the offscreen document if one doesn't already exist.
- * Uses chrome.runtime.getContexts (Chrome 116+) with a clients.matchAll()
- * fallback for older Chromium builds.
- */
-async function _ensureOffscreenDocument() {
-  const offscreenUrl = chrome.runtime.getURL("offscreen.html");
-
-  // Chrome 116+ path (preferred)
-  if ("getContexts" in chrome.runtime) {
-    const existing = await chrome.runtime.getContexts({
-      contextTypes: ["OFFSCREEN_DOCUMENT"],
-      documentUrls: [offscreenUrl],
-    });
-
-    console.log("[BG] Existing offscreen contexts:", existing.length);
-
-    if (existing.length > 0) return;
-  } else {
-    // Fallback: service worker clients list
-    const clients = await self.clients.matchAll();
-    const exists = clients.some((c) => c.url === offscreenUrl);
-    console.log("[BG] Offscreen doc exists via clients.matchAll():", exists);
-    if (exists) return;
-  }
-
-  // Guard against concurrent creation calls
-  if (_creating) {
-    console.log("[BG] Offscreen creation already in progress, awaiting...");
-    await _creating;
-    return;
-  }
-
-  console.log("[BG] Creating offscreen document...");
-  _creating = chrome.offscreen.createDocument({
-    url: "offscreen.html",
-    reasons: ["CLIPBOARD"],
-    justification: "Write cleaned HTML to clipboard via execCommand",
-  });
-
+async function _setPickerActive(tabId, active) {
   try {
-    await _creating;
-    console.log("[BG] Offscreen document created successfully");
-  } finally {
-    _creating = null;
+    await chrome.tabs.sendMessage(tabId, { type: "TOGGLE_PICKER", active });
+  } catch (err) {
+    console.warn(
+      `[BG] Could not reach content script on tab ${tabId}:`,
+      err.message,
+    );
   }
 }

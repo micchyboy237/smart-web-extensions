@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>RAG Selector</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header class="section">
+      <h1><span class="dot" id="statusDot"></span> RAG Selector</h1>
+      <button class="btn btn-danger btn-sm" id="disableBtn">Disable</button>
+    </header>
+
+    <section class="section">
+      <label class="label" for="endpointUrl">Endpoint URL</label>
+      <input
+        type="url"
+        id="endpointUrl"
+        placeholder="https://api.example.com/ingest"
+        value="https://httpbin.org/post"
+      />
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <label class="label"
+          >Selected Elements (<span id="selCount">0</span>)</label
+        >
+        <button class="btn btn-secondary btn-sm" id="clearBtn">
+          Clear All
+        </button>
+      </div>
+      <ul class="sel-list" id="selList">
+        <li class="sel-empty">Click elements on the page to select them.</li>
+      </ul>
+    </section>
+
+    <section class="section preview-section">
+      <label class="label">Cleaned HTML Preview</label>
+      <pre
+        class="preview-box"
+      ><code id="previewCode">// Nothing selected yet</code></pre>
+    </section>
+
+    <section class="section actions">
+      <button class="btn btn-primary" id="copyBtn">Copy HTML</button>
+      <button class="btn btn-accent" id="sendBtn">Send to Endpoint</button>
+    </section>
+
+    <div class="status" id="status">
+      Picker active. Click elements on the page.
+    </div>
+
+    <script src="panel.js"></script>
+  </body>
+</html>
