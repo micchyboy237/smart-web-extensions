@@ -1,0 +1,136 @@
+/* === Picker Overlay === */
+.ext-highlight-overlay {
+  position: absolute;
+  z-index: 2147483647;
+  background-color: rgba(66, 133, 244, 0.3);
+  border: 2px dashed #4285f4;
+  box-sizing: border-box;
+  pointer-events: none;
+  transition: all 0.1s ease;
+  display: none;
+}
+
+.ext-flash-confirm {
+  position: absolute;
+  z-index: 2147483647;
+  background-color: rgba(52, 168, 83, 0.5);
+  border: 2px solid #34a853;
+  box-sizing: border-box;
+  pointer-events: none;
+  animation: ext-fade-out 0.3s ease forwards;
+}
+
+@keyframes ext-fade-out {
+  0% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* === Preview Modal === */
+.ext-preview-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ext-preview-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+}
+
+.ext-preview-container {
+  position: relative;
+  background: #fff;
+  border-radius: 12px;
+  width: 90vw;
+  max-width: 700px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.ext-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e8eaed;
+}
+
+.ext-preview-header h3 {
+  margin: 0;
+  font-size: 16px;
+  flex: 1;
+}
+
+.ext-preview-meta {
+  font-size: 11px;
+  color: #5f6368;
+  display: flex;
+  gap: 12px;
+}
+
+.ext-preview-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #5f6368;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.ext-preview-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px;
+  background: #f8f9fa;
+}
+
+.ext-preview-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #202124;
+  font-family: "SF Mono", Monaco, Consolas, monospace;
+}
+
+.ext-preview-footer {
+  padding: 12px 20px;
+  border-top: 1px solid #e8eaed;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ext-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: #4285f4;
+  color: white;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.ext-copy-btn:hover {
+  background: #3367d6;
+}
+.ext-copy-btn.copied {
+  background: #34a853;
+}

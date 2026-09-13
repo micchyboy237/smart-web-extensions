@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "DOM Selector & RAG Cleaner",
+  "version": "2.0.0",
+  "description": "Select elements, clean HTML for RAG, preview & send to endpoint",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "lib/dompurify.min.js",
+        "lib/readability.min.js",
+        "content/cleaner.js",
+        "content/picker.js",
+        "content/preview.js",
+        "content/index.js"
+      ],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["lib/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

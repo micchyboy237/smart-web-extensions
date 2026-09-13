@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body {
+        width: 340px;
+        padding: 16px;
+        font-family: system-ui, sans-serif;
+        margin: 0;
+      }
+      h3 {
+        margin: 0 0 12px;
+        font-size: 16px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .btn {
+        width: 100%;
+        padding: 10px;
+        margin-bottom: 8px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        transition: background 0.15s;
+      }
+      .btn-primary {
+        background: #4285f4;
+        color: white;
+      }
+      .btn-primary:hover {
+        background: #3367d6;
+      }
+      .btn-secondary {
+        background: #f1f3f4;
+        color: #3c4043;
+      }
+      .btn-secondary:hover {
+        background: #e8eaed;
+      }
+      .btn-accent {
+        background: #34a853;
+        color: white;
+      }
+      .btn-accent:hover {
+        background: #2d9249;
+      }
+      .btn-danger {
+        background: #ea4335;
+        color: white;
+      }
+      .btn-danger:hover {
+        background: #d33426;
+      }
+      input[type="url"] {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 8px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        box-sizing: border-box;
+        font-size: 13px;
+      }
+      .status {
+        margin-top: 12px;
+        padding: 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        background: #f8f9fa;
+        color: #5f6368;
+        word-break: break-word;
+      }
+      .divider {
+        height: 1px;
+        background: #e8eaed;
+        margin: 8px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>🎯 RAG Selector</h3>
+
+    <input
+      type="url"
+      id="endpointUrl"
+      placeholder="https://api.example.com/ingest"
+      value="https://httpbin.org/post"
+    />
+
+    <button class="btn btn-primary" id="togglePicker">Start Picking</button>
+    <button class="btn btn-accent" id="previewBtn">
+      Preview Last Selection
+    </button>
+
+    <div class="divider"></div>
+
+    <button class="btn btn-secondary" id="sendData">
+      Send All to Endpoint
+    </button>
+    <button class="btn btn-danger" id="clearData">Clear All</button>
+
+    <div class="status" id="status">
+      Ready. Select elements to clean & capture.
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
