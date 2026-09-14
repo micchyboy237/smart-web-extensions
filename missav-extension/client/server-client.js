@@ -10,7 +10,7 @@
 
 // ====================== CONFIGURATION ======================
 const SERVER_CONFIG = {
-  BASE_URL: "http://192.168.68.30:8000/api",
+  BASE_URL: "http://127.0.0.1:8000/api",
   ENDPOINTS: {
     INGEST: "/videos/ingest",
     SEARCH: "/search",
