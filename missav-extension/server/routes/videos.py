@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/videos", tags=["videos"])
 
 
 @router.get("")
-async def get_all_videos(
+async def get_videos(
     limit: Optional[int] = Query(
         default=100,
         ge=1,
