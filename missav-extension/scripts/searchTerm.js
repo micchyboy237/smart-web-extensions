@@ -1,8 +1,9 @@
 /**
  * Filters item containers: highlights matches, hides non-matches.
- * @param {string} searchTerm - Case-insensitive search query. Pass '' or null to reset.
+ * @param {string} [searchTerm] - Case-insensitive primary search. Pass nothing, '' or null to reset.
+ * @param {string[]} [filters=[]] - Optional array of additional AND conditions applied to matching results.
  */
-function filterSearchContainers(searchTerm) {
+function filterSearchContainers(searchTerm, filters = []) {
   const ACTIVE_CLASS = "search-highlight-active";
   const DIMMED_CLASS = "search-dimmed";
   const ITEM_SELECTOR = ".thumbnail.group";
@@ -38,11 +39,9 @@ function filterSearchContainers(searchTerm) {
 
   // --- Cleanup ---
   const allItems = document.querySelectorAll(ITEM_SELECTOR);
-  allItems.forEach((el) => {
-    el.classList.remove(ACTIVE_CLASS, DIMMED_CLASS);
-  });
+  allItems.forEach((el) => el.classList.remove(ACTIVE_CLASS, DIMMED_CLASS));
 
-  // --- Empty Search = Show All ---
+  // --- Empty Search = Show All (filters ignored during reset) ---
   if (!searchTerm || !searchTerm.trim()) {
     console.log(
       `[FilterHighlight] Reset. Showing all ${allItems.length} items.`,
@@ -50,9 +49,21 @@ function filterSearchContainers(searchTerm) {
     return;
   }
 
-  const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const regex = new RegExp(escaped, "i");
-  console.log(`[FilterHighlight] Filtering: "${searchTerm}" | Regex: ${regex}`);
+  // --- Build Regexes ---
+  const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const primaryRegex = new RegExp(escapeRegex(searchTerm), "i");
+
+  const validFilters = Array.isArray(filters)
+    ? filters.filter((f) => typeof f === "string" && f.trim() !== "")
+    : [];
+  const filterRegexes = validFilters.map((f) => ({
+    term: f,
+    regex: new RegExp(escapeRegex(f), "i"),
+  }));
+
+  console.log(
+    `[FilterHighlight] Primary: "${searchTerm}" | Secondary filters (${filterRegexes.length}): [${validFilters.map((f) => `"${f}"`).join(", ")}]`,
+  );
 
   // --- Evaluate & Apply ---
   let matchCount = 0;
@@ -62,17 +73,35 @@ function filterSearchContainers(searchTerm) {
     const titleEl = container.querySelector(TITLE_SELECTOR);
     const titleText = titleEl?.textContent?.trim() || "";
 
-    if (regex.test(titleText)) {
-      container.classList.add(ACTIVE_CLASS);
-      matchCount++;
-      const dvdId =
-        container.querySelector("a[alt]")?.getAttribute("alt") ||
-        `item-${index}`;
-      console.log(`[FilterHighlight] ✅ [${matchCount}] ${dvdId}`);
-    } else {
+    // Primary check first (short-circuit)
+    if (!primaryRegex.test(titleText)) {
       container.classList.add(DIMMED_CLASS);
       hiddenCount++;
+      return;
     }
+
+    // Secondary filters: ALL must match (AND logic)
+    const failedFilters = filterRegexes.filter(
+      ({ regex }) => !regex.test(titleText),
+    );
+
+    if (failedFilters.length > 0) {
+      container.classList.add(DIMMED_CLASS);
+      hiddenCount++;
+      return;
+    }
+
+    // ✅ Passed all checks
+    container.classList.add(ACTIVE_CLASS);
+    matchCount++;
+
+    const dvdId =
+      container.querySelector("a[alt]")?.getAttribute("alt") || `item-${index}`;
+    const filterInfo =
+      filterRegexes.length > 0
+        ? ` | Filters passed: [${validFilters.join(", ")}]`
+        : "";
+    console.log(`[FilterHighlight] ✅ [${matchCount}] ${dvdId}${filterInfo}`);
   });
 
   console.log(
@@ -81,6 +110,7 @@ function filterSearchContainers(searchTerm) {
 }
 
 // ▶️ USAGE EXAMPLES:
-// filterSearchContainers('jux-536');
-// filterSearchContainers('heyzo-');
-// filterSearchContainers('');          // Reset: show everything, no highlights
+// filterSearchContainers('younger men', ['jux-', 'wife']);  // Primary + AND filters
+// filterSearchContainers('cuckold', ['uncensored']);          // Primary + single filter
+// filterSearchContainers('jux-');                            // Primary only
+// filterSearchContainers();                                   // Reset: show everything
