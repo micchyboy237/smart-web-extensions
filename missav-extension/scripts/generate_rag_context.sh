@@ -4,71 +4,50 @@ set -euo pipefail
 
 # ========== Config ==========
 DB_PATH="/Users/jethroestrada/.cache/chrome_db/missav/chroma_data/chroma.sqlite3"
-SCHEMA_SQL="/Users/jethroestrada/Desktop/External_Projects/Jet_Apps/web-extensions/smart-web-extensions/missav-extension/scripts/database_schema_discovery.sql"
-
-# Dynamically resolve output dir equivalent to: Path(__file__).parent / "generated" / Path(__file__).stem
 SCRIPT_DIR="${0:A:h}"
-SCRIPT_STEM="${0:A:t:r}"
-OUTPUT_DIR="${SCRIPT_DIR}/generated/${SCRIPT_STEM}"
+SCHEMA_SQL="${SCRIPT_DIR}/database_schema_discovery.sql"
 
-# Recreate output directory (equivalent to shutil.rmtree + mkdir)
+# Dynamically resolve output dir
+OUTPUT_DIR="${SCRIPT_DIR}/generated/rag_context"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-OUTPUT_FILE="${OUTPUT_DIR}/rag_schema_context.json"
-TEMP_RAW="${OUTPUT_DIR}/._rag_raw_output.tmp"
+OUTPUT_FILE="${OUTPUT_DIR}/schema.json"
+TEMP_RAW="${OUTPUT_DIR}/._raw_output.tmp"
 # ============================
 
 log() {
-    local level="$1"
-    shift
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*" >&2
+    local level="$1"; shift
+    echo "[$(date '+%H:%M:%S')] [$level] $*" >&2
 }
 
-cleanup() {
-    [[ -f "$TEMP_RAW" ]] && rm -f "$TEMP_RAW"
-}
+cleanup() { [[ -f "$TEMP_RAW" ]] && rm -f "$TEMP_RAW"; }
 trap cleanup EXIT
 
-# ---------- Sanity checks ----------
-if [[ ! -f "$DB_PATH" ]]; then
-    log ERROR "Database not found: $DB_PATH"
-    exit 1
-fi
-if [[ ! -f "$SCHEMA_SQL" ]]; then
-    log ERROR "Schema SQL file not found: $SCHEMA_SQL"
-    exit 1
-fi
-
+# ---------- Sanity Checks ----------
+if [[ ! -f "$DB_PATH" ]]; then log ERROR "DB not found: $DB_PATH"; exit 1; fi
+if [[ ! -f "$SCHEMA_SQL" ]]; then log ERROR "SQL not found: $SCHEMA_SQL"; exit 1; fi
 for cmd in sqlite3 python3; do
-    if ! command -v "$cmd" >/dev/null 2>&1; then
-        log ERROR "$cmd is not installed or not in PATH"
-        exit 1
-    fi
+    command -v "$cmd" >/dev/null 2>&1 || { log ERROR "$cmd missing"; exit 1; }
 done
 
-log INFO "Generating RAG schema context..."
-log INFO "Database : $DB_PATH"
-log INFO "SQL File : $SCHEMA_SQL"
-log INFO "Output Dir: $OUTPUT_DIR"
-log INFO "Output File: $OUTPUT_FILE"
+log INFO "Extracting schema from SQLite..."
 
-# ---------- Step 1: Run discovery SQL in JSON mode ----------
-log INFO "Extracting schema metadata..."
+# Run discovery script in JSON mode
 sqlite3 "$DB_PATH" \
     -cmd ".mode json" \
     -cmd ".headers on" \
     < "$SCHEMA_SQL" > "$TEMP_RAW" 2>/dev/null || true
 
 if [[ ! -s "$TEMP_RAW" ]]; then
-    log ERROR "Schema extraction produced no output"
+    log ERROR "Extraction failed (empty output)"
     exit 1
 fi
 
-# ---------- Step 2: Transform raw JSON arrays into RAG-optimized structure ----------
-log INFO "Transforming to RAG-optimized JSON..."
+log INFO "Transforming to Agent-Optimized JSON..."
+
 python3 - "$TEMP_RAW" "$OUTPUT_FILE" << 'PYEOF'
-import json, sys, re
+import json, sys
 from collections import defaultdict
 
 raw_path = sys.argv[1]
@@ -77,126 +56,113 @@ out_path = sys.argv[2]
 with open(raw_path) as f:
     content = f.read().strip()
 
-# sqlite3 .mode json outputs multiple JSON arrays back-to-back; split them
+# Parse multiple JSON arrays from sqlite3 output
 arrays = []
 decoder = json.JSONDecoder()
 pos = 0
 while pos < len(content):
-    # skip whitespace between arrays
-    while pos < len(content) and content[pos] in ' \t\n\r':
-        pos += 1
-    if pos >= len(content):
+    while pos < len(content) and content[pos] in ' \t\n\r': pos += 1
+    if pos >= len(content): break
+    try:
+        obj, end = decoder.raw_decode(content, pos)
+        arrays.append(obj)
+        pos = end
+    except json.JSONDecodeError:
         break
-    obj, end = decoder.raw_decode(content, pos)
-    arrays.append(obj)
-    pos = end
 
-# Index rows by section
 sections = defaultdict(list)
 for arr in arrays:
     if isinstance(arr, list):
         for row in arr:
-            sec = row.get("section", "")
-            if sec:
-                sections[sec].append(row)
+            sec = row.get("section")
+            if sec: sections[sec].append(row)
 
-# --- Build RAG context structure ---
-rag = {}
+# --- Build Structure ---
+rag = {
+    "database_overview": {},
+    "tables": {},
+    "query_patterns": []
+}
 
-# Database overview
+# 1. Overview
 if sections["DATABASE_INFO"]:
-    info = sections["DATABASE_INFO"][0]
-    rag["database_overview"] = {
-        "total_tables": info.get("total_tables"),
-        "total_views": info.get("total_views"),
-        "total_indexes": info.get("total_indexes"),
-    }
+    rag["database_overview"] = sections["DATABASE_INFO"][0]
 
-# Tables with full CREATE statements
-tables = {}
+# 2. Tables & Columns
+tables_map = {}
 for row in sections.get("TABLES", []):
-    tname = row.get("table_name", "")
+    tname = row.get("table_name")
     if tname:
-        tables[tname] = {
+        tables_map[tname] = {
             "create_statement": row.get("create_statement", ""),
-            "table_type": row.get("table_type", "user"),
+            "columns": [],
+            "foreign_keys": [],
+            "indexes": []
         }
 
-# Columns grouped by table
-columns_by_table = defaultdict(list)
+# Add Columns
 for row in sections.get("COLUMNS", []):
-    tname = row.get("table_name", "")
-    if tname:
+    tname = row.get("table_name")
+    if tname and tname in tables_map:
         col = {
             "name": row.get("column_name"),
-            "type": row.get("data_type", ""),
+            "type": row.get("data_type", "TEXT"),
             "nullable": row.get("is_not_null", 0) == 0,
-            "primary_key_order": row.get("primary_key_order", 0),
+            "pk_order": row.get("primary_key_order", 0)
         }
-        dv = row.get("default_value")
-        if dv is not None:
-            col["default"] = dv
-        columns_by_table[tname].append(col)
+        if row.get("default_value") is not None:
+            col["default"] = row["default_value"]
+        tables_map[tname]["columns"].append(col)
 
-# Foreign keys grouped by table
-fk_by_table = defaultdict(list)
+# Add Foreign Keys
 for row in sections.get("FOREIGN_KEYS", []):
-    tname = row.get("table_name", "")
-    if tname:
-        fk_by_table[tname].append({
-            "source_column": row.get("source_column"),
-            "referenced_table": row.get("referenced_table"),
-            "referenced_column": row.get("referenced_column"),
-            "on_delete": row.get("on_delete_action"),
-            "on_update": row.get("on_update_action"),
+    tname = row.get("table_name")
+    if tname and tname in tables_map:
+        tables_map[tname]["foreign_keys"].append({
+            "source": row.get("source_column"),
+            "target_table": row.get("referenced_table"),
+            "target_col": row.get("referenced_column"),
+            "on_delete": row.get("on_delete_action")
         })
 
-# Indexes grouped by table
-idx_by_table = defaultdict(list)
+# Add Indexes
 for row in sections.get("INDEXES", []):
-    tname = row.get("table_name", "")
-    if tname:
-        idx_by_table[tname].append({
+    tname = row.get("table_name")
+    if tname and tname in tables_map:
+        tables_map[tname]["indexes"].append({
             "name": row.get("index_name"),
             "unique": row.get("is_unique", 0) == 1,
-            "columns": row.get("indexed_columns", ""),
+            "columns": row.get("indexed_columns", "")
         })
 
-# Merge everything into per-table entries
-for tname in sorted(tables.keys()):
-    entry = tables[tname]
-    entry["columns"] = columns_by_table.get(tname, [])
-    entry["foreign_keys"] = fk_by_table.get(tname, [])
-    entry["indexes"] = idx_by_table.get(tname, [])
+# 3. Post-Process for LLM Efficiency
+for tname, info in tables_map.items():
+    # Quick lookup lists
+    info["column_names"] = [c["name"] for c in info["columns"]]
+    info["primary_keys"] = [c["name"] for c in info["columns"] if c["pk_order"] > 0]
+    
+    # Remove raw pk_order to save tokens, keep boolean is_pk if needed or just rely on list
+    for c in info["columns"]:
+        del c["pk_order"]
 
-rag["tables"] = tables
+rag["tables"] = tables_map
 
-# Query patterns
-patterns = []
+# 4. Query Patterns
 for row in sections.get("QUERY_PATTERNS", []):
-    patterns.append({
-        "pattern": row.get("pattern", ""),
-        "example": row.get("example", ""),
+    rag["query_patterns"].append({
+        "pattern": row.get("pattern"),
+        "example": row.get("example")
     })
-if patterns:
-    rag["query_patterns"] = patterns
 
-# Write output
 with open(out_path, "w") as f:
     json.dump(rag, f, indent=2)
 
-print(f"Wrote {len(json.dumps(rag))} chars to {out_path}", file=sys.stderr)
+print(f"Generated {len(json.dumps(rag))} chars", file=sys.stderr)
 PYEOF
 
-# ---------- Verify ----------
 if [[ -s "$OUTPUT_FILE" ]]; then
-    size=$(wc -c < "$OUTPUT_FILE" | tr -d ' ')
-    log INFO "Success! Wrote $size bytes to $OUTPUT_FILE"
-    log INFO "Preview:"
-    head -n 30 "$OUTPUT_FILE"
+    log INFO "Success: $OUTPUT_FILE"
 else
-    log ERROR "Output file is empty or was not created"
+    log ERROR "Failed to generate JSON"
     exit 1
 fi
-
-log INFO "Done."

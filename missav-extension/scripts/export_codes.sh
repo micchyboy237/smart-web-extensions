@@ -5,7 +5,17 @@ set -euo pipefail
 # ========== Config ==========
 DB_PATH="/Users/jethroestrada/.cache/chrome_db/missav/chroma_data/chroma.sqlite3"
 SQL_FILE="/Users/jethroestrada/Desktop/External_Projects/Jet_Apps/web-extensions/smart-web-extensions/missav-extension/scripts/display_codes.sql"
-OUTPUT_FILE="codes.json"
+
+# Dynamically resolve output dir equivalent to: Path(__file__).parent / "generated" / Path(__file__).stem
+SCRIPT_DIR="${0:A:h}"
+SCRIPT_STEM="${0:A:t:r}"
+OUTPUT_DIR="${SCRIPT_DIR}/generated/${SCRIPT_STEM}"
+
+# Recreate output directory (equivalent to shutil.rmtree + mkdir)
+rm -rf "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"
+
+OUTPUT_FILE="${OUTPUT_DIR}/codes.json"
 # ============================
 
 log() {
@@ -61,4 +71,4 @@ else
     exit 1
 fi
 
-log INFO "Done."
+log INFO "Done.\nSaved at '$OUTPUT_FILE'"
