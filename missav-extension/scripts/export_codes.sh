@@ -1,10 +1,10 @@
 #!/bin/zsh
 # export_codes.sh – Export unique codes from chroma.sqlite3 as prettified JSON
-
 set -euo pipefail
 
 # ========== Config ==========
 DB_PATH="/Users/jethroestrada/.cache/chrome_db/missav/chroma_data/chroma.sqlite3"
+SQL_FILE="/Users/jethroestrada/Desktop/External_Projects/Jet_Apps/web-extensions/smart-web-extensions/missav-extension/scripts/display_codes.sql"
 OUTPUT_FILE="codes.json"
 # ============================
 
@@ -16,11 +16,17 @@ log() {
 
 log INFO "Starting export..."
 log INFO "Database : $DB_PATH"
+log INFO "SQL File : $SQL_FILE"
 log INFO "Output   : $OUTPUT_FILE"
 
 # Sanity checks
 if [[ ! -f "$DB_PATH" ]]; then
     log ERROR "Database not found: $DB_PATH"
+    exit 1
+fi
+
+if [[ ! -f "$SQL_FILE" ]]; then
+    log ERROR "SQL file not found: $SQL_FILE"
     exit 1
 fi
 
@@ -34,37 +40,14 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
-log INFO "Running query..."
+log INFO "Loading query from $SQL_FILE ..."
+# Load the SQL content into a variable
+SQL_QUERY=$(< "$SQL_FILE")
 
+log INFO "Running query..."
 # Run query → prettify → save
-sqlite3 "$DB_PATH" <<EOF | python3 -m json.tool > "$OUTPUT_FILE"
-.mode list
-.separator ""
-SELECT
-    json_object(
-        'length', counts.length,
-        'total', counts.total_count,
-        'items', json(counts.items_array)
-    )
-FROM (
-    SELECT
-        count(*) AS length,
-        sum(cnt) AS total_count,
-        json_group_array(json_object('code', code, 'count', cnt)) AS items_array
-    FROM (
-        SELECT
-            string_value AS code,
-            count(*) AS cnt
-        FROM embedding_metadata
-        WHERE
-            key = 'code'
-            AND string_value IS NOT NULL
-            AND string_value != ''
-        GROUP BY string_value
-        ORDER BY count(*) DESC
-    )
-) AS counts;
-EOF
+# We use -cmd ".mode list" and ".separator "" to ensure clean output for piping
+sqlite3 "$DB_PATH" -cmd ".mode list" -cmd ".separator ''" "$SQL_QUERY" | python3 -m json.tool > "$OUTPUT_FILE"
 
 # Verify result
 if [[ -s "$OUTPUT_FILE" ]]; then
