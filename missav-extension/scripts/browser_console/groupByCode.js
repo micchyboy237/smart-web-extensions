@@ -1,7 +1,7 @@
 /**
  * groupByCode.js
- * Groups MissAV search results by JAV code, shows top N as filter chips,
- * and filters the DOM based on selection.
+ * Groups MissAV search results by JAV code, shows top N as filter chips
+ * in a floating panel, and filters the DOM based on selection.
  *
  * Usage:
  *   groupByCode()
@@ -13,11 +13,11 @@
 // CONFIGURATION & CONSTANTS
 // ============================================================================
 const DEFAULT_CONFIG = {
-  minCount: 2, // Minimum videos to form a group
-  topN: 10, // Max number of chips to display
+  minCount: 2,
+  topN: 10,
   itemSelector: ".thumbnail.group",
-  videoAnchorSelector: "a:has(video)", // Matches __sample.html structure
-  altAttr: "alt", // Code is extracted from this attribute
+  videoAnchorSelector: "a:has(video)",
+  altAttr: "alt",
   containerId: "jav-group-by-code-panel",
   activeChipClass: "jav-chip-active",
   hiddenItemClass: "jav-grouped-hidden",
@@ -29,26 +29,20 @@ const DEFAULT_CONFIG = {
 
 /**
  * Lightweight JAV code extractor matching utils.js patterns.
- * Extracts the 'code' portion (e.g., "luxu" from "luxu-1389").
  * @param {string} text - Raw alt text or URL
  * @returns {string|null} Normalized lowercase code or null
  */
 function extractCode(text) {
   if (!text) return null;
-
-  // Pattern priority matches utils.js extractJavInfo exactly
   const patterns = [
-    /\b([a-z]+\d*-[a-z]+)-\d+(?:-[a-z0-9-]+)?\b/i, // three-part: fc2-ppv-4909847
-    /\b([a-z0-9]+)-\d+(?:-[a-z0-9-]+)?\b/i, // two-part: luxu-1389
-    /\b([a-z]+)\d{3,6}\b/i, // no hyphen: abp123
-    /\b(\d+[a-z]+)\d{3,6}\b/i, // digits first: 1pondo456
+    /\b([a-z]+\d*-[a-z]+)-\d+(?:-[a-z0-9-]+)?\b/i,
+    /\b([a-z0-9]+)-\d+(?:-[a-z0-9-]+)?\b/i,
+    /\b([a-z]+)\d{3,6}\b/i,
+    /\b(\d+[a-z]+)\d{3,6}\b/i,
   ];
-
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    if (match) {
-      return match[1].toLowerCase();
-    }
+    if (match) return match[1].toLowerCase();
   }
   return null;
 }
@@ -65,17 +59,14 @@ function extractGroupedCodes(config) {
   let skipped = 0;
 
   items.forEach((item) => {
-    // Find anchor that contains a video child (per __sample.html)
     const videoAnchor = item.querySelector(config.videoAnchorSelector);
     if (!videoAnchor) {
       skipped++;
       return;
     }
 
-    // Extract code from the alt attribute of the video anchor
     const rawAlt = videoAnchor.getAttribute(config.altAttr);
     const code = extractCode(rawAlt);
-
     if (!code) {
       skipped++;
       return;
@@ -84,7 +75,6 @@ function extractGroupedCodes(config) {
     if (!codeMap.has(code)) {
       codeMap.set(code, { code, count: 0, urls: [], elements: [] });
     }
-
     const entry = codeMap.get(code);
     entry.count++;
     entry.urls.push(videoAnchor.href || "");
@@ -95,17 +85,15 @@ function extractGroupedCodes(config) {
     `[GroupByCode] 📦 Found ${items.length} items, ${skipped} skipped, ${codeMap.size} unique codes`,
   );
 
-  // Convert to array, filter by minCount, sort desc by count, limit to topN
   const result = Array.from(codeMap.values())
     .filter((g) => g.count >= config.minCount)
     .sort((a, b) => b.count - a.count)
     .slice(0, config.topN);
 
   console.log(
-    `[GroupByCode] ✅ Top groups after filtering (min=${config.minCount}, topN=${config.topN}):`,
+    `[GroupByCode] ✅ Top groups (min=${config.minCount}, topN=${config.topN}):`,
     result.map((g) => `${g.code}(${g.count})`).join(", "),
   );
-
   return result;
 }
 
@@ -114,15 +102,10 @@ function extractGroupedCodes(config) {
 // ============================================================================
 
 /**
- * Shows/hides items based on selected code group.
- * Follows searchTerm.js reset pattern: null elements = show all.
- * @param {Element[]|null} elements - Elements to show. Null = show all (reset).
- * @param {Object} config
+ * Shows/hides items. Null elements = reset (show all).
  */
 function applyFilter(elements, config) {
   const allItems = document.querySelectorAll(config.itemSelector);
-
-  // Reset: remove hidden class from all items first
   allItems.forEach((el) => el.classList.remove(config.hiddenItemClass));
 
   if (!elements) {
@@ -132,46 +115,36 @@ function applyFilter(elements, config) {
 
   const showSet = new Set(elements);
   let hiddenCount = 0;
-
   allItems.forEach((el) => {
     if (!showSet.has(el)) {
       el.classList.add(config.hiddenItemClass);
       hiddenCount++;
     }
   });
-
   console.log(
-    `[GroupByCode] 🔽 Filter applied: ${showSet.size} shown, ${hiddenCount} hidden`,
+    `[GroupByCode] 🔽 Filter: ${showSet.size} shown, ${hiddenCount} hidden`,
   );
 }
 
 /**
- * Full reset: removes panel, injected styles, and shows all items.
- * @param {Object} config
+ * Full reset: removes panel, styles, shows all items.
  */
 function resetAll(config) {
   console.log("[GroupByCode] 🗑️ Full reset triggered");
-
-  // Show all items
   applyFilter(null, config);
-
-  // Remove chip panel
   const panel = document.getElementById(config.containerId);
   if (panel) panel.remove();
-
-  // Remove injected styles
   const style = document.getElementById("jav-group-by-code-style");
   if (style) style.remove();
-
   console.log("[GroupByCode] ✅ Reset complete");
 }
 
 // ============================================================================
-// DOM MANIPULATION: UI INJECTION
+// DOM MANIPULATION: FLOATING UI INJECTION
 // ============================================================================
 
 /**
- * Injects styles for chips and hidden items. Idempotent.
+ * Injects styles for floating panel, chips, and hidden items. Idempotent.
  */
 function injectStyles(config) {
   if (document.getElementById("jav-group-by-code-style")) return;
@@ -179,20 +152,72 @@ function injectStyles(config) {
   const style = document.createElement("style");
   style.id = "jav-group-by-code-style";
   style.textContent = `
+    /* Floating panel - fixed position, always visible */
     #${config.containerId} {
-      position: sticky;
-      top: 0;
-      z-index: 9999;
-      background: rgba(30, 30, 46, 0.95);
-      backdrop-filter: blur(8px);
-      padding: 10px 16px;
+      position: fixed !important;
+      top: 12px !important;
+      right: 12px !important;
+      z-index: 2147483647 !important;
+      background: rgba(30, 30, 46, 0.97);
+      backdrop-filter: blur(12px);
+      padding: 12px 16px;
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
       align-items: center;
-      border-bottom: 1px solid rgba(255,255,255,0.1);
-      margin-bottom: 12px;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      max-width: 90vw;
+      max-height: 80vh;
+      overflow-y: auto;
+      font-family: system-ui, -apple-system, sans-serif;
     }
+    /* Collapse toggle button */
+    #${config.containerId} .jav-panel-toggle {
+      position: absolute;
+      top: -8px;
+      right: -8px;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #fbbf24;
+      color: #1e1e2e;
+      font-size: 14px;
+      font-weight: bold;
+      line-height: 22px;
+      text-align: center;
+      cursor: pointer;
+      border: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      user-select: none;
+    }
+    #${config.containerId}.jav-panel-collapsed {
+      padding: 0 !important;
+      gap: 0 !important;
+      border: none !important;
+      background: transparent !important;
+      backdrop-filter: none !important;
+      box-shadow: none !important;
+      max-width: unset !important;
+      max-height: unset !important;
+      overflow: visible !important;
+    }
+    #${config.containerId}.jav-panel-collapsed .jav-chip,
+    #${config.containerId}.jav-panel-collapsed .jav-panel-label {
+      display: none !important;
+    }
+    /* Panel label */
+    #${config.containerId} .jav-panel-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: #fbbf24;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-right: 4px;
+      white-space: nowrap;
+    }
+    /* Chips */
     #${config.containerId} .jav-chip {
       padding: 4px 12px;
       border-radius: 999px;
@@ -200,13 +225,14 @@ function injectStyles(config) {
       font-weight: 600;
       cursor: pointer;
       border: 1px solid rgba(255,255,255,0.2);
-      background: rgba(255,255,255,0.05);
+      background: rgba(255,255,255,0.08);
       color: #ccc;
       transition: all 0.15s ease;
       user-select: none;
+      white-space: nowrap;
     }
     #${config.containerId} .jav-chip:hover {
-      background: rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.18);
       color: #fff;
     }
     #${config.containerId} .jav-chip.${config.activeChipClass} {
@@ -214,42 +240,57 @@ function injectStyles(config) {
       color: #1e1e2e;
       border-color: #fbbf24;
     }
+    /* Hidden items */
     .${config.hiddenItemClass} {
       display: none !important;
     }
   `;
   document.head.appendChild(style);
-  console.log("[GroupByCode] 🎨 Styles injected");
+  console.log("[GroupByCode] 🎨 Floating panel styles injected");
 }
 
 /**
  * Updates visual active state on chips (single-select).
- * @param {HTMLElement} activeChip
- * @param {Object} config
  */
 function setActiveChip(activeChip, config) {
   const panel = document.getElementById(config.containerId);
   if (!panel) return;
-
   panel
     .querySelectorAll(".jav-chip")
     .forEach((c) => c.classList.remove(config.activeChipClass));
-
   activeChip.classList.add(config.activeChipClass);
 }
 
 /**
- * Creates and mounts the chip panel. First code chip is active by default.
- * @param {Array} groups - Sorted group data
- * @param {Object} config
+ * Creates and mounts the floating chip panel.
+ * First code chip is active by default. Includes collapse toggle.
  */
 function renderChipPanel(groups, config) {
-  // Remove existing panel if any (idempotent re-render)
+  // Remove existing panel if any
   const existing = document.getElementById(config.containerId);
   if (existing) existing.remove();
 
   const panel = document.createElement("div");
   panel.id = config.containerId;
+
+  // Collapse/expand toggle button
+  const toggleBtn = document.createElement("button");
+  toggleBtn.className = "jav-panel-toggle";
+  toggleBtn.textContent = "−";
+  toggleBtn.title = "Collapse / Expand panel";
+  toggleBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const isCollapsed = panel.classList.toggle("jav-panel-collapsed");
+    toggleBtn.textContent = isCollapsed ? "+" : "−";
+    toggleBtn.title = isCollapsed ? "Expand panel" : "Collapse panel";
+  });
+  panel.appendChild(toggleBtn);
+
+  // Label
+  const label = document.createElement("span");
+  label.className = "jav-panel-label";
+  label.textContent = "Filter by Code";
+  panel.appendChild(label);
 
   // "All" reset chip
   const allChip = document.createElement("span");
@@ -267,12 +308,10 @@ function renderChipPanel(groups, config) {
     chip.className = "jav-chip";
     chip.textContent = `${group.code.toUpperCase()} (${group.count})`;
     chip.dataset.code = group.code;
-
     chip.addEventListener("click", () => {
       setActiveChip(chip, config);
       applyFilter(group.elements, config);
     });
-
     panel.appendChild(chip);
 
     // Activate first chip by default
@@ -282,12 +321,11 @@ function renderChipPanel(groups, config) {
     }
   });
 
-  // Insert at top of main content area
-  const mainContent = document.querySelector("main") || document.body;
-  mainContent.prepend(panel);
+  // Append to body (not main) so fixed positioning is relative to viewport
+  document.body.appendChild(panel);
 
   console.log(
-    `[GroupByCode] 🏷️ Rendered ${groups.length + 1} chips (including All)`,
+    `[GroupByCode] 🏷️ Floating panel rendered with ${groups.length + 1} chips`,
   );
 }
 
@@ -296,48 +334,38 @@ function renderChipPanel(groups, config) {
 // ============================================================================
 
 /**
- * Main function: Extract codes, build chips, filter items.
+ * Main function: Extract codes, build floating chips, filter items.
  * @param {Object} [options={}] - Override default config
- * @param {number} [options.minCount=2] - Min videos per code group
- * @param {number} [options.topN=10] - Max chips to show
  */
 function groupByCode(options = {}) {
   console.log("[GroupByCode] ▶️ Starting with options:", options);
   const config = { ...DEFAULT_CONFIG, ...options };
 
-  // Validate sensible defaults
   if (config.minCount < 1) config.minCount = 1;
   if (config.topN < 1) config.topN = 1;
 
-  // Step 1: Extract & aggregate
   const groups = extractGroupedCodes(config);
 
   if (groups.length === 0) {
-    console.warn(
-      "[GroupByCode] ⚠️ No groups found matching criteria. Try lowering minCount.",
-    );
+    console.warn("[GroupByCode] ⚠️ No groups found. Try lowering minCount.");
     alert(
       `[GroupByCode] No code groups found with count >= ${config.minCount}.\nTry: groupByCode({ minCount: 1 })`,
     );
     return;
   }
 
-  // Step 2: Inject UI & apply initial filter (first chip active)
   injectStyles(config);
   renderChipPanel(groups, config);
-
   console.log("[GroupByCode] ✅ Done!");
 }
 
 /**
  * Reset helper: removes all UI and shows all items.
- * Usage: groupByCode.reset()
  */
 groupByCode.reset = function () {
   resetAll(DEFAULT_CONFIG);
 };
 
-// Auto-log readiness
 console.log(
   "[GroupByCode] ✅ Script loaded. Run: groupByCode() | groupByCode({ minCount: 3, topN: 5 }) | groupByCode.reset()",
 );
