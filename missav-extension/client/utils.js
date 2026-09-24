@@ -21,9 +21,9 @@
  * @returns {{ videoId: string|null, code: string|null, episode: string|null }}
  */
 function extractJavInfo(url, text) {
-  console.log("[UTILS] 🔍 extractJavInfo called");
-  console.log("  URL:", url);
-  console.log("  text:", text);
+  // console.log("[UTILS] 🔍 extractJavInfo called");
+  // console.log("  URL:", url);
+  // console.log("  text:", text);
 
   // ---------------------------------------------------------
   // Pattern 1: Three-part codes with hyphens + optional suffix
@@ -101,15 +101,15 @@ function extractJavInfo(url, text) {
       episode = match[2] || null;
     }
 
-    console.log(`  ✅ Match via ${patternUsed}:`, match[0]);
-    console.log(
-      "  📦 Result -> videoId:",
-      videoId,
-      "| code:",
-      code,
-      "| episode:",
-      episode,
-    );
+    // console.log(`  ✅ Match via ${patternUsed}:`, match[0]);
+    // console.log(
+    //   "  📦 Result -> videoId:",
+    //   videoId,
+    //   "| code:",
+    //   code,
+    //   "| episode:",
+    //   episode,
+    // );
     return { videoId, code, episode };
   }
 
@@ -201,7 +201,7 @@ function generateIdFromUrl(url, videoId) {
       hash = (hash * 0x01000193) >>> 0;
     }
     const generatedId = "jav-" + hash.toString(36);
-    console.log("[UTILS] 🔑 generateIdFromUrl:", input, "→", generatedId);
+    // console.log("[UTILS] 🔑 generateIdFromUrl:", input, "→", generatedId);
     return generatedId;
   } catch (e) {
     const fallback =

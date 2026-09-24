@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MissAV Smart Search",
-  "version": "2.2",
+  "version": "2.3",
   "description": "Smart search and filter videos with AI-powered recommendations",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["http://127.0.0.1:8000/*"],

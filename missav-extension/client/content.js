@@ -21,24 +21,6 @@ function findVideoWithPreviewContainer(element) {
 /**
  * Extract the best available media URL from an <img> or <video> element.
  * Checks multiple attribute fallbacks to handle lazy-loading (Alpine.js, etc.).
- *
- * CRITICAL: Validates that extracted URLs are real HTTP(S) URLs, not:
- *   - Alpine.js expressions (e.g., "item.dvd_id ? cdnUrl(...) : '...'")
- *   - base64 data URIs (data:image/...)
- *   - blob URLs (blob:...)
- *   - javascript: placeholders
- *
- * Priority for <img>:
- *   1. currentSrc (browser-resolved URL — bypasses Alpine entirely)
- *   2. src attribute (if it passes validation)
- *   3. data-src attribute (lazy-load fallback, if it passes validation)
- *
- * Priority for <video>:
- *   1. currentSrc
- *   2. src attribute (validated)
- *   3. data-src attribute (validated)
- *   4. <source> child element's src
- *   5. poster attribute (static thumbnail fallback)
  */
 function getSrcOrDataSrc(element) {
   if (!element) return null;
@@ -50,37 +32,24 @@ function getSrcOrDataSrc(element) {
     if (!url || typeof url !== "string") return false;
     const trimmed = url.trim();
     if (!trimmed) return false;
-    // Reject Alpine.js expressions (contain spaces, parentheses, question marks with spaces, etc.)
+    // Reject Alpine.js expressions
     if (/[()?:]/.test(trimmed) && /\s/.test(trimmed)) {
-      console.log(
-        `[MISSAV EXT] 🚫 Rejected Alpine expression: "${trimmed.substring(0, 80)}"`,
-      );
       return false;
     }
     // Reject javascript: placeholders
     if (trimmed.startsWith("javascript:")) {
-      console.log(`[MISSAV EXT] 🚫 Rejected javascript: placeholder`);
       return false;
     }
-    // Reject blob URLs (temporary, not persistable)
+    // Reject blob URLs
     if (trimmed.startsWith("blob:")) {
-      console.log(
-        `[MISSAV EXT] 🚫 Rejected blob URL: "${trimmed.substring(0, 60)}"`,
-      );
       return false;
     }
-    // Reject data URIs (base64 inline — too large for DB, not a real thumbnail)
+    // Reject data URIs
     if (trimmed.startsWith("data:")) {
-      console.log(
-        `[MISSAV EXT] 🚫 Rejected data URI (base64) — length: ${trimmed.length}`,
-      );
       return false;
     }
-    // Must look like a real URL: starts with http:// or https://
+    // Must look like a real URL
     if (!/^https?:\/\//i.test(trimmed)) {
-      console.log(
-        `[MISSAV EXT] 🚫 Rejected non-HTTP URL: "${trimmed.substring(0, 80)}"`,
-      );
       return false;
     }
     return true;
@@ -90,7 +59,6 @@ function getSrcOrDataSrc(element) {
   if (element.currentSrc) {
     const cs = element.currentSrc.trim();
     if (isValidMediaUrl(cs)) {
-      console.log(`[MISSAV EXT] 🖼️ Got currentSrc from <${tagName}>:`, cs);
       return cs;
     }
   }
@@ -98,17 +66,12 @@ function getSrcOrDataSrc(element) {
   // --- 2. src attribute ---
   const src = element.getAttribute("src");
   if (src && isValidMediaUrl(src)) {
-    console.log(`[MISSAV EXT] 🖼️ Got src from <${tagName}>:`, src.trim());
     return src.trim();
   }
 
   // --- 3. data-src attribute (lazy-load fallback) ---
   const dataSrc = element.getAttribute("data-src");
   if (dataSrc && isValidMediaUrl(dataSrc)) {
-    console.log(
-      `[MISSAV EXT] 🖼️ Got data-src from <${tagName}>:`,
-      dataSrc.trim(),
-    );
     return dataSrc.trim();
   }
 
@@ -118,35 +81,27 @@ function getSrcOrDataSrc(element) {
     if (sourceEl) {
       const sourceSrc = sourceEl.getAttribute("src");
       if (sourceSrc && isValidMediaUrl(sourceSrc)) {
-        console.log(
-          "[MISSAV EXT] 🖼️ Got src from <source> child:",
-          sourceSrc.trim(),
-        );
         return sourceSrc.trim();
       }
     }
     // --- 5. poster attribute (thumbnail fallback for videos) ---
     const poster = element.getAttribute("poster");
     if (poster && isValidMediaUrl(poster)) {
-      console.log("[MISSAV EXT] 🖼️ Got poster from <video>:", poster.trim());
       return poster.trim();
     }
   }
 
-  console.log(`[MISSAV EXT] ⚠️ No valid media URL found for <${tagName}>`);
   return null;
 }
 
 // ====================== DATA EXTRACTION ======================
 
 function extractData() {
-  console.log("[MISSAV EXT] 📥 extractData() called");
   const anchors = document.querySelectorAll(".text-secondary");
-  console.log("[MISSAV EXT] Found", anchors.length, ".text-secondary anchors");
 
   const seen = new Map(); // id -> item
 
-  Array.from(anchors).forEach((a, index) => {
+  Array.from(anchors).forEach((a) => {
     let url = a.href?.trim() || "";
     const text = a.textContent?.trim() || "";
     const hashIndex = url.indexOf("#");
@@ -154,9 +109,6 @@ function extractData() {
       url = url.substring(0, hashIndex);
     }
     if (!url || !text) {
-      console.log(
-        `[MISSAV EXT] ⏭️ Skipping anchor #${index}: missing url or text`,
-      );
       return;
     }
 
@@ -175,14 +127,6 @@ function extractData() {
       if (video) {
         preview = getSrcOrDataSrc(video);
       }
-      console.log(
-        `[MISSAV EXT] 📸 Item #${index} "${text.substring(0, 50)}..." → thumb: ${!!thumbnail}, preview: ${!!preview}`,
-      );
-    } else {
-      console.log(
-        "[MISSAV EXT] ⚠️ No preview container for:",
-        text.substring(0, 50),
-      );
     }
 
     const item = { id, url, text, thumbnail, preview, videoId, code, episode };
@@ -198,27 +142,18 @@ function extractData() {
         preview: existing.preview || item.preview,
       };
       seen.set(id, merged);
-      console.log("[MISSAV EXT] 🔁 Duplicate id merged:", id);
     }
   });
 
   const data = Array.from(seen.values());
-  console.log("[MISSAV EXT] 📊 Total extracted items (deduped):", data.length);
 
   // ====================== RETRY: Missing thumbnails ======================
-  // Alpine.js lazy-loading may not have resolved src/data-src yet on first
-  // paint. Schedule a ONE-SHOT retry ~500ms later for any items missing
-  // both thumbnail AND preview.
   const missingMedia = data.filter((item) => !item.thumbnail && !item.preview);
   if (missingMedia.length > 0) {
-    console.log(
-      `[MISSAV EXT] ⏳ ${missingMedia.length} items missing both thumbnail & preview — scheduling retry in 500ms`,
-    );
     // Clear any previously scheduled retry to avoid stacking
     if (retryTimeoutId) clearTimeout(retryTimeoutId);
     retryTimeoutId = setTimeout(() => {
       retryTimeoutId = null;
-      console.log("[MISSAV EXT] 🔄 Running lazy-load retry...");
       const freshData = extractData();
       const freshMap = new Map(freshData.map((item) => [item.id, item]));
 
@@ -229,21 +164,14 @@ function extractData() {
         if (!item.thumbnail && fresh.thumbnail) {
           item.thumbnail = fresh.thumbnail;
           changed = true;
-          console.log(`[MISSAV EXT] 🔄 Retry: got thumbnail for ${item.id}`);
         }
         if (!item.preview && fresh.preview) {
           item.preview = fresh.preview;
           changed = true;
-          console.log(`[MISSAV EXT] 🔄 Retry: got preview for ${item.id}`);
         }
       }
       if (changed) {
-        console.log(
-          "[MISSAV EXT] 🔄 Lazy-load retry found new media — syncing",
-        );
         onDataChange(currentData);
-      } else {
-        console.log("[MISSAV EXT] 🔄 Lazy-load retry: no new media found");
       }
     }, 500);
   }
@@ -265,7 +193,6 @@ function dataEquals(a, b) {
  */
 async function onDataChange(newData) {
   console.log("🔄 Data CHANGED →", newData.length, "items");
-  console.table(newData);
 
   // STEP 1: Sync to Python Server (via background) — fire-and-forget
   syncToServer(newData);
@@ -276,17 +203,8 @@ async function onDataChange(newData) {
       ...item,
       id: generateIdFromUrl(item.url, item.videoId),
     };
-    console.log("[MISSAV EXT] 💾 Saving to DB:", {
-      id: itemWithId.id,
-      url: itemWithId.url,
-      text: itemWithId.text?.substring(0, 60),
-      videoId: itemWithId.videoId,
-      code: itemWithId.code,
-      episode: itemWithId.episode,
-    });
     createItem(itemWithId).catch((err) => {
       if (err.name === "ConstraintError") {
-        console.log("→ Duplicate ID, updating:", itemWithId.id);
         updateItem(itemWithId).catch((updateErr) =>
           console.error("❌ Update failed:", updateErr),
         );
@@ -299,16 +217,11 @@ async function onDataChange(newData) {
 
 /**
  * Sync scraped videos to the Python server via the background service worker.
- * See service-worker.js for the actual serverClient.ingestVideos() call.
  */
 async function syncToServer(videos) {
   if (!videos || videos.length === 0) {
-    console.log("[MISSAV EXT] 📭 No videos to sync");
     return;
   }
-  console.log(
-    `[MISSAV EXT] 📤 Relaying ${videos.length} videos to background for sync...`,
-  );
   const videosWithIds = videos.map((video) => ({
     ...video,
     id: video.id || generateIdFromUrl(video.url, video.videoId),
@@ -350,14 +263,6 @@ async function logExistingItems() {
       const withJavInfo = allItems.filter((item) => item.videoId);
       console.log(
         `📊 ${withJavInfo.length}/${allItems.length} items have JAV info`,
-      );
-      const sortedByEpisode = await getAll({
-        sortBy: "episode",
-        sortOrder: "asc",
-      });
-      console.log(
-        "📋 Items sorted by episode:",
-        sortedByEpisode.map((i) => `${i.code}-${i.episode}`),
       );
     } else {
       console.log("📭 Database is currently empty.");
@@ -412,7 +317,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getItem") {
     getItem(request.id)
       .then((item) => {
-        console.log("✅ Retrieved item via popup:", item);
         sendResponse({ success: true, item });
       })
       .catch((err) => {
@@ -424,7 +328,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getAll") {
     getAll(request.options || {})
       .then((items) => {
-        console.log("✅ Retrieved items via popup:", items.length);
         sendResponse({ success: true, items });
       })
       .catch((err) => {
@@ -436,7 +339,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getCount") {
     getCount()
       .then((count) => {
-        console.log("✅ Item count:", count);
         sendResponse({ success: true, count });
       })
       .catch((err) => {
@@ -448,7 +350,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "deleteItem") {
     deleteItem(request.id)
       .then(() => {
-        console.log("✅ Item deleted via popup:", request.id);
         sendResponse({ success: true });
       })
       .catch((err) => {
@@ -460,7 +361,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "deleteAll") {
     deleteAll()
       .then(() => {
-        console.log("✅ All items deleted via popup request");
         sendResponse({ success: true });
       })
       .catch((err) => {
@@ -470,9 +370,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.action === "getPageVideoIds") {
-    // Return all video IDs currently extracted (from currentData)
     const videoIds = currentData.map((item) => item.id).filter(Boolean);
-    console.log(`[MISSAV EXT] 📄 Returning ${videoIds.length} page video IDs`);
     sendResponse({ videoIds });
     return true;
   }
@@ -486,8 +384,6 @@ window.getCurrentData = () => currentData;
 window.getItemFromDB = async (id) => await getItem(id);
 window.getAllFromDB = async (options) => await getAll(options);
 window.deleteAllData = async () => {
-  console.log("🧹 Manual deleteAll triggered");
   await deleteAll();
-  console.log("✅ Manual deleteAll complete");
 };
 window.getDBCount = async () => await getCount();

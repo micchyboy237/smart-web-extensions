@@ -41,14 +41,14 @@ function openDB() {
  * @returns {Promise<*>} The key of the saved item
  */
 async function createItem(item) {
-  console.log("[DB] 📝 createItem called with:", item);
+  // console.log("[DB] 📝 createItem called with:", item);
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_NAME], "readwrite");
     const store = tx.objectStore(STORE_NAME);
     const req = store.put(item);
     req.onsuccess = () => {
-      console.log("[DB] ✅ Item saved with id:", item.id);
+      // console.log("[DB] ✅ Item saved with id:", item.id);
       resolve(req.result);
     };
     req.onerror = () => {
