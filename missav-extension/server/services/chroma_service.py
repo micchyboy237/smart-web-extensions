@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 class ChromaVideoService:
     """
     ChromaDB-based video storage with embedding search.
+
     Uses persistent storage for video documents and their embeddings.
     """
 
@@ -77,17 +78,20 @@ class ChromaVideoService:
                 "🔍 [ChromaService] get_videos_by_ids: empty list, returning []"
             )
             return []
+
         unique_ids = list(dict.fromkeys(video_ids))
         logger.info(
             f"🔍 [ChromaService] Fetching {len(unique_ids)} videos by ids: "
             f"{unique_ids[:5]}{'...' if len(unique_ids) > 5 else ''}"
         )
         start_time = time.time()
+
         page = self.repository.get_by_ids(unique_ids)
         videos = [
             {"id": r.id, "document": r.document, "metadata": r.metadata}
             for r in page.records
         ]
+
         found_ids = {r.id for r in page.records}
         missing = [vid for vid in unique_ids if vid not in found_ids]
         if missing:
@@ -95,6 +99,7 @@ class ChromaVideoService:
                 f"⚠️ [ChromaService] {len(missing)} IDs not found: {missing[:10]}"
                 f"{'...' if len(missing) > 10 else ''}"
             )
+
         elapsed = (time.time() - start_time) * 1000
         logger.info(
             f"✅ [ChromaService] Found {len(videos)}/{len(unique_ids)} videos "
@@ -132,19 +137,24 @@ class ChromaVideoService:
             f"📋 [ChromaService] Getting videos (limit={limit}, offset={offset})"
         )
         start_time = time.time()
+
         if limit is not None:
             limit = min(limit, 1000)
+
         page = self.repository.get_all(where=where)
         total = page.total
+
         if limit is not None:
             slice_end = offset + limit
             records_slice = page.records[offset:slice_end]
         else:
             records_slice = page.records[offset:]
+
         videos = [
             {"id": r.id, "document": r.document, "metadata": r.metadata}
             for r in records_slice
         ]
+
         elapsed = (time.time() - start_time) * 1000
         actual_limit = limit if limit is not None else len(videos)
         logger.info(
@@ -156,6 +166,101 @@ class ChromaVideoService:
             "total": total,
             "limit": actual_limit,
             "offset": offset,
+        }
+
+    def get_codes(self) -> dict:
+        """
+        Get all unique codes with their video counts, sorted by count desc.
+
+        Returns:
+            dict: {codes: [{code, count}, ...], code_count, total_videos}
+        """
+        logger.info("🏷️ [ChromaService] Getting all codes")
+        start_time = time.time()
+
+        counts = self.repository.get_all_codes()
+        codes = [
+            {"code": code, "count": count}
+            for code, count in sorted(
+                counts.items(), key=lambda kv: kv[1], reverse=True
+            )
+        ]
+
+        elapsed = (time.time() - start_time) * 1000
+        logger.info(
+            f"✅ [ChromaService] {len(codes)} unique codes, "
+            f"{sum(counts.values())} tagged videos in {elapsed:.2f}ms"
+        )
+        return {
+            "codes": codes,
+            "code_count": len(codes),
+            "total_videos": sum(counts.values()),
+        }
+
+    def get_videos_grouped_by_code(
+        self,
+        min_count: int = 1,
+        top_n: Optional[int] = None,
+        limit_per_group: int = 20,
+    ) -> dict:
+        """
+        Group videos by their 'code' metadata field.
+
+        Args:
+            min_count: Only include codes with at least this many videos.
+            top_n: Max number of groups to return, ranked by count desc
+                (None = all groups that pass min_count).
+            limit_per_group: Max videos included per group's "videos" list
+                (the group's "count" still reflects the true total).
+
+        Returns:
+            dict: {groups: [{code, count, videos}, ...], group_count,
+                   total_videos} — total_videos sums ALL codes passing
+                   min_count, not just the returned top_n groups.
+        """
+        logger.info(
+            f"🏷️ [ChromaService] Grouping videos by code "
+            f"(min_count={min_count}, top_n={top_n}, limit_per_group={limit_per_group})"
+        )
+        start_time = time.time()
+
+        page = self.repository.get_all()
+
+        buckets: dict[str, list] = {}
+        for record in page.records:
+            code = (record.metadata or {}).get("code")
+            if not code:
+                continue
+            buckets.setdefault(code, []).append(record)
+
+        filtered = {c: recs for c, recs in buckets.items() if len(recs) >= min_count}
+        total_videos = sum(len(recs) for recs in filtered.values())
+
+        sorted_codes = sorted(filtered.items(), key=lambda kv: len(kv[1]), reverse=True)
+        if top_n is not None:
+            sorted_codes = sorted_codes[:top_n]
+
+        groups = [
+            {
+                "code": code,
+                "count": len(records),
+                "videos": [
+                    {"id": r.id, "document": r.document, "metadata": r.metadata}
+                    for r in records[:limit_per_group]
+                ],
+            }
+            for code, records in sorted_codes
+        ]
+
+        elapsed = (time.time() - start_time) * 1000
+        logger.info(
+            f"✅ [ChromaService] {len(groups)} groups returned "
+            f"({total_videos} matching videos total) in {elapsed:.2f}ms"
+        )
+        return {
+            "groups": groups,
+            "group_count": len(groups),
+            "total_videos": total_videos,
         }
 
     def add_videos(self, videos: list[dict]) -> int:
@@ -172,14 +277,17 @@ class ChromaVideoService:
         """
         if not videos:
             return 0
+
         start_time = time.time()
         ids = []
         documents = []
         metadatas = []
+
         for video in videos:
             video_id = video.get("id") or video.get("videoId")
             if not video_id:
                 continue
+
             doc_text = self._create_document_text(video)
             ids.append(video_id)
             documents.append(doc_text)
@@ -195,9 +303,11 @@ class ChromaVideoService:
                     "preview": video.get("preview") or "",
                 }
             )
+
         if not ids:
             logger.warning("No valid videos to add")
             return 0
+
         try:
             self.repository.upsert(ids=ids, documents=documents, metadatas=metadatas)
             elapsed = (time.time() - start_time) * 1000
@@ -205,6 +315,7 @@ class ChromaVideoService:
         except Exception as e:
             logger.error(f"Failed to upsert videos: {e}")
             raise
+
         return len(ids)
 
     def search(
@@ -228,6 +339,7 @@ class ChromaVideoService:
             sorted by score descending (best match first).
         """
         start_time = time.time()
+
         query_prefix = llm_config.EMBED_QUERY_PREFIX or None
         logger.info(f"🧠 [ChromaService] Embedding query with prefix={query_prefix!r}")
         query_embedding = embed(
@@ -235,17 +347,20 @@ class ChromaVideoService:
             return_format="list",
             prefix=query_prefix,
         )
+
         query_result = self.repository.query_by_embedding(
             query_embedding=query_embedding,
             n_results=top_k,
             where=where,
             where_document=where_document,
         )
+
         elapsed = (time.time() - start_time) * 1000
         logger.info(
             f"✅ [ChromaService] search completed in {elapsed:.2f}ms, "
             f"returned {len(query_result.matches)} results"
         )
+
         formatted = []
         for match in query_result.matches:
             similarity = 1 - (match.distance / 2)
@@ -336,8 +451,6 @@ def search(
     ...
     """
     diversity = max(0.0, min(1.0, diversity))
-
-    # Shuffle activates if seed is provided, regardless of diversity
     is_shuffle = shuffle_seed is not None
 
     max_from_pool = len(candidate_ids) if candidate_ids else None
@@ -358,7 +471,6 @@ def search(
             {"$and": [id_filter, combined_where]} if combined_where else id_filter
         )
 
-    # Calculate fetch_k based on whether we're shuffling or diversifying
     if is_shuffle:
         raw_fetch_k = compute_shuffle_fetch_k(effective_top_k)
         logger.info(f"🔀 [chroma_service] Shuffle mode: using shuffle_fetch_k")
@@ -370,8 +482,6 @@ def search(
         logger.info(f"🔍 [chroma_service] Relevance-only mode: no overfetching")
 
     if score_threshold is not None and raw_fetch_k > effective_top_k:
-        # score_threshold is applied AFTER the DB fetch, so pad the pool
-        # to compensate for candidates we expect to filter out below it.
         padded_fetch_k = int(raw_fetch_k * 1.5)
         logger.info(
             f"🎯 [chroma_service] score_threshold={score_threshold} set — "
@@ -391,7 +501,6 @@ def search(
     )
 
     results = get_service().search(query, fetch_k, combined_where, where_document)
-
     logger.info(
         f"🔍 [chroma_service] ChromaDB returned {len(results)} results "
         f"(fetch_k={fetch_k})"
@@ -422,11 +531,8 @@ def search(
         )
         return results
 
-    # Apply shuffle if seed is provided (regardless of diversity)
     if is_shuffle:
         logger.info(f"🔀 [chroma_service] Shuffling with seed={shuffle_seed}")
-
-        # If diversity is also enabled, shuffle then diversify
         if diversity > 0:
             logger.info(
                 f"🔀🎨 [chroma_service] Shuffle + Diversity: "
@@ -440,7 +546,6 @@ def search(
                 get_embeddings_fn=get_embeddings,
             )
         else:
-            # Shuffle without diversity: just sample and return
             logger.info(
                 f"🔀 [chroma_service] Shuffle only (no diversity): "
                 f"sampling with seed={shuffle_seed}"
@@ -451,13 +556,11 @@ def search(
                 results,
                 sample_size=effective_top_k,
                 seed=shuffle_seed,
-                relevance_bias=1.0,  # Balanced bias for shuffle-only mode
+                relevance_bias=1.0,
             )
-            # Sort by score after sampling to maintain some relevance ordering
             sampled.sort(key=lambda r: r["score"], reverse=True)
             return sampled
 
-    # Apply diversity without shuffle
     if diversity > 0:
         logger.info(
             f"🎨 [chroma_service] Diversifying (no shuffle) with diversity={diversity}"
@@ -469,7 +572,6 @@ def search(
             get_embeddings_fn=get_embeddings,
         )
 
-    # Pure relevance, no shuffle, no diversity
     logger.info(
         f"🔍 [chroma_service] Returning top {effective_top_k} results by score "
         f"(no diversity, no shuffle)"
@@ -482,6 +584,7 @@ def _reorder_by_candidate_ids(
 ) -> list[dict]:
     """
     Reorder search results to match the order of candidate_ids.
+
     Results not in candidate_ids are placed at the end, sorted by score descending.
 
     Args:
@@ -491,19 +594,15 @@ def _reorder_by_candidate_ids(
     Returns:
         Results reordered to match candidate_ids order
     """
-    # Build a lookup by ID
     results_by_id = {r["id"]: r for r in results}
-
     reordered = []
     seen_ids = set()
 
-    # First, add results in candidate_ids order
     for cid in candidate_ids:
         if cid in results_by_id and cid not in seen_ids:
             reordered.append(results_by_id[cid])
             seen_ids.add(cid)
 
-    # Then append any remaining results (not in candidate_ids), sorted by score
     remaining = [r for r in results if r["id"] not in seen_ids]
     remaining.sort(key=lambda r: r["score"], reverse=True)
     reordered.extend(remaining)
@@ -512,7 +611,6 @@ def _reorder_by_candidate_ids(
         f"📋 [_reorder_by_candidate_ids] Reordered {len(reordered)} results: "
         f"{len(reordered) - len(remaining)} from candidate_ids + {len(remaining)} extra"
     )
-
     return reordered
 
 
@@ -539,6 +637,20 @@ def get_videos(
     where: Optional[dict] = None,
 ) -> dict:
     return get_service().get_videos(limit=limit, offset=offset, where=where)
+
+
+def get_codes() -> dict:
+    return get_service().get_codes()
+
+
+def get_videos_grouped_by_code(
+    min_count: int = 1,
+    top_n: Optional[int] = None,
+    limit_per_group: int = 20,
+) -> dict:
+    return get_service().get_videos_grouped_by_code(
+        min_count=min_count, top_n=top_n, limit_per_group=limit_per_group
+    )
 
 
 def delete_videos(ids: list[str]) -> None:

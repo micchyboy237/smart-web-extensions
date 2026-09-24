@@ -6,7 +6,7 @@ just does CRUD against the vector store.
 """
 
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 from chromadb import Documents, EmbeddingFunction, Embeddings, PersistentClient
 from chromadb.config import Settings
@@ -27,6 +27,7 @@ class LlamaCppEmbeddingFunction(EmbeddingFunction):
     """
     Chroma-compatible embedding function backed by the local llama.cpp
     embedding server. Used only for DOCUMENT embedding (add/upsert).
+
     Query embedding is done separately so query vs. doc prefixes can differ.
     """
 
@@ -95,8 +96,8 @@ class ChromaVideoRepository:
 
         unique_ids = list(dict.fromkeys(video_ids))
         logger.debug(f"🔍 [ChromaRepository] get_by_ids: {len(unique_ids)} ids")
-        result = self.collection.get(ids=unique_ids, include=["documents", "metadatas"])
 
+        result = self.collection.get(ids=unique_ids, include=["documents", "metadatas"])
         records = [
             VideoRecord(
                 id=result["ids"][i],
@@ -130,6 +131,38 @@ class ChromaVideoRepository:
             for i in range(len(result["ids"]))
         ]
         return VideoRecordPage(records=records, total=len(records))
+
+    def get_all_codes(self) -> Dict[str, int]:
+        """
+        Aggregate video counts per 'code' metadata field.
+
+        ChromaDB has no native GROUP BY, so this fetches metadatas only
+        (skipping documents/embeddings for speed) and counts in Python.
+
+        Returns:
+            Dict mapping code -> count. Empty dict on failure or if no
+            records carry a non-empty 'code' field. Unsorted; callers
+            should sort as needed.
+        """
+        logger.debug("🏷️ [ChromaRepository] get_all_codes: fetching metadatas")
+        try:
+            result = self.collection.get(include=["metadatas"])
+        except Exception as e:
+            logger.error(f"❌ [ChromaRepository] get_all_codes failed: {e}")
+            return {}
+
+        counts: Dict[str, int] = {}
+        for metadata in result.get("metadatas") or []:
+            code = (metadata or {}).get("code")
+            if not code:
+                continue
+            counts[code] = counts.get(code, 0) + 1
+
+        logger.debug(
+            f"✅ [ChromaRepository] get_all_codes: {len(counts)} unique codes, "
+            f"{sum(counts.values())} tagged videos"
+        )
+        return counts
 
     def upsert(
         self, ids: list[str], documents: list[str], metadatas: list[dict]

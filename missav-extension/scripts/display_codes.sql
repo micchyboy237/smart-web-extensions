@@ -1,13 +1,13 @@
 SELECT
     json_object(
-        'length', counts.length,
-        'total', counts.total_count,
+        'code_count', counts.code_count,
+        'total_videos', counts.total_videos,
         'items', json(counts.items_array)
     )
 FROM (
     SELECT
-        count(*) AS length,
-        sum(cnt) AS total_count,
+        count(*) AS code_count,
+        sum(cnt) AS total_videos,
         json_group_array(json_object('code', code, 'count', cnt)) AS items_array
     FROM (
         SELECT

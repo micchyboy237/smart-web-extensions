@@ -1,5 +1,4 @@
 """Typed contracts for the ChromaDB repository layer.
-
 These models describe what the repository returns/accepts. They are
 intentionally separate from models/video.py (which describes the public
 API surface) since the repository deals in raw stored shapes, not
@@ -53,3 +52,18 @@ class EmbeddingsResult(BaseModel):
     @property
     def is_empty(self) -> bool:
         return self.vectors is None or len(self.vectors) == 0
+
+
+class CodeCount(BaseModel):
+    """A single code and how many stored videos carry it."""
+
+    code: str
+    count: int
+
+
+class CodeCountPage(BaseModel):
+    """Aggregated code->count data as produced by the repository layer."""
+
+    items: List[CodeCount] = Field(default_factory=list)
+    code_count: int = 0
+    total_videos: int = 0
