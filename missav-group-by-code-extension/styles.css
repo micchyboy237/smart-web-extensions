@@ -1,6 +1,6 @@
 /* MissAV Group by Code Extension Styles */
 
-/* Floating Panel */
+/* ── Floating Panel (FIXED WIDTH) ─────────────────────── */
 #jav-group-by-code-panel {
   position: fixed !important;
   top: 12px !important;
@@ -16,14 +16,13 @@
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  max-width: 90vw;
+  width: 320px !important; /* FIXED WIDTH */
   max-height: 80vh;
   overflow-y: auto;
   font-family:
     system-ui,
     -apple-system,
     sans-serif;
-  min-width: 280px;
 }
 
 #jav-group-by-code-panel .jav-panel-header {
@@ -69,14 +68,12 @@
   background: transparent !important;
   backdrop-filter: none !important;
   box-shadow: none !important;
-  max-width: unset !important;
+  width: auto !important; /* Allow collapsed state to shrink */
   max-height: unset !important;
   overflow: visible !important;
-  min-width: unset !important;
 }
 
-#jav-group-by-code-panel.jav-panel-collapsed
-  > *:not(.jav-panel-toggle):not(.jav-panel-header) {
+#jav-group-by-code-panel.jav-panel-collapsed > *:not(.jav-panel-header) {
   display: none !important;
 }
 
@@ -84,6 +81,7 @@
   padding: 4px;
 }
 
+/* ── Mode Toggle Buttons ──────────────────────────────── */
 #jav-group-by-code-panel .jav-mode-toggle {
   display: flex;
   gap: 4px;
@@ -115,7 +113,7 @@
   color: #1e1e2e;
 }
 
-/* Search Bar */
+/* ── Search Bar ───────────────────────────────────────── */
 #jav-group-by-code-panel .jav-search-container {
   display: flex;
   flex-direction: column;
@@ -144,7 +142,7 @@
   color: rgba(255, 255, 255, 0.4);
 }
 
-/* Filter Tags */
+/* ── Filter Tags ──────────────────────────────────────── */
 #jav-group-by-code-panel .jav-filters-container {
   display: flex;
   flex-wrap: wrap;
@@ -179,7 +177,7 @@
 
 #jav-group-by-code-panel .jav-add-filter-input {
   flex: 1;
-  min-width: 100px;
+  min-width: 80px;
   padding: 4px 8px;
   border: 1px dashed rgba(255, 255, 255, 0.2);
   border-radius: 6px;
@@ -199,7 +197,7 @@
   color: rgba(255, 255, 255, 0.3);
 }
 
-/* Group Chips */
+/* ── Group Chips ──────────────────────────────────────── */
 #jav-group-by-code-panel .jav-panel-label {
   font-size: 11px;
   font-weight: 700;
@@ -239,7 +237,7 @@
   border-color: #fbbf24;
 }
 
-/* Highlight */
+/* ── Highlight ────────────────────────────────────────── */
 .jav-grouped-highlight {
   outline: 3px solid #fbbf24 !important;
   outline-offset: 2px;
@@ -261,7 +259,7 @@
   z-index: 10;
 }
 
-/* Hidden Items */
+/* ── Hidden Items ─────────────────────────────────────── */
 .jav-grouped-hidden {
   display: none !important;
 }

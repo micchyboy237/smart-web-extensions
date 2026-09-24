@@ -1,6 +1,6 @@
 /**
  * content.js - MissAV Group by Code Extension
- * Automatically activates on missav.ws pages
+ * Automatically activates on missav.ws pages with live updates
  */
 
 // ============================================================================
@@ -20,7 +20,7 @@ const DEFAULT_CONFIG = {
   mode: "group",
 };
 
-// SVG Icons for mode toggle
+// SVG Icons
 const ICONS = {
   group: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>`,
   flat: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>`,
@@ -33,13 +33,17 @@ const ICONS = {
 // ============================================================================
 let currentState = {
   groups: [],
-  selectedCode: null, // null means "All" is selected
+  selectedCode: null,
   searchTerm: "",
   filters: [],
   mode: "group",
   config: null,
   isActive: false,
+  lastItemCount: 0, // Track item count to detect significant changes
 };
+
+// Debounce timer for live updates
+let updateTimer = null;
 
 // ============================================================================
 // CORE LOGIC: EXTRACTION & AGGREGATION
@@ -60,7 +64,6 @@ function extractCode(text) {
 }
 
 function extractGroupedCodes(config) {
-  console.log("[GroupByCode] 🔍 Extracting items...");
   const items = document.querySelectorAll(config.itemSelector);
   const codeMap = new Map();
   let skipped = 0;
@@ -86,21 +89,12 @@ function extractGroupedCodes(config) {
     entry.elements.push(item);
   });
 
-  console.log(
-    `[GroupByCode] 📦 Found ${items.length} items, ${skipped} skipped, ${codeMap.size} unique codes`,
-  );
-
   const result = Array.from(codeMap.values())
     .filter((g) => g.count >= config.minCount)
     .sort((a, b) => b.count - a.count)
     .slice(0, config.topN);
 
-  console.log(
-    `[GroupByCode] ✅ Top groups (min=${config.minCount}, topN=${config.topN}):`,
-    result.map((g) => `${g.code}(${g.count})`).join(", "),
-  );
-
-  return result;
+  return { groups: result, totalItems: items.length };
 }
 
 // ============================================================================
@@ -116,8 +110,12 @@ function applyCombinedFilter(config) {
 
   const { selectedCode, searchTerm, filters, mode, groups } = currentState;
 
-  if (!selectedCode && !searchTerm.trim() && filters.length === 0) {
-    console.log("[GroupByCode] 🔄 Reset: showing all items");
+  const hasActiveFilters =
+    (mode === "group" && selectedCode !== null) ||
+    (searchTerm && searchTerm.trim() !== "") ||
+    filters.length > 0;
+
+  if (!hasActiveFilters) {
     return;
   }
 
@@ -135,6 +133,9 @@ function applyCombinedFilter(config) {
     const group = groups.find((g) => g.code === selectedCode);
     if (group) {
       elementsToShow = new Set(group.elements);
+    } else {
+      // If group no longer exists (e.g. after update), show all
+      allItems.forEach((el) => elementsToShow.add(el));
     }
   } else {
     allItems.forEach((el) => elementsToShow.add(el));
@@ -171,49 +172,50 @@ function applyCombinedFilter(config) {
     container.classList.add(config.highlightClass);
     highlightedCount++;
   });
-
-  console.log(
-    `[GroupByCode] 🔽 Filter: ✨ ${highlightedCount} shown, 🚫 ${hiddenCount} hidden | Mode: ${mode}, Code: ${selectedCode || "All"}`,
-  );
 }
 
 function resetAll(config) {
-  console.log("[GroupByCode] 🗑️ Full reset");
-  currentState = {
-    groups: [],
-    selectedCode: null,
-    searchTerm: "",
-    filters: [],
-    mode: config.mode || "group",
-    config: null,
-    isActive: false,
-  };
+  currentState.selectedCode = null;
+  currentState.searchTerm = "";
+  currentState.filters = [];
+
+  const panel = document.getElementById(config.containerId);
+  if (panel) {
+    const searchInput = panel.querySelector(".jav-search-input");
+    if (searchInput) searchInput.value = "";
+
+    const filtersContainer = panel.querySelector(".jav-filters-container");
+    if (filtersContainer) {
+      const existingTags = filtersContainer.querySelectorAll(".jav-filter-tag");
+      existingTags.forEach((tag) => tag.remove());
+    }
+
+    if (currentState.mode === "group") {
+      const allChip = panel.querySelector(
+        ".jav-chips-container .jav-chip:first-child",
+      );
+      if (allChip) setActiveChip(allChip, config);
+    }
+  }
 
   const allItems = document.querySelectorAll(config.itemSelector);
   allItems.forEach((el) => {
     el.classList.remove(config.hiddenItemClass);
     el.classList.remove(config.highlightClass);
   });
-
-  const panel = document.getElementById(config.containerId);
-  if (panel) panel.remove();
-
-  console.log("[GroupByCode] ✅ Reset complete");
 }
 
 // ============================================================================
-// UI RENDERING
+// UI RENDERING & HANDLERS
 // ============================================================================
 function setActiveChip(activeChip, config) {
   const panel = document.getElementById(config.containerId);
   if (!panel) return;
 
-  // Remove active class from ALL chips
   panel.querySelectorAll(".jav-chip").forEach((c) => {
     c.classList.remove(config.activeChipClass);
   });
 
-  // Add active class to the selected chip
   if (activeChip) {
     activeChip.classList.add(config.activeChipClass);
   }
@@ -253,6 +255,7 @@ function renderFilters(config) {
   existingTags.forEach((tag) => tag.remove());
 
   const inputField = filtersContainer.querySelector(".jav-add-filter-input");
+
   currentState.filters.forEach((filter) => {
     const tag = document.createElement("div");
     tag.className = "jav-filter-tag";
@@ -274,77 +277,85 @@ function handleModeToggle(mode, config) {
   const panel = document.getElementById(config.containerId);
   if (!panel) return;
 
-  // Update mode button states
   panel.querySelectorAll(".jav-mode-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   });
 
-  // Show/hide group chips based on mode
   const chipsContainer = panel.querySelector(".jav-chips-container");
   const label = panel.querySelector(".jav-panel-label");
 
-  if (chipsContainer) {
+  if (chipsContainer)
     chipsContainer.style.display = mode === "group" ? "flex" : "none";
-  }
-  if (label) {
-    label.style.display = mode === "group" ? "block" : "none";
-  }
+  if (label) label.style.display = mode === "group" ? "block" : "none";
 
-  // Re-render chips to ensure "All" is active
   if (mode === "group") {
-    renderChips(panel, currentState.groups, config);
+    // Pass null to ensure "All" is active on mode switch
+    renderChips(panel, currentState.groups, config, null);
   }
 
   applyCombinedFilter(config);
 }
 
 function handleRefresh(config) {
-  console.log("[GroupByCode] 🔄 Refreshing data...");
-  const groups = extractGroupedCodes(config);
+  console.log("[GroupByCode] 🔄 Manual Refresh...");
+  const { groups, totalItems } = extractGroupedCodes(config);
   if (groups.length > 0) {
     currentState.groups = groups;
-    currentState.selectedCode = null; // Reset to "All"
+    currentState.lastItemCount = totalItems;
+    currentState.selectedCode = null;
     renderEnhancedPanel(groups, config);
   }
 }
 
-function renderChips(panel, groups, config) {
-  // Remove existing chips container if present
+function renderChips(panel, groups, config, currentSelectedCode = null) {
   const existingChips = panel.querySelector(".jav-chips-container");
-  if (existingChips) {
-    existingChips.remove();
-  }
+  if (existingChips) existingChips.remove();
 
   const existingLabel = panel.querySelector(".jav-panel-label");
-  if (existingLabel) {
-    existingLabel.remove();
-  }
+  if (existingLabel) existingLabel.remove();
 
-  // Create label
   const label = document.createElement("span");
   label.className = "jav-panel-label";
   label.textContent = "Filter by Code";
   panel.appendChild(label);
 
-  // Create chips container
   const chipsContainer = document.createElement("div");
   chipsContainer.className = "jav-chips-container";
 
-  // "All" chip - ACTIVE by default
+  // Determine if "All" should be active
+  // "All" is active if currentSelectedCode is null OR if the selected code is not in the new groups
+  const isAllActive =
+    currentSelectedCode === null ||
+    !groups.find((g) => g.code === currentSelectedCode);
+
   const allChip = document.createElement("span");
-  allChip.className = `jav-chip ${config.activeChipClass}`;
+  // Apply active class if isAllActive is true
+  allChip.className = `jav-chip ${isAllActive ? config.activeChipClass : ""}`;
   allChip.textContent = "All";
   allChip.addEventListener("click", () => {
     currentState.selectedCode = null;
+    currentState.searchTerm = "";
+    currentState.filters = [];
+
+    const searchInput = panel.querySelector(".jav-search-input");
+    if (searchInput) searchInput.value = "";
+
+    const filtersContainer = panel.querySelector(".jav-filters-container");
+    if (filtersContainer) {
+      const tags = filtersContainer.querySelectorAll(".jav-filter-tag");
+      tags.forEach((t) => t.remove());
+    }
+
     setActiveChip(allChip, config);
     applyCombinedFilter(config);
   });
   chipsContainer.appendChild(allChip);
 
-  // Code chips
   groups.forEach((group) => {
     const chip = document.createElement("span");
-    chip.className = "jav-chip";
+    // Apply active class if this group matches the currentSelectedCode
+    const isActive = group.code === currentSelectedCode;
+    chip.className = `jav-chip ${isActive ? config.activeChipClass : ""}`;
     chip.textContent = `${group.code.toUpperCase()} (${group.count})`;
     chip.dataset.code = group.code;
     chip.addEventListener("click", () => {
@@ -365,7 +376,7 @@ function renderEnhancedPanel(groups, config) {
   currentState = {
     ...currentState,
     groups,
-    selectedCode: null, // Default to "All"
+    selectedCode: null,
     isActive: true,
   };
 
@@ -421,40 +432,66 @@ function renderEnhancedPanel(groups, config) {
   // Search Bar
   const searchContainer = document.createElement("div");
   searchContainer.className = "jav-search-container";
-
   const searchInput = document.createElement("input");
   searchInput.type = "text";
   searchInput.className = "jav-search-input";
   searchInput.placeholder = "Search titles...";
   searchInput.addEventListener("input", (e) => handleSearchInput(e, config));
-
   searchContainer.appendChild(searchInput);
   panel.appendChild(searchContainer);
 
-  // Dynamic Filters
+  // Filters
   const filtersContainer = document.createElement("div");
   filtersContainer.className = "jav-filters-container";
-
   const filterInput = document.createElement("input");
   filterInput.type = "text";
   filterInput.className = "jav-add-filter-input";
   filterInput.placeholder = "+ Add filter (Enter)";
   filterInput.addEventListener("keydown", (e) => handleAddFilter(e, config));
-
   filtersContainer.appendChild(filterInput);
   panel.appendChild(filtersContainer);
 
-  // Group Chips (only in group mode)
+  // Chips
   if (currentState.mode === "group") {
     renderChips(panel, groups, config);
   }
 
   document.body.appendChild(panel);
   applyCombinedFilter(config);
+}
 
-  console.log(
-    `[GroupByCode] 🏷️ Panel rendered | Mode: ${currentState.mode} | Groups: ${groups.length} | Default: All`,
-  );
+// ============================================================================
+// LIVE UPDATE LOGIC
+// ============================================================================
+function checkForUpdates(config) {
+  if (!currentState.isActive) return;
+
+  const { groups, totalItems } = extractGroupedCodes(config);
+
+  // Only update if item count changed significantly or groups are different
+  const itemCountChanged =
+    Math.abs(totalItems - currentState.lastItemCount) > 5;
+  const hasNewGroups =
+    groups.length !== currentState.groups.length ||
+    JSON.stringify(groups.map((g) => g.code)) !==
+      JSON.stringify(currentState.groups.map((g) => g.code));
+
+  if (itemCountChanged || hasNewGroups) {
+    console.log(
+      `[GroupByCode] 📄 Content change detected. Items: ${currentState.lastItemCount} -> ${totalItems}`,
+    );
+    currentState.groups = groups;
+    currentState.lastItemCount = totalItems;
+
+    const panel = document.getElementById(config.containerId);
+    if (panel && currentState.mode === "group") {
+      // PASS the current selectedCode so the correct chip stays highlighted
+      renderChips(panel, groups, config, currentState.selectedCode);
+
+      // Re-apply filter to include new items in the current selection
+      applyCombinedFilter(config);
+    }
+  }
 }
 
 // ============================================================================
@@ -472,48 +509,43 @@ function initExtension() {
 
 function activateExtension() {
   const config = { ...DEFAULT_CONFIG };
+  currentState.config = config;
 
   const items = document.querySelectorAll(config.itemSelector);
   if (items.length === 0) {
-    console.log("[GroupByCode] ⚠️ No items found yet. Waiting...");
-    setTimeout(() => {
-      const retryItems = document.querySelectorAll(config.itemSelector);
-      if (retryItems.length > 0) {
-        initializePanel(config);
-      }
-    }, 2000);
+    setTimeout(() => activateExtension(), 2000);
     return;
   }
 
-  initializePanel(config);
-}
-
-function initializePanel(config) {
-  const groups = extractGroupedCodes(config);
-
-  if (groups.length === 0) {
-    console.warn("[GroupByCode] ⚠️ No code groups found");
-    return;
+  const { groups, totalItems } = extractGroupedCodes(config);
+  if (groups.length > 0) {
+    currentState.lastItemCount = totalItems;
+    renderEnhancedPanel(groups, config);
+    console.log("[GroupByCode] ✅ Extension activated!");
+  } else {
+    console.warn("[GroupByCode] ⚠️ No code groups found initially");
   }
-
-  renderEnhancedPanel(groups, config);
-  console.log("[GroupByCode] ✅ Extension activated!");
 }
 
-// Auto-initialize when script loads
+// Auto-initialize
 initExtension();
 
-// Listen for DOM changes (for AJAX-loaded content)
-const observer = new MutationObserver((mutations) => {
-  if (currentState.isActive) return;
-
-  const items = document.querySelectorAll(DEFAULT_CONFIG.itemSelector);
-  if (
-    items.length > 0 &&
-    !document.getElementById(DEFAULT_CONFIG.containerId)
-  ) {
-    console.log("[GroupByCode] 📄 New content detected, initializing...");
-    setTimeout(() => activateExtension(), 500);
+// Live Update Observer
+const observer = new MutationObserver(() => {
+  if (!currentState.isActive) {
+    // If not active, check if we should start
+    const items = document.querySelectorAll(DEFAULT_CONFIG.itemSelector);
+    if (
+      items.length > 0 &&
+      !document.getElementById(DEFAULT_CONFIG.containerId)
+    ) {
+      clearTimeout(updateTimer);
+      updateTimer = setTimeout(activateExtension, 1000);
+    }
+  } else {
+    // If active, debounce updates
+    clearTimeout(updateTimer);
+    updateTimer = setTimeout(() => checkForUpdates(currentState.config), 1500);
   }
 });
 
