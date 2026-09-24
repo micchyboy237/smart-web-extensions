@@ -1,0 +1,267 @@
+/* MissAV Group by Code Extension Styles */
+
+/* Floating Panel */
+#jav-group-by-code-panel {
+  position: fixed !important;
+  top: 12px !important;
+  right: 12px !important;
+  z-index: 2147483647 !important;
+  background: rgba(30, 30, 46, 0.97);
+  backdrop-filter: blur(12px);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+  min-width: 280px;
+}
+
+#jav-group-by-code-panel .jav-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+#jav-group-by-code-panel .jav-panel-toggle {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fbbf24;
+  color: #1e1e2e;
+  font-size: 14px;
+  font-weight: bold;
+  line-height: 22px;
+  text-align: center;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  user-select: none;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#jav-group-by-code-panel .jav-refresh-btn {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+#jav-group-by-code-panel .jav-refresh-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+#jav-group-by-code-panel.jav-panel-collapsed {
+  padding: 0 !important;
+  gap: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+  max-width: unset !important;
+  max-height: unset !important;
+  overflow: visible !important;
+  min-width: unset !important;
+}
+
+#jav-group-by-code-panel.jav-panel-collapsed
+  > *:not(.jav-panel-toggle):not(.jav-panel-header) {
+  display: none !important;
+}
+
+#jav-group-by-code-panel.jav-panel-collapsed .jav-panel-header {
+  padding: 4px;
+}
+
+#jav-group-by-code-panel .jav-mode-toggle {
+  display: flex;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+#jav-group-by-code-panel .jav-mode-btn {
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: #ccc;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+#jav-group-by-code-panel .jav-mode-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+#jav-group-by-code-panel .jav-mode-btn.active {
+  background: #fbbf24;
+  color: #1e1e2e;
+}
+
+/* Search Bar */
+#jav-group-by-code-panel .jav-search-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#jav-group-by-code-panel .jav-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+  transition: all 0.15s ease;
+  box-sizing: border-box;
+}
+
+#jav-group-by-code-panel .jav-search-input:focus {
+  border-color: #fbbf24;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+#jav-group-by-code-panel .jav-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Filter Tags */
+#jav-group-by-code-panel .jav-filters-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+#jav-group-by-code-panel .jav-filter-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+#jav-group-by-code-panel .jav-filter-remove {
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+  display: flex;
+  align-items: center;
+}
+
+#jav-group-by-code-panel .jav-filter-remove:hover {
+  opacity: 1;
+}
+
+#jav-group-by-code-panel .jav-add-filter-input {
+  flex: 1;
+  min-width: 100px;
+  padding: 4px 8px;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  font-size: 11px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+#jav-group-by-code-panel .jav-add-filter-input:focus {
+  border-color: #60a5fa;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+#jav-group-by-code-panel .jav-add-filter-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+/* Group Chips */
+#jav-group-by-code-panel .jav-panel-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fbbf24;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+#jav-group-by-code-panel .jav-chips-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+#jav-group-by-code-panel .jav-chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #ccc;
+  transition: all 0.15s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+
+#jav-group-by-code-panel .jav-chip:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+#jav-group-by-code-panel .jav-chip.jav-chip-active {
+  background: #fbbf24;
+  color: #1e1e2e;
+  border-color: #fbbf24;
+}
+
+/* Highlight */
+.jav-grouped-highlight {
+  outline: 3px solid #fbbf24 !important;
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+  position: relative;
+  transition:
+    outline 0.15s ease,
+    box-shadow 0.15s ease;
+  box-shadow: 0 0 16px rgba(251, 191, 36, 0.25);
+}
+
+.jav-grouped-highlight::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(251, 191, 36, 0.1);
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* Hidden Items */
+.jav-grouped-hidden {
+  display: none !important;
+}
