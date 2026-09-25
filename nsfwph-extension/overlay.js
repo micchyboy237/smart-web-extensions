@@ -223,6 +223,18 @@
 
     _currentVideo = videoEl;
     _currentEntry = entry;
+
+    // ✅ FIX: Automatically play the video when overlay opens
+    if (videoEl.paused) {
+      _log("▶️ Auto-playing video in overlay");
+      if (_deps && _deps.enforceSinglePlayback) {
+        _deps.enforceSinglePlayback(videoEl);
+      }
+      videoEl.play().catch((err) => {
+        console.warn("[Overlay] Auto-play failed:", err);
+      });
+    }
+
     requestAnimationFrame(() => _overlayEl.classList.add("visible"));
     _log(`✅ Overlay opened for ${entry.id}`);
   }
