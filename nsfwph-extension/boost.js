@@ -989,6 +989,11 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
       const mainTime = originalVideo.currentTime;
       const mainDuration = originalVideo.duration || Infinity;
 
+      // 🔧 NEW DEBUG: Check for "Visual Freeze"
+      const isSeeking = originalVideo.seeking;
+      const readyState = originalVideo.readyState;
+      const isPaused = originalVideo.paused;
+
       if (monitorIteration % 10 === 0) {
         const buffered = getTotalBufferedRange(originalVideo);
         const bufferPercent =
@@ -1013,6 +1018,15 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
             `${graceInfo} | ${priorityInfo}`,
         );
         stats.lastLogTime = Date.now();
+
+        console.log(
+          `[Preload] 📊 Status #${monitorIteration} | ` +
+            `Time: ${mainTime.toFixed(1)}s/${mainDuration.toFixed(1)}s | ` +
+            `Buffer ahead: ${mainBuffer.toFixed(1)}s | ` +
+            `ReadyState: ${readyState} | Seeking: ${isSeeking} | Paused: ${isPaused} | ` + // 🔧 NEW
+            `Seeks: ${stats.preloadSeeks} (${stats.successfulSeeks} ok, ${stats.failedSeeks} fail) | ` +
+            `${graceInfo} | ${priorityInfo}`,
+        );
       }
 
       if (stats.gracePeriodActive) return;

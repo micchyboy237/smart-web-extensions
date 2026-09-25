@@ -79,6 +79,11 @@
   // SINGLE PLAYBACK CONTROLLER
   // ═══════════════════════════════════════════════════════════════
   function enforceSinglePlayback(videoToPlay) {
+    // ✅ FIX: If it's already the currently playing video, do nothing
+    if (currentlyPlaying === videoToPlay) {
+      return;
+    }
+
     if (currentlyPlaying && currentlyPlaying !== videoToPlay) {
       currentlyPlaying.pause();
       log(
@@ -89,17 +94,22 @@
         closeVideoOverlay();
       }
     }
+
     currentlyPlaying = videoToPlay;
+
     const onEnded = () => {
       if (currentlyPlaying === videoToPlay) {
         currentlyPlaying = null;
         console.log(
           `[Content] 🏁 Video ended for ${videoToPlay.dataset.videoObserverId} — overlay stays open`,
         );
-        // Don't close overlay — user may want to replay or scrub
       }
     };
+
+    // ✅ FIX: Remove old ended listeners to prevent duplicates
+    videoToPlay.removeEventListener("ended", onEnded);
     videoToPlay.addEventListener("ended", onEnded, { once: true });
+
     console.log(
       `[Content] Single playback enforced for ${videoToPlay.dataset.videoObserverId}`,
     );
@@ -211,9 +221,31 @@
     events.forEach((ev) => {
       const handler = () => {
         entry.info = getVideoInfo(video);
+
+        // ✅ DEBUG: Log who is pausing
+        if (ev === "pause") {
+          console.trace(
+            `[Diag] PAUSE TRIGGERED at ${video.currentTime.toFixed(2)}s`,
+          );
+        }
       };
       video.addEventListener(ev, handler, { passive: true });
       entry.cleanups.push(() => video.removeEventListener(ev, handler));
+    });
+
+    // ═══════════════════════════════════════════════════════════════
+    // Diagnostic logging for problem states (`waiting`, `stalled`, `suspend`, etc)
+    // ═══════════════════════════════════════════════════════════════
+    ["waiting", "stalled", "suspend", "pause", "play"].forEach((ev) => {
+      video.addEventListener(
+        ev,
+        () => {
+          console.log(
+            `[Diag] ${ev} @ ${video.currentTime.toFixed(2)}s | paused=${video.paused} readyState=${video.readyState} networkState=${video.networkState}`,
+          );
+        },
+        { passive: true },
+      );
     });
 
     console.log(

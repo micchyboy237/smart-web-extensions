@@ -44,27 +44,31 @@
 
       const videoEl = entry.element;
       if (!videoEl) return;
-
       if (videoEl.dataset.clickInProgress === "true") return;
+
       videoEl.dataset.clickInProgress = "true";
       setTimeout(() => {
         delete videoEl.dataset.clickInProgress;
       }, 300);
 
-      if (videoEl.paused) {
-        window.__enforceSinglePlayback(videoEl);
-        window.__showVideoOverlay(videoEl, entry);
-        videoEl.play().catch((err) => {
-          console.warn("[Overlay] Play failed on card click:", err);
-        });
-      } else {
-        if (window.__isOverlayShowingVideo(videoEl)) {
-          window.__closeVideoOverlay();
+      // ✅ FIX: If overlay is already showing this video, just toggle play/pause
+      if (window.__isOverlayShowingVideo(videoEl)) {
+        if (videoEl.paused) {
+          window.__enforceSinglePlayback(videoEl);
+          videoEl
+            .play()
+            .catch((err) => console.warn("[Overlay] Play failed:", err));
         } else {
-          window.__showVideoOverlay(videoEl, entry);
+          videoEl.pause();
         }
+        return; // Stop here, don't reopen overlay
       }
 
+      // ✅ FIX: If opening overlay, let the overlay handle the initial play state
+      // to avoid fighting with enforceSinglePlayback during DOM move
+      window.__showVideoOverlay(videoEl, entry);
+
+      // Only scroll if not opening overlay (or keep it if you prefer)
       videoEl.scrollIntoView({ behavior: "smooth", block: "center" });
     });
 
