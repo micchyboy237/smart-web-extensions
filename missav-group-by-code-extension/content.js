@@ -2,7 +2,6 @@
  * content.js - MissAV Group by Code Extension
  * Automatically activates on missav.ws pages with live updates
  */
-
 // ============================================================================
 // CONFIGURATION & CONSTANTS
 // ============================================================================
@@ -39,10 +38,11 @@ let currentState = {
   mode: "group",
   config: null,
   isActive: false,
-  lastItemCount: 0, // Track item count to detect significant changes
+  lastItemCount: 0,
+  originalOrder: [], // Stable baseline order captured once
+  isRearranging: false, // Guard against observer feedback loop
 };
 
-// Debounce timer for live updates
 let updateTimer = null;
 
 // ============================================================================
@@ -98,24 +98,117 @@ function extractGroupedCodes(config) {
 }
 
 // ============================================================================
-// FILTERING LOGIC
+// FILTERING & REARRANGEMENT LOGIC
 // ============================================================================
+
+/**
+ * Captures the current DOM order as the stable baseline.
+ * Only called when we know the DOM reflects the true server/page order,
+ * NOT after our own rearrangements.
+ */
+function saveOriginalOrder() {
+  const allItems = document.querySelectorAll(DEFAULT_CONFIG.itemSelector);
+  currentState.originalOrder = Array.from(allItems);
+}
+
+/**
+ * Restores items to their original captured order.
+ * Idempotent: if already in order, no DOM mutations occur.
+ */
+function restoreOriginalOrder(config) {
+  if (currentState.originalOrder.length === 0) return;
+
+  const parentContainer = currentState.originalOrder[0]?.parentElement;
+  if (!parentContainer) return;
+
+  // Check if already in correct order to avoid unnecessary mutations
+  const currentItems = Array.from(
+    parentContainer.querySelectorAll(config.itemSelector),
+  );
+  const isAlreadyOrdered =
+    currentItems.length === currentState.originalOrder.length &&
+    currentItems.every((el, i) => el === currentState.originalOrder[i]);
+
+  if (isAlreadyOrdered) return;
+
+  currentState.isRearranging = true;
+  try {
+    currentState.originalOrder.forEach((item) => {
+      if (
+        document.body.contains(item) &&
+        item.parentElement === parentContainer
+      ) {
+        parentContainer.appendChild(item);
+      }
+    });
+  } finally {
+    // Use rAF to ensure observer batch completes before unguarding
+    requestAnimationFrame(() => {
+      currentState.isRearranging = false;
+    });
+  }
+}
+
+/**
+ * Rearranges items: prioritized first, then unprioritized.
+ * Idempotent: skips mutation if order is already correct.
+ * Guards against observer feedback loop via isRearranging flag.
+ */
+function rearrangeItems(prioritizedItems, unprioritizedItems, config) {
+  if (prioritizedItems.length === 0 && unprioritizedItems.length === 0) return;
+
+  const firstItem = prioritizedItems[0] || unprioritizedItems[0];
+  if (!firstItem) return;
+
+  const parentContainer = firstItem.parentElement;
+  if (!parentContainer) return;
+
+  // Build desired order
+  const desiredOrder = [...prioritizedItems, ...unprioritizedItems];
+
+  // Idempotency check: compare current DOM order vs desired order
+  const currentItems = Array.from(
+    parentContainer.querySelectorAll(config.itemSelector),
+  );
+  const isAlreadyOrdered =
+    currentItems.length === desiredOrder.length &&
+    currentItems.every((el, i) => el === desiredOrder[i]);
+
+  if (isAlreadyOrdered) return;
+
+  currentState.isRearranging = true;
+  try {
+    // Append in desired order — appendChild moves existing nodes without clone
+    desiredOrder.forEach((item) => {
+      if (item.parentElement === parentContainer) {
+        parentContainer.appendChild(item);
+      }
+    });
+  } finally {
+    requestAnimationFrame(() => {
+      currentState.isRearranging = false;
+    });
+  }
+}
+
 function applyCombinedFilter(config) {
   const allItems = document.querySelectorAll(config.itemSelector);
 
+  // Clear visual classes
   allItems.forEach((el) => {
     el.classList.remove(config.hiddenItemClass);
     el.classList.remove(config.highlightClass);
   });
 
   const { selectedCode, searchTerm, filters, mode, groups } = currentState;
-
   const hasActiveFilters =
     (mode === "group" && selectedCode !== null) ||
     (searchTerm && searchTerm.trim() !== "") ||
     filters.length > 0;
 
+  // No filters → restore original order and exit
   if (!hasActiveFilters) {
+    restoreOriginalOrder(config);
     return;
   }
 
@@ -128,50 +221,50 @@ function applyCombinedFilter(config) {
     .map((f) => ({ term: f, regex: new RegExp(escapeRegex(f), "i") }));
 
   let elementsToShow = new Set();
-
   if (mode === "group" && selectedCode) {
     const group = groups.find((g) => g.code === selectedCode);
     if (group) {
       elementsToShow = new Set(group.elements);
     } else {
-      // If group no longer exists (e.g. after update), show all
       allItems.forEach((el) => elementsToShow.add(el));
     }
   } else {
     allItems.forEach((el) => elementsToShow.add(el));
   }
 
-  let highlightedCount = 0;
-  let hiddenCount = 0;
+  const prioritizedItems = [];
+  const unprioritizedItems = [];
 
   allItems.forEach((container) => {
+    // Group filter exclusion
     if (mode === "group" && selectedCode && !elementsToShow.has(container)) {
-      container.classList.add(config.hiddenItemClass);
-      hiddenCount++;
+      unprioritizedItems.push(container);
       return;
     }
 
     const titleEl = container.querySelector(config.titleSelector);
     const titleText = titleEl?.textContent?.trim() || "";
 
+    // Primary search filter
     if (primaryRegex && !primaryRegex.test(titleText)) {
-      container.classList.add(config.hiddenItemClass);
-      hiddenCount++;
+      unprioritizedItems.push(container);
       return;
     }
 
+    // Additional tag filters
     const failedFilters = filterRegexes.filter(
       ({ regex }) => !regex.test(titleText),
     );
     if (failedFilters.length > 0) {
-      container.classList.add(config.hiddenItemClass);
-      hiddenCount++;
+      unprioritizedItems.push(container);
       return;
     }
 
     container.classList.add(config.highlightClass);
-    highlightedCount++;
+    prioritizedItems.push(container);
   });
+
+  rearrangeItems(prioritizedItems, unprioritizedItems, config);
 }
 
 function resetAll(config) {
@@ -203,6 +296,8 @@ function resetAll(config) {
     el.classList.remove(config.hiddenItemClass);
     el.classList.remove(config.highlightClass);
   });
+
+  restoreOriginalOrder(config);
 }
 
 // ============================================================================
@@ -211,11 +306,9 @@ function resetAll(config) {
 function setActiveChip(activeChip, config) {
   const panel = document.getElementById(config.containerId);
   if (!panel) return;
-
   panel.querySelectorAll(".jav-chip").forEach((c) => {
     c.classList.remove(config.activeChipClass);
   });
-
   if (activeChip) {
     activeChip.classList.add(config.activeChipClass);
   }
@@ -247,7 +340,6 @@ function removeFilter(filterTerm, config) {
 function renderFilters(config) {
   const panel = document.getElementById(config.containerId);
   if (!panel) return;
-
   const filtersContainer = panel.querySelector(".jav-filters-container");
   if (!filtersContainer) return;
 
@@ -255,7 +347,6 @@ function renderFilters(config) {
   existingTags.forEach((tag) => tag.remove());
 
   const inputField = filtersContainer.querySelector(".jav-add-filter-input");
-
   currentState.filters.forEach((filter) => {
     const tag = document.createElement("div");
     tag.className = "jav-filter-tag";
@@ -272,7 +363,7 @@ function renderFilters(config) {
 
 function handleModeToggle(mode, config) {
   currentState.mode = mode;
-  currentState.selectedCode = null; // Reset to "All" when changing modes
+  currentState.selectedCode = null;
 
   const panel = document.getElementById(config.containerId);
   if (!panel) return;
@@ -283,13 +374,11 @@ function handleModeToggle(mode, config) {
 
   const chipsContainer = panel.querySelector(".jav-chips-container");
   const label = panel.querySelector(".jav-panel-label");
-
   if (chipsContainer)
     chipsContainer.style.display = mode === "group" ? "flex" : "none";
   if (label) label.style.display = mode === "group" ? "block" : "none";
 
   if (mode === "group") {
-    // Pass null to ensure "All" is active on mode switch
     renderChips(panel, currentState.groups, config, null);
   }
 
@@ -303,6 +392,8 @@ function handleRefresh(config) {
     currentState.groups = groups;
     currentState.lastItemCount = totalItems;
     currentState.selectedCode = null;
+    // Capture fresh baseline BEFORE rendering (which may rearrange)
+    saveOriginalOrder();
     renderEnhancedPanel(groups, config);
   }
 }
@@ -310,7 +401,6 @@ function handleRefresh(config) {
 function renderChips(panel, groups, config, currentSelectedCode = null) {
   const existingChips = panel.querySelector(".jav-chips-container");
   if (existingChips) existingChips.remove();
-
   const existingLabel = panel.querySelector(".jav-panel-label");
   if (existingLabel) existingLabel.remove();
 
@@ -322,38 +412,20 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
   const chipsContainer = document.createElement("div");
   chipsContainer.className = "jav-chips-container";
 
-  // Determine if "All" should be active
-  // "All" is active if currentSelectedCode is null OR if the selected code is not in the new groups
   const isAllActive =
     currentSelectedCode === null ||
     !groups.find((g) => g.code === currentSelectedCode);
 
   const allChip = document.createElement("span");
-  // Apply active class if isAllActive is true
   allChip.className = `jav-chip ${isAllActive ? config.activeChipClass : ""}`;
   allChip.textContent = "All";
   allChip.addEventListener("click", () => {
-    currentState.selectedCode = null;
-    currentState.searchTerm = "";
-    currentState.filters = [];
-
-    const searchInput = panel.querySelector(".jav-search-input");
-    if (searchInput) searchInput.value = "";
-
-    const filtersContainer = panel.querySelector(".jav-filters-container");
-    if (filtersContainer) {
-      const tags = filtersContainer.querySelectorAll(".jav-filter-tag");
-      tags.forEach((t) => t.remove());
-    }
-
-    setActiveChip(allChip, config);
-    applyCombinedFilter(config);
+    resetAll(config);
   });
   chipsContainer.appendChild(allChip);
 
   groups.forEach((group) => {
     const chip = document.createElement("span");
-    // Apply active class if this group matches the currentSelectedCode
     const isActive = group.code === currentSelectedCode;
     chip.className = `jav-chip ${isActive ? config.activeChipClass : ""}`;
     chip.textContent = `${group.code.toUpperCase()} (${group.count})`;
@@ -379,6 +451,9 @@ function renderEnhancedPanel(groups, config) {
     selectedCode: null,
     isActive: true,
   };
+
+  // Baseline captured BEFORE any filter-induced rearrangement
+  saveOriginalOrder();
 
   const panel = document.createElement("div");
   panel.id = config.containerId;
@@ -464,11 +539,11 @@ function renderEnhancedPanel(groups, config) {
 // LIVE UPDATE LOGIC
 // ============================================================================
 function checkForUpdates(config) {
-  if (!currentState.isActive) return;
+  // Skip if we're currently rearranging to prevent feedback loop
+  if (!currentState.isActive || currentState.isRearranging) return;
 
   const { groups, totalItems } = extractGroupedCodes(config);
 
-  // Only update if item count changed significantly or groups are different
   const itemCountChanged =
     Math.abs(totalItems - currentState.lastItemCount) > 5;
   const hasNewGroups =
@@ -483,12 +558,12 @@ function checkForUpdates(config) {
     currentState.groups = groups;
     currentState.lastItemCount = totalItems;
 
+    // Re-capture baseline from current DOM state (server may have re-rendered)
+    saveOriginalOrder();
+
     const panel = document.getElementById(config.containerId);
     if (panel && currentState.mode === "group") {
-      // PASS the current selectedCode so the correct chip stays highlighted
       renderChips(panel, groups, config, currentState.selectedCode);
-
-      // Re-apply filter to include new items in the current selection
       applyCombinedFilter(config);
     }
   }
@@ -499,7 +574,6 @@ function checkForUpdates(config) {
 // ============================================================================
 function initExtension() {
   console.log("[GroupByCode] 🚀 Extension initializing on missav.ws");
-
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", activateExtension);
   } else {
@@ -517,6 +591,9 @@ function activateExtension() {
     return;
   }
 
+  // Capture baseline BEFORE any manipulation
+  saveOriginalOrder();
+
   const { groups, totalItems } = extractGroupedCodes(config);
   if (groups.length > 0) {
     currentState.lastItemCount = totalItems;
@@ -527,13 +604,14 @@ function activateExtension() {
   }
 }
 
-// Auto-initialize
 initExtension();
 
 // Live Update Observer
 const observer = new MutationObserver(() => {
+  // Guard: skip observations triggered by our own rearrangements
+  if (currentState.isRearranging) return;
+
   if (!currentState.isActive) {
-    // If not active, check if we should start
     const items = document.querySelectorAll(DEFAULT_CONFIG.itemSelector);
     if (
       items.length > 0 &&
@@ -543,7 +621,6 @@ const observer = new MutationObserver(() => {
       updateTimer = setTimeout(activateExtension, 1000);
     }
   } else {
-    // If active, debounce updates
     clearTimeout(updateTimer);
     updateTimer = setTimeout(() => checkForUpdates(currentState.config), 1500);
   }

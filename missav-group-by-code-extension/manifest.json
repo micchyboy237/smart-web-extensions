@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MissAV Group by Code",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Groups MissAV search results by JAV code with search and filter capabilities",
   "permissions": [],
   "host_permissions": ["https://missav.ws/*"],
