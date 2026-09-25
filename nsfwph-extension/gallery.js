@@ -1,6 +1,5 @@
 // gallery.js
 const GALLERY_ID = "video-gallery-modal";
-
 /**
  * Format seconds to mm:ss display string.
  */
@@ -10,14 +9,12 @@ function formatMMSS(totalSeconds) {
   const secs = Math.floor(totalSeconds % 60);
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
-
 function createGalleryModal() {
   let modal = document.getElementById(GALLERY_ID);
   if (modal) {
     cleanupGallery(modal);
     return modal;
   }
-
   modal = document.createElement("div");
   modal.id = GALLERY_ID;
   modal.innerHTML = `
@@ -28,46 +25,37 @@ function createGalleryModal() {
         </div>
     `;
   document.body.appendChild(modal);
-
   const closeBtn = modal.querySelector(".gallery-close");
   const overlay = modal.querySelector(".gallery-overlay");
-
   const closeModal = () => {
     cleanupGallery(modal);
     modal.remove();
   };
-
   closeBtn.onclick = closeModal;
   overlay.onclick = closeModal;
-
   const escHandler = (e) => {
     if (e.key === "Escape") closeModal();
   };
   document.addEventListener("keydown", escHandler, { once: true });
   modal._escHandler = escHandler;
-
   console.log("[Gallery] Modal created");
   return modal;
 }
-
 /**
  * Main cleanup function - revokes all media resources and clears priority.
  */
 function cleanupGallery(modal) {
   const grid = modal.querySelector(".gallery-grid");
   if (!grid) return;
-
   // 🔧 NEW: Clear gallery priority and perform proper cleanup via PriorityManager
   if (window.BoostEngine?.PriorityManager) {
     window.BoostEngine.PriorityManager.clearGalleryPriority();
   }
-
   // Fallback cleanup for any remaining videos
   const wrappers = Array.from(grid.querySelectorAll(".gallery-item-wrapper"));
   console.log(
     `[Gallery] 🧹 Fallback cleaning up ${wrappers.length} gallery items`,
   );
-
   wrappers.forEach((wrapper) => {
     const video = wrapper.querySelector("video");
     if (video) {
@@ -77,17 +65,13 @@ function cleanupGallery(modal) {
     }
     wrapper.remove();
   });
-
   grid.innerHTML = "";
-
   if (modal._escHandler) {
     document.removeEventListener("keydown", modal._escHandler);
     delete modal._escHandler;
   }
-
   console.log("[Gallery] Cleanup complete");
 }
-
 /**
  * Create a gallery item using a native <video> element to avoid CORS issues.
  * Instead of extracting to canvas, we let the browser render the video frame.
@@ -99,7 +83,6 @@ function cleanupGallery(modal) {
 function createGalleryVideoItem(videoSrc, time) {
   const wrapper = document.createElement("div");
   wrapper.className = "gallery-item-wrapper";
-
   const video = document.createElement("video");
   video.src = videoSrc;
   video.muted = true;
@@ -107,7 +90,9 @@ function createGalleryVideoItem(videoSrc, time) {
   video.className = "gallery-media";
   video.playsInline = true;
   video.controls = false;
-
+  // 🛡️ FIX: Mark as already-attached so content.js's DOM-mutation observer
+  // doesn't pick up this thumbnail clip and track it as a new "video-N".
+  video.dataset.videoObserverAttached = "true";
   // Seek to the specific frame once metadata is loaded
   const seekToFrame = () => {
     try {
@@ -116,13 +101,11 @@ function createGalleryVideoItem(videoSrc, time) {
       console.warn("[Gallery] Seek failed:", e);
     }
   };
-
   if (video.readyState >= 1) {
     seekToFrame();
   } else {
     video.addEventListener("loadedmetadata", seekToFrame, { once: true });
   }
-
   // Play briefly to render the frame, then pause to save bandwidth
   video.addEventListener(
     "seeked",
@@ -140,17 +123,13 @@ function createGalleryVideoItem(videoSrc, time) {
     },
     { once: true },
   );
-
   wrapper.appendChild(video);
-
   const timeLabel = document.createElement("span");
   timeLabel.className = "gallery-time-label";
   timeLabel.textContent = formatMMSS(time);
   wrapper.appendChild(timeLabel);
-
   return wrapper;
 }
-
 /**
  * Open the gallery modal for a video entry.
  */
@@ -159,32 +138,26 @@ function openGallery(entry) {
   const modal = createGalleryModal();
   const grid = modal.querySelector(".gallery-grid");
   grid.innerHTML = "";
-
   const src = entry.element.currentSrc || entry.element.src;
   if (!src) {
     console.warn("[Gallery] ⚠️ No video source found");
     return;
   }
-
   const duration = entry.element.duration;
   if (!duration || isNaN(duration) || duration < 1) {
     console.warn("[Gallery] ⚠️ Invalid duration:", duration);
     return;
   }
-
   const MAX = calcFrameCount(duration);
   const times = Array.from(
     { length: MAX },
     (_, i) => ((i + 1) / (MAX + 1)) * duration,
   );
-
   console.log(
     `[Gallery] 🎬 Creating ${MAX} video items for ${formatMMSS(duration)} video | ` +
       `Times: ${times.map((t) => formatMMSS(t)).join(", ")}`,
   );
-
   const galleryVideos = [];
-
   // Sequential creation to avoid overwhelming the DOM
   (async () => {
     for (const t of times) {
@@ -192,11 +165,9 @@ function openGallery(entry) {
       grid.appendChild(wrapper);
       galleryVideos.push(wrapper.querySelector("video"));
     }
-
     console.log(
       `[Gallery] ✅ Gallery complete: ${galleryVideos.length} video items created`,
     );
-
     // 🔧 NEW: Apply priority to download gallery videos
     if (window.BoostEngine?.PriorityManager) {
       window.BoostEngine.PriorityManager.setGalleryPriority(galleryVideos);
@@ -207,7 +178,6 @@ function openGallery(entry) {
     }
   })();
 }
-
 /**
  * Calculate the number of frames to extract for a video based on its duration.
  */

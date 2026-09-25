@@ -7,7 +7,8 @@
   // ═══════════════════════════════════════════════════════════════
   // CORE CONSTANTS
   // ═══════════════════════════════════════════════════════════════
-  const VIDEO_SELECTOR = ".message-inner video";
+  const VIDEO_SELECTOR =
+    "video:not(#vo-overlay video):not(#video-gallery-modal video)";
   const MAX_GALLERY_ITEMS = 6;
 
   // ═══════════════════════════════════════════════════════════════
@@ -491,7 +492,10 @@
       const hasRelevantChange = mutations.some((m) =>
         Array.from(m.addedNodes).some(
           (node) =>
-            node.nodeType === 1 && !node.closest?.("#video-observer-panel"),
+            node.nodeType === 1 &&
+            // UPDATED: Ignore nodes inside the overlay panel
+            !node.closest?.("#video-observer-panel") &&
+            !node.closest?.("#vo-overlay"),
         ),
       );
 

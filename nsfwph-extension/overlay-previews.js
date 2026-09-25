@@ -5,34 +5,28 @@
   let _mainVideo = null;
   let _thumbnails = [];
   let _timeUpdateHandler = null;
-
   function formatMMSS(totalSeconds) {
     if (!isFinite(totalSeconds) || totalSeconds < 0) return "0:00";
     const mins = Math.floor(totalSeconds / 60);
     const secs = Math.floor(totalSeconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   }
-
   function calcFrameCount(duration, maxFrames = 16) {
     if (!duration || !isFinite(duration) || duration < 1) return 3;
-
     // Logarithmic scaling with configurable ceiling
     const count = Math.min(
       maxFrames,
       Math.max(3, Math.round(Math.log2(duration / 30 + 1) * 6)),
     );
-
     console.log(
       `[OverlayPreviews] 📐 calcFrameCount: ${formatMMSS(duration)} → ${count} frames (max: ${maxFrames})`,
     );
     return count;
   }
-
   function createContainer() {
     if (_container && document.body.contains(_container)) return _container;
     _container = document.createElement("div");
     _container.id = "vo-previews-wrap";
-
     const mediaWrap = document.getElementById("vo-media-wrap");
     if (mediaWrap) {
       mediaWrap.appendChild(_container);
@@ -52,7 +46,6 @@
     }
     return _container;
   }
-
   function createThumbnail(videoSrc, time) {
     const wrapper = document.createElement("div");
     wrapper.className = "vo-preview-thumb-wrapper";
@@ -64,16 +57,17 @@
     video.className = "vo-preview-thumb-video";
     video.playsInline = true;
     video.controls = false;
-
+    // 🛡️ FIX: Mark as already-attached. This container lives inside
+    // #vo-overlay so VIDEO_SELECTOR already excludes it, but tagging it
+    // too is cheap insurance if the overlay markup ever moves/changes.
+    video.dataset.videoObserverAttached = "true";
     const seekToFrame = () => {
       try {
         video.currentTime = time;
       } catch (e) {}
     };
-
     if (video.readyState >= 1) seekToFrame();
     else video.addEventListener("loadedmetadata", seekToFrame, { once: true });
-
     video.addEventListener(
       "seeked",
       () => {
@@ -88,19 +82,16 @@
       },
       { once: true },
     );
-
     wrapper.appendChild(video);
     const timeLabel = document.createElement("span");
     timeLabel.className = "vo-preview-time-label";
     timeLabel.textContent = formatMMSS(time);
     wrapper.appendChild(timeLabel);
-
     wrapper.addEventListener("click", () => {
       if (_mainVideo) {
         const wasPlaying = !_mainVideo.paused;
         _mainVideo.currentTime = time;
         if (wasPlaying) _mainVideo.play().catch(() => {});
-
         _container
           .querySelectorAll(".vo-preview-thumb-wrapper.active")
           .forEach((el) => el.classList.remove("active"));
@@ -109,7 +100,6 @@
     });
     return wrapper;
   }
-
   function generatePreviews(videoEl, entry) {
     clearPreviews();
     _mainVideo = videoEl;
@@ -117,16 +107,13 @@
     if (!src) return;
     const duration = videoEl.duration;
     if (!duration || isNaN(duration) || duration < 1) return;
-
     const container = createContainer();
     if (!container) return;
-
     const MAX = calcFrameCount(duration);
     const times = Array.from({ length: MAX }, (_, i) => (i / MAX) * duration);
     console.log(
       `[OverlayPreviews] 🎬 Generating ${MAX} previews | Times: ${times.map((t) => formatMMSS(t)).join(", ")}`,
     );
-
     const previewVideos = [];
     (async () => {
       for (const t of times) {
@@ -147,7 +134,6 @@
       }
     })();
   }
-
   function updateActivePreview(currentTime) {
     if (!_container || _thumbnails.length === 0) return;
     let closestIndex = 0;
@@ -164,7 +150,6 @@
       el.classList.toggle("active", i === closestIndex);
     });
   }
-
   function clearPreviews() {
     if (_mainVideo && _timeUpdateHandler) {
       _mainVideo.removeEventListener("timeupdate", _timeUpdateHandler);
@@ -184,7 +169,6 @@
     _mainVideo = null;
     console.log("[OverlayPreviews] 🧹 Cleared previews and restored bandwidth");
   }
-
   window.OverlayPreviews = {
     show: generatePreviews,
     hide: clearPreviews,

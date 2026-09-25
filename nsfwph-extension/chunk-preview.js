@@ -3,14 +3,12 @@
 (function () {
   "use strict";
   console.log("[ChunkPreview] Module loading...");
-
   // ═══════════════════════════════════════════════════════════════
   // CONFIGURATION
   // ═══════════════════════════════════════════════════════════════
   const NUM_PREVIEW_CHUNKS = 5;
   const CHUNK_PLAY_DURATION_MS = 4000; // 4s per chunk → ~20s full cycle
   const PREVIEW_INIT_TIMEOUT = 2000; // Max wait for preview init
-
   /**
    * Calculate evenly distributed chunk start positions across the video.
    */
@@ -26,7 +24,6 @@
     }
     return chunkStarts;
   }
-
   /**
    * Load chunk positions for a preview video directly.
    * Checks L1 memory cache → L2 IndexedDB → Calculates if missing.
@@ -42,10 +39,8 @@
         cacheKeySrc = `fallback-${entryId}-${Date.now()}`;
       }
     }
-
     let chunkStarts = null;
     let duration = previewVideo.duration || 0;
-
     // Try L1 memory cache first
     if (window.ChunkCache && window.ChunkCache.memoryCache) {
       const memEntry = window.ChunkCache.memoryCache.get(cacheKeySrc);
@@ -57,7 +52,6 @@
         duration = memEntry.duration || duration;
       }
     }
-
     // Try L2 IndexedDB cache
     if (!chunkStarts && window.ChunkCache) {
       try {
@@ -76,7 +70,6 @@
         );
       }
     }
-
     // Calculate chunks if no cache hit
     if (!chunkStarts) {
       console.log(
@@ -94,7 +87,6 @@
         );
       }
     }
-
     if (chunkStarts && chunkStarts.length > 0) {
       previewVideo._chunkStarts = chunkStarts;
       previewVideo._chunkDuration = duration;
@@ -107,11 +99,9 @@
       previewVideo._chunkDuration = duration;
     }
   }
-
   // ═══════════════════════════════════════════════════════════════
   // CORE FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
-
   function setupLightChunkPreview(previewVideo, entryId) {
     // ✅ Guard: If already set up, clean up old before re-creating
     if (previewVideo.dataset.previewLoopReady === "true") {
@@ -127,10 +117,8 @@
       delete previewVideo._chunkDuration;
       // Continue to recreate
     }
-
     previewVideo.dataset.previewLoopReady = "true";
     console.log(`[Preview] Setting up chunk loop for ${entryId}`);
-
     const state = {
       isRunning: false,
       isHovering: false,
@@ -144,10 +132,8 @@
       debugFrameCount: 0,
       chunksReady: false,
     };
-
     let hoverDebounceTimer = null;
     const HOVER_DEBOUNCE_MS = 100;
-
     async function waitForChunks(timeoutMs = 5000) {
       if (
         state.chunksReady &&
@@ -179,7 +165,6 @@
       }
       return false;
     }
-
     function startContinuousPlayback() {
       if (!state.chunkStarts || state.chunkStarts.length === 0) return;
       if (state.monitorInterval) {
@@ -217,7 +202,6 @@
         }
       }, 3000);
     }
-
     function startPositionMonitor() {
       if (state.monitorInterval) clearInterval(state.monitorInterval);
       state.monitorInterval = setInterval(() => {
@@ -247,7 +231,6 @@
         }
       }, 100);
     }
-
     function stopPlayback() {
       state.playbackStarted = false;
       if (state.monitorInterval) {
@@ -257,7 +240,6 @@
       if (!previewVideo.paused) previewVideo.pause();
       state.currentChunk = 0;
     }
-
     async function startLoop() {
       if (state.isRunning) return;
       state.isRunning = true;
@@ -292,14 +274,12 @@
         }, 5000);
       }
     }
-
     function stopLoop() {
       state.isRunning = false;
       state.isHovering = false;
       delete previewVideo.dataset.chunkLoopActive;
       stopPlayback();
     }
-
     function onMouseEnter() {
       clearTimeout(hoverDebounceTimer);
       if (state.isHovering) {
@@ -317,7 +297,6 @@
         if (!state.isRunning) startLoop();
       }, HOVER_DEBOUNCE_MS);
     }
-
     function onMouseLeave() {
       clearTimeout(hoverDebounceTimer);
       hoverDebounceTimer = setTimeout(() => {
@@ -346,7 +325,6 @@
         }, 2000);
       }, HOVER_DEBOUNCE_MS);
     }
-
     previewVideo.addEventListener("mouseenter", onMouseEnter);
     previewVideo.addEventListener("mouseleave", onMouseLeave);
     const card = previewVideo.closest(".video-card");
@@ -355,7 +333,6 @@
       card.addEventListener("mouseleave", onMouseLeave);
       console.log(`[Preview] Attached hover listeners to card for ${entryId}`);
     }
-
     return () => {
       clearTimeout(hoverDebounceTimer);
       clearTimeout(previewVideo._downgradeTimeout);
@@ -371,7 +348,6 @@
       }
     };
   }
-
   /**
    * Create a single preview video element.
    */
@@ -399,13 +375,20 @@
     preview.style.cursor = "pointer";
     preview.dataset.cacheKeySrc = cleanSrc;
     preview.dataset.previewReady = "false";
+    // 🛡️ FIX: Mark this element as "already attached" so content.js's
+    // observeVideos() / trackVideo() never re-detects it as a brand-new
+    // video when it's inserted into the DOM (which was causing duplicate
+    // video-2, video-3... entries for the SAME source video).
+    preview.dataset.videoObserverAttached = "true";
+    console.log(
+      `[Preview] 🛡️ Tagged preview element for ${entryId} to prevent re-detection as a new video`,
+    );
     console.log(
       `[Preview] 🏷️ Stored cacheKeySrc on preview element: ${cleanSrc.substring(0, 40)}...`,
     );
     window.BufferManager.register(preview, entryId);
     let isInitialized = false;
     let metadataTimeout = null;
-
     function initializePreview() {
       if (isInitialized) return;
       if (metadataTimeout) {
@@ -440,7 +423,6 @@
         );
       }
     }
-
     if (preview.readyState >= 1) {
       initializePreview();
     } else {
@@ -456,10 +438,8 @@
         }
       }, PREVIEW_INIT_TIMEOUT);
     }
-
     return preview;
   }
-
   // ═══════════════════════════════════════════════════════════════
   // EXPORT TO GLOBAL SCOPE
   // ═══════════════════════════════════════════════════════════════
@@ -470,7 +450,6 @@
     NUM_PREVIEW_CHUNKS,
     CHUNK_PLAY_DURATION_MS,
   };
-
   console.log("[ChunkPreview] Module loaded successfully ✅");
   console.log("[ChunkPreview] Config:", {
     numPreviewChunks: NUM_PREVIEW_CHUNKS,
