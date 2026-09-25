@@ -6,7 +6,8 @@
 // CONFIGURATION & CONSTANTS
 // ============================================================================
 const DEFAULT_CONFIG = {
-  minCount: 2,
+  minCount: 1, // Minimum items to form a group initially
+  dynamicMinCount: 1, // Minimum matches required to keep a chip visible during filtering
   topN: 10,
   itemSelector: ".thumbnail.group",
   videoAnchorSelector: "a:has(video)",
@@ -103,8 +104,6 @@ function extractGroupedCodes(config) {
 
 /**
  * Captures the current DOM order as the stable baseline.
- * Only called when we know the DOM reflects the true server/page order,
- * NOT after our own rearrangements.
  */
 function saveOriginalOrder() {
   const allItems = document.querySelectorAll(DEFAULT_CONFIG.itemSelector);
@@ -113,7 +112,6 @@ function saveOriginalOrder() {
 
 /**
  * Restores items to their original captured order.
- * Idempotent: if already in order, no DOM mutations occur.
  */
 function restoreOriginalOrder(config) {
   if (currentState.originalOrder.length === 0) return;
@@ -121,7 +119,6 @@ function restoreOriginalOrder(config) {
   const parentContainer = currentState.originalOrder[0]?.parentElement;
   if (!parentContainer) return;
 
-  // Check if already in correct order to avoid unnecessary mutations
   const currentItems = Array.from(
     parentContainer.querySelectorAll(config.itemSelector),
   );
@@ -142,7 +139,6 @@ function restoreOriginalOrder(config) {
       }
     });
   } finally {
-    // Use rAF to ensure observer batch completes before unguarding
     requestAnimationFrame(() => {
       currentState.isRearranging = false;
     });
@@ -151,8 +147,6 @@ function restoreOriginalOrder(config) {
 
 /**
  * Rearranges items: prioritized first, then unprioritized.
- * Idempotent: skips mutation if order is already correct.
- * Guards against observer feedback loop via isRearranging flag.
  */
 function rearrangeItems(prioritizedItems, unprioritizedItems, config) {
   if (prioritizedItems.length === 0 && unprioritizedItems.length === 0) return;
@@ -163,10 +157,8 @@ function rearrangeItems(prioritizedItems, unprioritizedItems, config) {
   const parentContainer = firstItem.parentElement;
   if (!parentContainer) return;
 
-  // Build desired order
   const desiredOrder = [...prioritizedItems, ...unprioritizedItems];
 
-  // Idempotency check: compare current DOM order vs desired order
   const currentItems = Array.from(
     parentContainer.querySelectorAll(config.itemSelector),
   );
@@ -178,7 +170,6 @@ function rearrangeItems(prioritizedItems, unprioritizedItems, config) {
 
   currentState.isRearranging = true;
   try {
-    // Append in desired order — appendChild moves existing nodes without clone
     desiredOrder.forEach((item) => {
       if (item.parentElement === parentContainer) {
         parentContainer.appendChild(item);
@@ -206,9 +197,14 @@ function applyCombinedFilter(config) {
     (searchTerm && searchTerm.trim() !== "") ||
     filters.length > 0;
 
-  // No filters → restore original order and exit
+  // No filters → restore original order and reset chips to full list
   if (!hasActiveFilters) {
     restoreOriginalOrder(config);
+    // Re-render chips with full original groups
+    const panel = document.getElementById(config.containerId);
+    if (panel && currentState.mode === "group") {
+      renderChips(panel, groups, config, null);
+    }
     return;
   }
 
@@ -235,6 +231,9 @@ function applyCombinedFilter(config) {
   const prioritizedItems = [];
   const unprioritizedItems = [];
 
+  // Map to track counts for dynamic chip updates
+  const activeCodeCounts = new Map();
+
   allItems.forEach((container) => {
     // Group filter exclusion
     if (mode === "group" && selectedCode && !elementsToShow.has(container)) {
@@ -260,11 +259,48 @@ function applyCombinedFilter(config) {
       return;
     }
 
+    // Item passed all filters
     container.classList.add(config.highlightClass);
     prioritizedItems.push(container);
+
+    // Track code counts for dynamic chips
+    if (mode === "group") {
+      const videoAnchor = container.querySelector(config.videoAnchorSelector);
+      if (videoAnchor) {
+        const rawAlt = videoAnchor.getAttribute(config.altAttr);
+        const code = extractCode(rawAlt);
+        if (code) {
+          activeCodeCounts.set(code, (activeCodeCounts.get(code) || 0) + 1);
+        }
+      }
+    }
   });
 
   rearrangeItems(prioritizedItems, unprioritizedItems, config);
+
+  // Update chips dynamically if in group mode
+  if (mode === "group") {
+    const panel = document.getElementById(config.containerId);
+    if (panel) {
+      // Filter original groups to only those with >= dynamicMinCount matches in current view
+      // Or keep selected code if it has >= 1 match
+      const dynamicGroups = groups
+        .filter((g) => {
+          const count = activeCodeCounts.get(g.code) || 0;
+          if (g.code === selectedCode) return count >= 1;
+          return count >= config.dynamicMinCount;
+        })
+        .map((g) => ({
+          ...g,
+          count: activeCodeCounts.get(g.code) || 0,
+        }));
+
+      // Sort by current active count
+      dynamicGroups.sort((a, b) => b.count - a.count);
+
+      renderChips(panel, dynamicGroups, config, selectedCode);
+    }
+  }
 }
 
 function resetAll(config) {
@@ -282,13 +318,6 @@ function resetAll(config) {
       const existingTags = filtersContainer.querySelectorAll(".jav-filter-tag");
       existingTags.forEach((tag) => tag.remove());
     }
-
-    if (currentState.mode === "group") {
-      const allChip = panel.querySelector(
-        ".jav-chips-container .jav-chip:first-child",
-      );
-      if (allChip) setActiveChip(allChip, config);
-    }
   }
 
   const allItems = document.querySelectorAll(config.itemSelector);
@@ -298,6 +327,14 @@ function resetAll(config) {
   });
 
   restoreOriginalOrder(config);
+
+  // Reset chips to full list
+  if (currentState.mode === "group") {
+    const panel = document.getElementById(config.containerId);
+    if (panel) {
+      renderChips(panel, currentState.groups, config, null);
+    }
+  }
 }
 
 // ============================================================================
@@ -392,7 +429,6 @@ function handleRefresh(config) {
     currentState.groups = groups;
     currentState.lastItemCount = totalItems;
     currentState.selectedCode = null;
-    // Capture fresh baseline BEFORE rendering (which may rearrange)
     saveOriginalOrder();
     renderEnhancedPanel(groups, config);
   }
@@ -412,9 +448,8 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
   const chipsContainer = document.createElement("div");
   chipsContainer.className = "jav-chips-container";
 
-  const isAllActive =
-    currentSelectedCode === null ||
-    !groups.find((g) => g.code === currentSelectedCode);
+  // "All" is active if no specific code is selected
+  const isAllActive = currentSelectedCode === null;
 
   const allChip = document.createElement("span");
   allChip.className = `jav-chip ${isAllActive ? config.activeChipClass : ""}`;
@@ -425,6 +460,14 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
   chipsContainer.appendChild(allChip);
 
   groups.forEach((group) => {
+    // Only render if count >= dynamicMinCount OR it is the currently selected code (and count >= 1)
+    if (
+      group.count < config.dynamicMinCount &&
+      group.code !== currentSelectedCode
+    )
+      return;
+    if (group.code === currentSelectedCode && group.count < 1) return;
+
     const chip = document.createElement("span");
     const isActive = group.code === currentSelectedCode;
     chip.className = `jav-chip ${isActive ? config.activeChipClass : ""}`;
@@ -452,7 +495,6 @@ function renderEnhancedPanel(groups, config) {
     isActive: true,
   };
 
-  // Baseline captured BEFORE any filter-induced rearrangement
   saveOriginalOrder();
 
   const panel = document.createElement("div");
