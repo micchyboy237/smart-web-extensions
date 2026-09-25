@@ -3,14 +3,12 @@
 (function () {
   "use strict";
   console.log("[Content] Core module loading...");
-
   // ═══════════════════════════════════════════════════════════════
   // CORE CONSTANTS
   // ═══════════════════════════════════════════════════════════════
   const VIDEO_SELECTOR =
     "video:not(#vo-overlay video):not(#video-gallery-modal video)";
   const MAX_GALLERY_ITEMS = 6;
-
   // ═══════════════════════════════════════════════════════════════
   // GLOBAL STATE (shared across modules via getters/setters)
   // ═══════════════════════════════════════════════════════════════
@@ -25,14 +23,11 @@
     observers: [],
     intervals: [],
   };
-
   let observeInProgress = false;
-
   // Panel update batching - prevents multiple rapid panel updates
   let panelUpdatePending = false;
   let panelUpdateTimer = null;
   const PANEL_UPDATE_DEBOUNCE = 100; // ms
-
   // ═══════════════════════════════════════════════════════════════
   // GLOBAL ACCESSORS (for cross-module communication)
   // ═══════════════════════════════════════════════════════════════
@@ -74,7 +69,6 @@
       console.warn("[Content] Gallery module not loaded");
     }
   };
-
   // ═══════════════════════════════════════════════════════════════
   // SINGLE PLAYBACK CONTROLLER
   // ═══════════════════════════════════════════════════════════════
@@ -114,7 +108,6 @@
       `[Content] Single playback enforced for ${videoToPlay.dataset.videoObserverId}`,
     );
   }
-
   // ═══════════════════════════════════════════════════════════════
   // LOGGING
   // ═══════════════════════════════════════════════════════════════
@@ -126,7 +119,6 @@
       console.log(`[nsfwPH ${ts}] ${message}`, data || "");
     }
   }
-
   /**
    * Get current video information
    */
@@ -139,22 +131,17 @@
       paused: video.paused,
     };
   }
-
   // ═══════════════════════════════════════════════════════════════
   // VIDEO TRACKING
   // ═══════════════════════════════════════════════════════════════
   function trackVideo(video) {
     if (video.dataset.videoObserverAttached === "true") return;
     video.dataset.videoObserverAttached = "true";
-
     if (videos.has(video)) return;
-
     const id = `video-${++videoCounter}`;
     video.dataset.videoObserverId = id;
-
     // Update global counter for other modules
     window.__videoCounter = videoCounter;
-
     const entry = {
       id,
       element: video,
@@ -165,25 +152,56 @@
       boostCleanup: null,
       cacheKeySrc: null,
     };
-
     videos.set(video, entry);
-
     if (!video.dataset.volumeSet) {
       video.volume = 0.5;
       video.dataset.volumeSet = "true";
     }
-
     log(`New video detected`, {
       id,
       srcShort: (video.currentSrc || "").substring(0, 80) + "...",
     });
+
+    // ✅ NEW: Add visual ID label to original video
+    const label = document.createElement("div");
+    label.className = "video-observer-id-label";
+    label.textContent = id;
+
+    // ✅ NEW: Add "Open in Overlay" button to original video
+    const overlayBtn = document.createElement("button");
+    overlayBtn.className = "video-observer-overlay-btn";
+    overlayBtn.title = "Open in Overlay";
+    // Updated SVG for "Expand/Overlay" look
+    overlayBtn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>`;
+    overlayBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      window.__enforceSinglePlayback(video);
+      window.__showVideoOverlay(video, entry);
+      if (video.paused) {
+        video
+          .play()
+          .catch((err) => console.warn("[Overlay] Auto-play failed:", err));
+      }
+    });
+
+    // Ensure parent has relative positioning for absolute children
+    const parent = video.parentElement;
+    if (parent && getComputedStyle(parent).position === "static") {
+      parent.style.position = "relative";
+    }
+
+    parent.appendChild(label);
+    parent.appendChild(overlayBtn);
+
+    entry.cleanups.push(() => label.remove());
+    entry.cleanups.push(() => overlayBtn.remove());
 
     // Attach buffer boost
     if (window.BoostEngine) {
       entry.boostCleanup =
         window.BoostEngine.attachBoostToVideo(video) || (() => {});
     }
-
     // Start preview creation - this returns a preview element
     if (window.ChunkPreview) {
       entry.preview = window.ChunkPreview.createSinglePreview(video, id);
@@ -191,7 +209,6 @@
       // Only creates/inserts this ONE card instead of rebuilding all cards
       performPanelUpdateNow(id);
     }
-
     // Track all video events
     const events = [
       "loadstart",
@@ -217,7 +234,6 @@
       "volumechange",
       "resize",
     ];
-
     events.forEach((ev) => {
       const handler = () => {
         entry.info = getVideoInfo(video);
@@ -232,7 +248,6 @@
       video.addEventListener(ev, handler, { passive: true });
       entry.cleanups.push(() => video.removeEventListener(ev, handler));
     });
-
     // ═══════════════════════════════════════════════════════════════
     // Diagnostic logging for problem states (`waiting`, `stalled`, `suspend`, etc)
     // ═══════════════════════════════════════════════════════════════
@@ -247,16 +262,13 @@
         { passive: true },
       );
     });
-
     console.log(
       `[Content] Tracked video: ${id} (${events.length} events monitored)`,
     );
   }
-
   // ═══════════════════════════════════════════════════════════════
   // PANEL UPDATE FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
-
   /**
    * Perform panel update, optionally targeting a single video.
    *
@@ -270,7 +282,6 @@
    */
   function performPanelUpdateNow(videoId) {
     if (!window.CardManager) return;
-
     if (videoId) {
       // ✅ OPTIMIZED: Targeted single-card update — instant visual feedback
       console.log(`[Content] 🎯 Targeted panel update for ${videoId}`);
@@ -281,11 +292,9 @@
       window.CardManager.performPanelUpdate();
     }
   }
-
   // ═══════════════════════════════════════════════════════════════
   // VIDEO OBSERVATION
   // ═══════════════════════════════════════════════════════════════
-
   /**
    * Process videos one at a time with staggered delays.
    * Allows the browser to paint each card before processing the next,
@@ -294,25 +303,20 @@
   async function processVideosStaggered(foundVideos, staggerMs = 16) {
     for (let i = 0; i < foundVideos.length; i++) {
       const video = foundVideos[i];
-
       // Track this video (creates card, attaches preview, updates panel)
       trackVideo(video);
-
       console.log(
         `[Content] 📋 Processed ${i + 1}/${foundVideos.length} videos`,
       );
-
       // Yield to browser between each video to allow painting
       if (i < foundVideos.length - 1) {
         await new Promise((resolve) => setTimeout(resolve, staggerMs));
       }
     }
-
     console.log(
       `[Content] ✅ All ${foundVideos.length} videos processed with staggered delays`,
     );
   }
-
   function observeVideos() {
     // ✅ Prevent concurrent observation batches
     if (observeInProgress) {
@@ -320,26 +324,21 @@
       return;
     }
     observeInProgress = true;
-
     const foundVideos = document.querySelectorAll(VIDEO_SELECTOR);
     const previouslyTracked = videos.size;
     const videoArray = Array.from(foundVideos);
-
     console.log(
       `[Content] Observing ${videoArray.length} video elements (previously tracked: ${previouslyTracked})`,
     );
-
     if (videoArray.length === 0) {
       console.log("[Content] No videos found");
       observeInProgress = false;
       return;
     }
-
     const staggerMs = previouslyTracked === 0 ? 50 : 16;
     console.log(
       `[Content] 🎬 Starting staggered processing with ${staggerMs}ms delay between cards`,
     );
-
     processVideosStaggered(videoArray, staggerMs).then(() => {
       if (previouslyTracked > 0) {
         performPanelUpdateNow();
@@ -354,7 +353,6 @@
       observeInProgress = false;
     });
   }
-
   // ═══════════════════════════════════════════════════════════════
   // VIDEO OVERLAY BRIDGE
   // ═══════════════════════════════════════════════════════════════
@@ -371,7 +369,6 @@
     });
     console.log("[Content] ✅ VideoOverlay dependencies injected");
   }
-
   function showVideoOverlay(videoEl, entry) {
     log(`Opening overlay for ${entry.id}`);
     if (typeof window.VideoOverlay !== "undefined") {
@@ -382,21 +379,18 @@
       );
     }
   }
-
   function closeVideoOverlay() {
     log("Closing overlay");
     if (typeof window.VideoOverlay !== "undefined") {
       window.VideoOverlay.close();
     }
   }
-
   function isOverlayShowingVideo(videoEl) {
     if (typeof window.VideoOverlay !== "undefined") {
       return window.VideoOverlay.isShowing(videoEl);
     }
     return false;
   }
-
   // ═══════════════════════════════════════════════════════════════
   // CLEANUP FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
@@ -405,19 +399,15 @@
    */
   function cleanupRuntimeResources() {
     console.log("[Content] Cleaning up runtime resources...");
-
     // Clear pending panel update
     if (panelUpdateTimer) {
       clearTimeout(panelUpdateTimer);
       panelUpdateTimer = null;
     }
-
     globalResources.observers.forEach((o) => o.disconnect());
     globalResources.observers = [];
-
     globalResources.intervals.forEach((i) => clearInterval(i));
     globalResources.intervals = [];
-
     for (const entry of videos.values()) {
       if (entry.boostCleanup) {
         entry.boostCleanup();
@@ -432,38 +422,31 @@
         }
       }
     }
-
     // Clear in-memory L1 cache only (IndexedDB L2 is preserved)
     if (window.ChunkCache) {
       window.ChunkCache.memoryCache.clear();
     }
-
     console.log("[Content] Runtime resources cleaned up ✅");
   }
-
   /**
    * Full cleanup including IndexedDB - ONLY called on extension unload
    */
   function cleanupAllResources() {
     console.log("[Content] Performing full cleanup...");
     cleanupRuntimeResources();
-
     // Destroy overlay
     if (typeof window.VideoOverlay !== "undefined") {
       window.VideoOverlay.destroy();
       log("Video overlay destroyed.");
     }
-
     // Clear chunk cache
     if (window.ChunkCache) {
       window.ChunkCache.clear().catch((err) => {
         console.warn("[Cleanup] Error clearing chunk cache:", err);
       });
     }
-
     console.log("[Content] Full cleanup complete ✅");
   }
-
   // ═══════════════════════════════════════════════════════════════
   // INITIALIZATION
   // ═══════════════════════════════════════════════════════════════
@@ -485,42 +468,33 @@
       if (document.body) callback();
     }, 1500);
   }
-
   function init() {
     if (window.__VIDEO_OBSERVER_INITIALIZED__) {
       console.log("[Content] Already initialized, skipping");
       return;
     }
-
     window.__VIDEO_OBSERVER_INITIALIZED__ = true;
-
     cleanupRuntimeResources();
     console.log("[Content] Initializing Video Observer...");
-
     // Create floating panel
     if (window.PanelManager) {
       window.PanelManager.createFloatingPanel();
       log("Floating panel created.");
     }
-
     // Setup overlay module
     setupVideoOverlay();
     log("Video overlay module initialized.");
-
     // Initialize visibility listener
     if (window.VisibilityManager) {
       window.VisibilityManager.initVisibilityListener();
     }
-
     // Perform initial observation - each video updates panel as tracked
     observeVideos();
     log("Initial video observation performed.");
-
     // Setup MutationObserver for new videos
     let debounceTimer = null;
     domObserver = new MutationObserver((mutations) => {
       if (!window.__tabIsVisible) return;
-
       const hasRelevantChange = mutations.some((m) =>
         Array.from(m.addedNodes).some(
           (node) =>
@@ -530,33 +504,25 @@
             !node.closest?.("#vo-overlay"),
         ),
       );
-
       if (!hasRelevantChange) return;
-
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(observeVideos, 600);
       console.log("[Content] DOM mutation detected, scheduling observation");
     });
-
     chatRoot = document.querySelector(
       ".messages-content, #messages, main, body",
     );
-
     domObserver.observe(chatRoot || document.body, {
       childList: true,
       subtree: true,
       attributes: false,
       characterData: false,
     });
-
     globalResources.observers.push(domObserver);
-
     // Periodic observation
     pollingInterval = setInterval(observeVideos, 30000);
     globalResources.intervals.push(pollingInterval);
-
     log("Init complete — observer watching chat root for child additions only");
-
     console.log("[Content] ✅ Full initialization complete");
     console.log("[Content] Active modules:", {
       BoostEngine: !!window.BoostEngine,
@@ -569,7 +535,6 @@
       VideoOverlay: !!window.VideoOverlay,
     });
   }
-
   // ═══════════════════════════════════════════════════════════════
   // CLEANUP ON UNLOAD
   // ═══════════════════════════════════════════════════════════════
@@ -577,7 +542,6 @@
     console.log("[Content] Page unloading, performing cleanup...");
     cleanupAllResources();
   });
-
   // ═══════════════════════════════════════════════════════════════
   // STARTUP
   // ═══════════════════════════════════════════════════════════════
