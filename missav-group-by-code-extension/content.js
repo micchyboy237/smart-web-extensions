@@ -10,19 +10,7 @@ function checkForUpdates(config) {
     return;
   }
 
-  // Skip if filters/search are active to prevent overwriting filtered state
-  const hasActiveFilters =
-    (currentState.mode === "group" && currentState.selectedCode !== null) ||
-    (currentState.searchTerm && currentState.searchTerm.trim() !== "") ||
-    currentState.filters.length > 0;
-
-  if (hasActiveFilters) {
-    console.log("[GroupByCode] ⏭️ Skipping update check (filters active)");
-    return;
-  }
-
   console.log("[GroupByCode] 🔍 Checking for content updates...");
-
   const { groups, totalItems } = extractGroupedCodes(config);
   const itemCountChanged =
     Math.abs(totalItems - currentState.lastItemCount) > 5;
@@ -39,10 +27,23 @@ function checkForUpdates(config) {
     currentState.lastItemCount = totalItems;
     saveOriginalOrder();
 
+    // Check if filters are active
+    const hasActiveFilters =
+      (currentState.mode === "group" && currentState.selectedCode !== null) ||
+      (currentState.searchTerm && currentState.searchTerm.trim() !== "") ||
+      currentState.filters.length > 0;
+
     const panel = document.getElementById(config.containerId);
     if (panel && currentState.mode === "group") {
-      renderChips(panel, groups, config, currentState.selectedCode);
-      applyCombinedFilter(config);
+      if (hasActiveFilters) {
+        console.log(
+          "[GroupByCode] Filters active, re-applying with updated groups",
+        );
+        applyCombinedFilter(config);
+      } else {
+        renderChips(panel, groups, config, currentState.selectedCode);
+        applyCombinedFilter(config);
+      }
     }
   } else {
     console.log("[GroupByCode] No significant changes detected");

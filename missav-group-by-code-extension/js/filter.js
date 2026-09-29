@@ -108,35 +108,28 @@ function applyCombinedFilter(config) {
     filters: currentState.filters,
     expandedGroup: currentState.expandedGroup,
   });
-
   const allItems = document.querySelectorAll(config.itemSelector);
-
   // Clear visual classes
   allItems.forEach((el) => {
     el.classList.remove(config.hiddenItemClass);
     el.classList.remove(config.highlightClass);
   });
-
   const { selectedCode, searchTerm, filters, mode, groups } = currentState;
   const hasActiveFilters =
     (mode === "group" && selectedCode !== null) ||
     (searchTerm && searchTerm.trim() !== "") ||
     filters.length > 0;
-
   console.log(`[GroupByCode] Has active filters: ${hasActiveFilters}`);
-
   // No filters → restore original order
   if (!hasActiveFilters) {
     console.log("[GroupByCode] No filters, restoring original order");
     restoreOriginalOrder(config);
-
     const panel = document.getElementById(config.containerId);
     if (panel && currentState.mode === "group") {
       renderChips(panel, groups, config, null);
     }
     return;
   }
-
   const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const primaryRegex = searchTerm.trim()
     ? new RegExp(escapeRegex(searchTerm), "i")
@@ -144,7 +137,6 @@ function applyCombinedFilter(config) {
   const filterRegexes = filters
     .filter((f) => typeof f === "string" && f.trim() !== "")
     .map((f) => ({ term: f, regex: new RegExp(escapeRegex(f), "i") }));
-
   let elementsToShow = new Set();
   if (mode === "group" && selectedCode) {
     const group = groups.find((g) => g.code === selectedCode);
@@ -159,25 +151,20 @@ function applyCombinedFilter(config) {
   } else {
     allItems.forEach((el) => elementsToShow.add(el));
   }
-
   const prioritizedItems = [];
   const unprioritizedItems = [];
   const activeCodeCounts = new Map();
-
   allItems.forEach((container) => {
     if (mode === "group" && selectedCode && !elementsToShow.has(container)) {
       unprioritizedItems.push(container);
       return;
     }
-
     const titleEl = container.querySelector(config.titleSelector);
     const titleText = titleEl?.textContent?.trim() || "";
-
     if (primaryRegex && !primaryRegex.test(titleText)) {
       unprioritizedItems.push(container);
       return;
     }
-
     const failedFilters = filterRegexes.filter(
       ({ regex }) => !regex.test(titleText),
     );
@@ -185,10 +172,8 @@ function applyCombinedFilter(config) {
       unprioritizedItems.push(container);
       return;
     }
-
     container.classList.add(config.highlightClass);
     prioritizedItems.push(container);
-
     if (mode === "group") {
       const videoAnchor = container.querySelector(config.videoAnchorSelector);
       if (videoAnchor) {
@@ -200,27 +185,45 @@ function applyCombinedFilter(config) {
       }
     }
   });
-
   console.log(
     `[GroupByCode] Filter result: ${prioritizedItems.length} matched, ${unprioritizedItems.length} unmatched`,
   );
   rearrangeItems(prioritizedItems, unprioritizedItems, config);
-
   if (mode === "group") {
     const panel = document.getElementById(config.containerId);
     if (panel) {
-      const dynamicGroups = groups
+      // Build dynamic groups from ALL matched items, not just stored groups
+      const dynamicGroupMap = new Map();
+      prioritizedItems.forEach((container) => {
+        const videoAnchor = container.querySelector(config.videoAnchorSelector);
+        if (videoAnchor) {
+          const rawAlt = videoAnchor.getAttribute(config.altAttr);
+          const code = extractCode(rawAlt);
+          if (code) {
+            if (!dynamicGroupMap.has(code)) {
+              dynamicGroupMap.set(code, {
+                code,
+                count: 0,
+                urls: [],
+                elements: [],
+              });
+            }
+            const entry = dynamicGroupMap.get(code);
+            entry.count++;
+            entry.urls.push(videoAnchor.href || "");
+            entry.elements.push(container);
+          }
+        }
+      });
+      const dynamicGroups = Array.from(dynamicGroupMap.values())
         .filter((g) => {
-          const count = activeCodeCounts.get(g.code) || 0;
-          if (g.code === selectedCode) return count >= 1;
-          return count >= config.dynamicMinCount;
+          if (g.code === selectedCode) return g.count >= 1;
+          return g.count >= config.dynamicMinCount;
         })
-        .map((g) => ({
-          ...g,
-          count: activeCodeCounts.get(g.code) || 0,
-        }));
-
-      dynamicGroups.sort((a, b) => b.count - a.count);
+        .sort((a, b) => b.count - a.count);
+      console.log(
+        `[GroupByCode] Dynamic groups from matched items: ${dynamicGroups.length} codes`,
+      );
       renderChips(panel, dynamicGroups, config, selectedCode);
     }
   }

@@ -342,7 +342,12 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
   allChip.className = `jav-chip ${isAllActive ? config.activeChipClass : ""}`;
   allChip.textContent = "All";
   allChip.addEventListener("click", () => {
-    resetAll(config);
+    console.log(
+      "[GroupByCode] 'All' chip clicked - clearing code selection only",
+    );
+    currentState.selectedCode = null;
+    setActiveChip(allChip, config);
+    applyCombinedFilter(config);
   });
   chipsContainer.appendChild(allChip);
   groups.forEach((group) => {
