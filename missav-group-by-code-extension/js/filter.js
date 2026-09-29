@@ -63,16 +63,8 @@ function rearrangeItems(prioritizedItems, unprioritizedItems, config) {
 
   const desiredOrder = [...prioritizedItems, ...unprioritizedItems];
 
-  // DEBUG: Log what we're about to rearrange
   console.log(
     `[GroupByCode] 🔄 Rearranging: ${prioritizedItems.length} prioritized, ${unprioritizedItems.length} unprioritized`,
-  );
-  console.log(
-    `[GroupByCode]   First 3 prioritized:`,
-    prioritizedItems.slice(0, 3).map((el) => {
-      const anchor = el.querySelector(config.videoAnchorSelector);
-      return anchor?.getAttribute(config.altAttr) || "no-anchor";
-    }),
   );
 
   currentState.isRearranging = true;
@@ -138,8 +130,9 @@ function applyCombinedFilter(config) {
   let groupElements = new Set();
   if (mode === "group" && selectedCode) {
     const group = groups.find((g) => g.code === selectedCode);
+
     if (group) {
-      // CRITICAL FIX: Filter out stale/detached DOM references
+      // Filter out stale/detached DOM references
       const validElements = group.elements.filter((el) =>
         document.body.contains(el),
       );
@@ -153,12 +146,13 @@ function applyCombinedFilter(config) {
 
       if (validElements.length === 0 && group.elements.length > 0) {
         console.warn(
-          `[GroupByCode] ⚠️ STALE GROUP DETECTED: "${selectedCode}" has ${group.elements.length} stored elements but NONE are in the DOM. Groups need refresh!`,
+          `[GroupByCode] ⚠️ STALE GROUP DETECTED: "${selectedCode}" has ${group.elements.length} stored elements but NONE are in the DOM.`,
         );
       }
     } else {
-      console.warn(
-        `[GroupByCode] ⚠️ Group not found in state for code: "${selectedCode}". Available: [${groups.map((g) => g.code).join(", ")}]`,
+      // This should rarely happen now that we load all groups, but good to have a warning
+      console.error(
+        `[GroupByCode] ❌ CRITICAL: Group "${selectedCode}" not found in state despite loading all groups!`,
       );
     }
   }

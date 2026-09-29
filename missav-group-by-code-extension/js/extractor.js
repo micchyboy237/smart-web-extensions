@@ -25,6 +25,7 @@ function extractGroupedCodes(config) {
   );
 
   const codeMap = new Map();
+  const seenHrefs = new Set(); // Track unique video URLs to avoid duplicates
   let skipped = 0;
 
   items.forEach((item, idx) => {
@@ -36,9 +37,18 @@ function extractGroupedCodes(config) {
       return;
     }
 
+    // Check if we've already processed this video URL
+    const href = videoAnchor.href || "";
+    if (seenHrefs.has(href)) {
+      skipped++;
+      // Optional: log duplicates if needed for debugging
+      // if (idx < 5) console.log(`[GroupByCode] ⚠️ Item ${idx}: Duplicate href detected, skipping`);
+      return;
+    }
+    seenHrefs.add(href);
+
     const rawAlt = videoAnchor.getAttribute(config.altAttr);
     const code = extractCode(rawAlt);
-
     if (!code) {
       skipped++;
       if (idx < 3)
@@ -51,10 +61,9 @@ function extractGroupedCodes(config) {
     if (!codeMap.has(code)) {
       codeMap.set(code, { code, count: 0, urls: [], elements: [] });
     }
-
     const entry = codeMap.get(code);
     entry.count++;
-    entry.urls.push(videoAnchor.href || "");
+    entry.urls.push(href);
     entry.elements.push(item);
   });
 
@@ -62,15 +71,14 @@ function extractGroupedCodes(config) {
     `[GroupByCode] Skipped ${skipped} items, found ${codeMap.size} unique codes`,
   );
 
+  // REMOVED: .slice(0, config.topN) to include ALL groups
   const result = Array.from(codeMap.values())
     .filter((g) => g.count >= config.minCount)
-    .sort((a, b) => b.count - a.count)
-    .slice(0, config.topN);
+    .sort((a, b) => b.count - a.count);
 
-  console.log(
-    `[GroupByCode] ✅ Extracted ${result.length} groups (top ${config.topN})`,
-  );
-  result.forEach((g) => {
+  console.log(`[GroupByCode] ✅ Extracted ${result.length} groups (ALL)`);
+  // Optional: Log top 10 for brevity in console
+  result.slice(0, 10).forEach((g) => {
     console.log(`[GroupByCode]   - ${g.code.toUpperCase()}: ${g.count} items`);
   });
 

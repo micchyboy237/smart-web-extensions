@@ -6,8 +6,7 @@
 const DEFAULT_CONFIG = {
   minCount: 1,
   dynamicMinCount: 1,
-  topN: 10,
-  // Only match the parent flex container, not the thumbnail itself
+  topN: 1000, // Increased significantly to effectively remove the limit
   itemSelector:
     ".order-last .flex, .thumbnail.group:not(.order-last .flex .thumbnail.group)",
   videoAnchorSelector: "a:has(video)",
