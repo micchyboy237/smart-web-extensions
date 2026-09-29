@@ -1,6 +1,5 @@
-/* MissAV Group by Code Extension Styles - Enhanced UI */
-
-/* ── Floating Panel ─────────────────────── */
+/* MissAV Group by Code Extension Styles */
+/* ── Floating Panel (FIXED WIDTH) ─────────────────────── */
 #jav-group-by-code-panel {
   position: fixed !important;
   top: 12px !important;
@@ -16,7 +15,7 @@
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  width: 360px !important;
+  width: 320px !important;
   max-height: 80vh;
   overflow-y: auto;
   font-family:
@@ -24,14 +23,12 @@
     -apple-system,
     sans-serif;
 }
-
 #jav-group-by-code-panel .jav-panel-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
 }
-
 #jav-group-by-code-panel .jav-panel-toggle {
   width: 22px;
   height: 22px;
@@ -51,16 +48,13 @@
   align-items: center;
   justify-content: center;
 }
-
 #jav-group-by-code-panel .jav-refresh-btn {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
 }
-
 #jav-group-by-code-panel .jav-refresh-btn:hover {
   background: rgba(255, 255, 255, 0.25);
 }
-
 #jav-group-by-code-panel.jav-panel-collapsed {
   padding: 0 !important;
   gap: 0 !important;
@@ -72,16 +66,13 @@
   max-height: unset !important;
   overflow: visible !important;
 }
-
 #jav-group-by-code-panel.jav-panel-collapsed > *:not(.jav-panel-header) {
   display: none !important;
 }
-
 #jav-group-by-code-panel.jav-panel-collapsed .jav-panel-header {
   padding: 4px;
 }
-
-/* ── Mode Toggle Buttons ────────────────── */
+/* ── Mode Toggle Buttons ──────────────────────────────── */
 #jav-group-by-code-panel .jav-mode-toggle {
   display: flex;
   gap: 4px;
@@ -89,7 +80,6 @@
   border-radius: 6px;
   padding: 2px;
 }
-
 #jav-group-by-code-panel .jav-mode-btn {
   padding: 4px 8px;
   border: none;
@@ -102,24 +92,20 @@
   justify-content: center;
   transition: all 0.15s ease;
 }
-
 #jav-group-by-code-panel .jav-mode-btn:hover {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
 }
-
 #jav-group-by-code-panel .jav-mode-btn.active {
   background: #fbbf24;
   color: #1e1e2e;
 }
-
-/* ── Search Bar ─────────────────────────── */
+/* ── Search Bar ───────────────────────────────────────── */
 #jav-group-by-code-panel .jav-search-container {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-
 #jav-group-by-code-panel .jav-search-input {
   width: 100%;
   padding: 8px 12px;
@@ -132,24 +118,20 @@
   transition: all 0.15s ease;
   box-sizing: border-box;
 }
-
 #jav-group-by-code-panel .jav-search-input:focus {
   border-color: #fbbf24;
   background: rgba(255, 255, 255, 0.12);
 }
-
 #jav-group-by-code-panel .jav-search-input::placeholder {
   color: rgba(255, 255, 255, 0.4);
 }
-
-/* ── Filter Tags ────────────────────────── */
+/* ── Filter Tags ──────────────────────────────────────── */
 #jav-group-by-code-panel .jav-filters-container {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
 }
-
 #jav-group-by-code-panel .jav-filter-tag {
   display: inline-flex;
   align-items: center;
@@ -162,7 +144,6 @@
   color: #60a5fa;
   border: 1px solid rgba(59, 130, 246, 0.3);
 }
-
 #jav-group-by-code-panel .jav-filter-remove {
   cursor: pointer;
   opacity: 0.7;
@@ -170,11 +151,9 @@
   display: flex;
   align-items: center;
 }
-
 #jav-group-by-code-panel .jav-filter-remove:hover {
   opacity: 1;
 }
-
 #jav-group-by-code-panel .jav-add-filter-input {
   flex: 1;
   min-width: 80px;
@@ -187,17 +166,14 @@
   outline: none;
   box-sizing: border-box;
 }
-
 #jav-group-by-code-panel .jav-add-filter-input:focus {
   border-color: #60a5fa;
   background: rgba(255, 255, 255, 0.05);
 }
-
 #jav-group-by-code-panel .jav-add-filter-input::placeholder {
   color: rgba(255, 255, 255, 0.3);
 }
-
-/* ── Group Chips ────────────────────────── */
+/* ── Group Chips ──────────────────────────────────────── */
 #jav-group-by-code-panel .jav-panel-label {
   font-size: 11px;
   font-weight: 700;
@@ -205,19 +181,11 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
-
 #jav-group-by-code-panel .jav-chips-container {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
-
-#jav-group-by-code-panel .jav-chip-wrapper {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
 #jav-group-by-code-panel .jav-chip {
   padding: 4px 12px;
   border-radius: 999px;
@@ -231,199 +199,16 @@
   user-select: none;
   white-space: nowrap;
 }
-
 #jav-group-by-code-panel .jav-chip:hover {
   background: rgba(255, 255, 255, 0.18);
   color: #fff;
 }
-
 #jav-group-by-code-panel .jav-chip.jav-chip-active {
   background: #fbbf24;
   color: #1e1e2e;
   border-color: #fbbf24;
 }
-
-#jav-group-by-code-panel .jav-expand-btn {
-  padding: 4px;
-  border: none;
-  background: rgba(255, 255, 255, 0.1);
-  color: #ccc;
-  cursor: pointer;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s ease;
-}
-
-#jav-group-by-code-panel .jav-expand-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
-}
-
-/* ── Results List Panel ─────────────────── */
-#jav-group-by-code-panel .jav-results-list {
-  margin-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  padding-top: 12px;
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-#jav-group-by-code-panel .jav-results-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-#jav-group-by-code-panel .jav-results-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: #fbbf24;
-  text-transform: uppercase;
-}
-
-#jav-group-by-code-panel .jav-copy-code-btn {
-  padding: 4px 8px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.08);
-  color: #ccc;
-  cursor: pointer;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  transition: all 0.15s ease;
-}
-
-#jav-group-by-code-panel .jav-copy-code-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
-  border-color: #fbbf24;
-}
-
-#jav-group-by-code-panel .jav-results-items {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-#jav-group-by-code-panel .jav-result-card {
-  display: flex;
-  gap: 10px;
-  padding: 8px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-#jav-group-by-code-panel .jav-result-card:hover {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(251, 191, 36, 0.3);
-  transform: translateX(2px);
-}
-
-#jav-group-by-code-panel .jav-result-index {
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(251, 191, 36, 0.2);
-  color: #fbbf24;
-  border-radius: 50%;
-  font-size: 11px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
-#jav-group-by-code-panel .jav-result-thumbnail {
-  position: relative;
-  width: 80px;
-  height: 45px;
-  border-radius: 6px;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-#jav-group-by-code-panel .jav-result-thumbnail img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-#jav-group-by-code-panel .jav-result-duration {
-  position: absolute;
-  bottom: 2px;
-  right: 2px;
-  padding: 2px 4px;
-  background: rgba(0, 0, 0, 0.7);
-  color: #fff;
-  font-size: 9px;
-  border-radius: 3px;
-  font-weight: 600;
-}
-
-#jav-group-by-code-panel .jav-result-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-#jav-group-by-code-panel .jav-result-title {
-  font-size: 12px;
-  color: #e0e0e0;
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: color 0.15s ease;
-}
-
-#jav-group-by-code-panel .jav-result-title:hover {
-  color: #fbbf24;
-}
-
-#jav-group-by-code-panel .jav-result-id {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.5);
-  font-family: monospace;
-}
-
-/* ── Toast Notification ─────────────────── */
-.jav-toast {
-  position: fixed;
-  bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%) translateY(100px);
-  padding: 10px 20px;
-  background: rgba(30, 30, 46, 0.95);
-  color: #fbbf24;
-  border: 1px solid rgba(251, 191, 36, 0.3);
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  opacity: 0;
-  transition: all 0.3s ease;
-  z-index: 2147483647;
-  pointer-events: none;
-}
-
-.jav-toast.jav-toast-show {
-  transform: translateX(-50%) translateY(0);
-  opacity: 1;
-}
-
-/* ── Highlight ──────────────────────────── */
+/* ── Highlight ────────────────────────────────────────── */
 .jav-grouped-highlight {
   outline: 3px solid #fbbf24 !important;
   outline-offset: 2px;
@@ -434,7 +219,6 @@
     box-shadow 0.15s ease;
   box-shadow: 0 0 16px rgba(251, 191, 36, 0.25);
 }
-
 .jav-grouped-highlight::after {
   content: "";
   position: absolute;
@@ -444,8 +228,7 @@
   pointer-events: none;
   z-index: 10;
 }
-
-/* ── Unprioritized Items ────────────────── */
+/* ── Unprioritized Items (formerly hidden) ────────────── */
 .jav-grouped-hidden {
   opacity: 0.5;
   filter: grayscale(0.3);

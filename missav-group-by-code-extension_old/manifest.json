@@ -1,21 +1,14 @@
 {
   "manifest_version": 3,
   "name": "MissAV Group by Code",
-  "version": "2.0.0",
-  "description": "Groups MissAV search results by JAV code with enhanced UI and results panel",
+  "version": "1.0.3",
+  "description": "Groups MissAV search results by JAV code with search and filter capabilities",
   "permissions": [],
   "host_permissions": ["https://missav.ws/*"],
   "content_scripts": [
     {
       "matches": ["https://missav.ws/*"],
-      "js": [
-        "js/config.js",
-        "js/state.js",
-        "js/extractor.js",
-        "js/filter.js",
-        "js/ui.js",
-        "content.js"
-      ],
+      "js": ["content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"
     }
