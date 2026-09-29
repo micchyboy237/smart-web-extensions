@@ -395,7 +395,6 @@ function renderEnhancedPanel(groups, config) {
     console.log("[GroupByCode] Removing existing panel");
     existing.remove();
   }
-
   currentState = {
     ...currentState,
     groups,
@@ -403,42 +402,33 @@ function renderEnhancedPanel(groups, config) {
     isActive: true,
     expandedGroup: null,
   };
-
   saveOriginalOrder();
-
   const panel = document.createElement("div");
   panel.id = config.containerId;
-
   // Header
   const header = document.createElement("div");
   header.className = "jav-panel-header";
-
   const modeToggle = document.createElement("div");
   modeToggle.className = "jav-mode-toggle";
-
   const groupBtn = document.createElement("button");
   groupBtn.className = `jav-mode-btn ${currentState.mode === "group" ? "active" : ""}`;
   groupBtn.dataset.mode = "group";
   groupBtn.innerHTML = ICONS.group;
   groupBtn.title = "Group by Code";
   groupBtn.addEventListener("click", () => handleModeToggle("group", config));
-
   const flatBtn = document.createElement("button");
   flatBtn.className = `jav-mode-btn ${currentState.mode === "flat" ? "active" : ""}`;
   flatBtn.dataset.mode = "flat";
   flatBtn.innerHTML = ICONS.flat;
   flatBtn.title = "Flat List";
   flatBtn.addEventListener("click", () => handleModeToggle("flat", config));
-
   modeToggle.appendChild(groupBtn);
   modeToggle.appendChild(flatBtn);
-
   const refreshBtn = document.createElement("button");
   refreshBtn.className = "jav-panel-toggle jav-refresh-btn";
   refreshBtn.innerHTML = ICONS.refresh;
   refreshBtn.title = "Refresh data";
   refreshBtn.addEventListener("click", () => handleRefresh(config));
-
   const toggleBtn = document.createElement("button");
   toggleBtn.className = "jav-panel-toggle jav-collapse-btn";
   toggleBtn.textContent = "−";
@@ -449,54 +439,43 @@ function renderEnhancedPanel(groups, config) {
     toggleBtn.textContent = isCollapsed ? "+" : "−";
     toggleBtn.title = isCollapsed ? "Expand panel" : "Collapse panel";
   });
-
   header.appendChild(modeToggle);
   header.appendChild(refreshBtn);
   header.appendChild(toggleBtn);
   panel.appendChild(header);
-
   // Search Bar
   const searchContainer = document.createElement("div");
   searchContainer.className = "jav-search-container";
-
   const searchInput = document.createElement("input");
   searchInput.type = "text";
   searchInput.className = "jav-search-input";
   searchInput.placeholder = "Search titles...";
   searchInput.addEventListener("input", (e) => handleSearchInput(e, config));
-
   searchContainer.appendChild(searchInput);
   panel.appendChild(searchContainer);
-
   // Filters
   const filtersContainer = document.createElement("div");
   filtersContainer.className = "jav-filters-container";
-
   const filterInput = document.createElement("input");
   filterInput.type = "text";
   filterInput.className = "jav-add-filter-input";
   filterInput.placeholder = "+ Add filter (Enter)";
   filterInput.addEventListener("keydown", (e) => handleAddFilter(e, config));
-
   filtersContainer.appendChild(filterInput);
   panel.appendChild(filtersContainer);
-
   // Chips
   if (currentState.mode === "group") {
     renderChips(panel, groups, config);
   }
-
-  // Results List Panel - THIS IS THE KEY ADDITION
+  // Results List Panel
   console.log("[GroupByCode] Creating results list container");
   const resultsList = document.createElement("div");
   resultsList.className = "jav-results-list";
   resultsList.style.display = "none";
   panel.appendChild(resultsList);
   console.log("[GroupByCode] Results list container added to panel");
-
   document.body.appendChild(panel);
   console.log("[GroupByCode] Panel appended to body");
-
   applyCombinedFilter(config);
 }
 

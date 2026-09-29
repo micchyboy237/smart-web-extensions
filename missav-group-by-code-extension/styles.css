@@ -1,5 +1,4 @@
 /* MissAV Group by Code Extension Styles - Enhanced UI */
-
 /* ── Floating Panel ─────────────────────── */
 #jav-group-by-code-panel {
   position: fixed !important;
@@ -24,14 +23,13 @@
     -apple-system,
     sans-serif;
 }
-
 #jav-group-by-code-panel .jav-panel-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
-
 #jav-group-by-code-panel .jav-panel-toggle {
   width: 22px;
   height: 22px;
@@ -51,16 +49,13 @@
   align-items: center;
   justify-content: center;
 }
-
 #jav-group-by-code-panel .jav-refresh-btn {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
 }
-
 #jav-group-by-code-panel .jav-refresh-btn:hover {
   background: rgba(255, 255, 255, 0.25);
 }
-
 #jav-group-by-code-panel.jav-panel-collapsed {
   padding: 0 !important;
   gap: 0 !important;
@@ -72,15 +67,12 @@
   max-height: unset !important;
   overflow: visible !important;
 }
-
 #jav-group-by-code-panel.jav-panel-collapsed > *:not(.jav-panel-header) {
   display: none !important;
 }
-
 #jav-group-by-code-panel.jav-panel-collapsed .jav-panel-header {
   padding: 4px;
 }
-
 /* ── Mode Toggle Buttons ────────────────── */
 #jav-group-by-code-panel .jav-mode-toggle {
   display: flex;
@@ -89,7 +81,6 @@
   border-radius: 6px;
   padding: 2px;
 }
-
 #jav-group-by-code-panel .jav-mode-btn {
   padding: 4px 8px;
   border: none;
@@ -102,24 +93,21 @@
   justify-content: center;
   transition: all 0.15s ease;
 }
-
 #jav-group-by-code-panel .jav-mode-btn:hover {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
 }
-
 #jav-group-by-code-panel .jav-mode-btn.active {
   background: #fbbf24;
   color: #1e1e2e;
 }
-
 /* ── Search Bar ─────────────────────────── */
 #jav-group-by-code-panel .jav-search-container {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
 }
-
 #jav-group-by-code-panel .jav-search-input {
   width: 100%;
   padding: 8px 12px;
@@ -132,24 +120,21 @@
   transition: all 0.15s ease;
   box-sizing: border-box;
 }
-
 #jav-group-by-code-panel .jav-search-input:focus {
   border-color: #fbbf24;
   background: rgba(255, 255, 255, 0.12);
 }
-
 #jav-group-by-code-panel .jav-search-input::placeholder {
   color: rgba(255, 255, 255, 0.4);
 }
-
 /* ── Filter Tags ────────────────────────── */
 #jav-group-by-code-panel .jav-filters-container {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  flex-shrink: 0;
 }
-
 #jav-group-by-code-panel .jav-filter-tag {
   display: inline-flex;
   align-items: center;
@@ -162,7 +147,6 @@
   color: #60a5fa;
   border: 1px solid rgba(59, 130, 246, 0.3);
 }
-
 #jav-group-by-code-panel .jav-filter-remove {
   cursor: pointer;
   opacity: 0.7;
@@ -170,11 +154,9 @@
   display: flex;
   align-items: center;
 }
-
 #jav-group-by-code-panel .jav-filter-remove:hover {
   opacity: 1;
 }
-
 #jav-group-by-code-panel .jav-add-filter-input {
   flex: 1;
   min-width: 80px;
@@ -187,16 +169,13 @@
   outline: none;
   box-sizing: border-box;
 }
-
 #jav-group-by-code-panel .jav-add-filter-input:focus {
   border-color: #60a5fa;
   background: rgba(255, 255, 255, 0.05);
 }
-
 #jav-group-by-code-panel .jav-add-filter-input::placeholder {
   color: rgba(255, 255, 255, 0.3);
 }
-
 /* ── Group Chips ────────────────────────── */
 #jav-group-by-code-panel .jav-panel-label {
   font-size: 11px;
@@ -204,20 +183,30 @@
   color: #fbbf24;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  flex-shrink: 0;
 }
-
 #jav-group-by-code-panel .jav-chips-container {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  max-height: 250px; /* Limit height to ~3 rows of chips */
+  overflow-y: auto; /* Scroll internally if too many chips */
+  padding-right: 4px; /* Space for scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
-
+#jav-group-by-code-panel .jav-chips-container::-webkit-scrollbar {
+  width: 4px;
+}
+#jav-group-by-code-panel .jav-chips-container::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
 #jav-group-by-code-panel .jav-chip-wrapper {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
-
 #jav-group-by-code-panel .jav-chip {
   padding: 4px 12px;
   border-radius: 999px;
@@ -231,18 +220,15 @@
   user-select: none;
   white-space: nowrap;
 }
-
 #jav-group-by-code-panel .jav-chip:hover {
   background: rgba(255, 255, 255, 0.18);
   color: #fff;
 }
-
 #jav-group-by-code-panel .jav-chip.jav-chip-active {
   background: #fbbf24;
   color: #1e1e2e;
   border-color: #fbbf24;
 }
-
 #jav-group-by-code-panel .jav-expand-btn {
   padding: 4px;
   border: none;
@@ -255,21 +241,31 @@
   justify-content: center;
   transition: all 0.15s ease;
 }
-
 #jav-group-by-code-panel .jav-expand-btn:hover {
   background: rgba(255, 255, 255, 0.2);
   color: #fff;
 }
-
 /* ── Results List Panel ─────────────────── */
 #jav-group-by-code-panel .jav-results-list {
   margin-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   padding-top: 12px;
-  max-height: 400px;
+  flex: 1; /* Take remaining space in the flex container */
+  min-height: 100px; /* Ensure it doesn't disappear completely */
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
-
+#jav-group-by-code-panel .jav-results-list::-webkit-scrollbar {
+  width: 6px;
+}
+#jav-group-by-code-panel .jav-results-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+#jav-group-by-code-panel .jav-results-list::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+}
 #jav-group-by-code-panel .jav-results-header {
   display: flex;
   justify-content: space-between;
@@ -278,14 +274,12 @@
   padding-bottom: 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
-
 #jav-group-by-code-panel .jav-results-title {
   font-size: 13px;
   font-weight: 700;
   color: #fbbf24;
   text-transform: uppercase;
 }
-
 #jav-group-by-code-panel .jav-copy-code-btn {
   padding: 4px 8px;
   border: 1px solid rgba(255, 255, 255, 0.2);
@@ -299,19 +293,16 @@
   font-size: 11px;
   transition: all 0.15s ease;
 }
-
 #jav-group-by-code-panel .jav-copy-code-btn:hover {
   background: rgba(255, 255, 255, 0.15);
   color: #fff;
   border-color: #fbbf24;
 }
-
 #jav-group-by-code-panel .jav-results-items {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-
 #jav-group-by-code-panel .jav-result-card {
   display: flex;
   gap: 10px;
@@ -322,13 +313,11 @@
   cursor: pointer;
   transition: all 0.15s ease;
 }
-
 #jav-group-by-code-panel .jav-result-card:hover {
   background: rgba(255, 255, 255, 0.1);
   border-color: rgba(251, 191, 36, 0.3);
   transform: translateX(2px);
 }
-
 #jav-group-by-code-panel .jav-result-index {
   width: 24px;
   height: 24px;
@@ -342,7 +331,6 @@
   font-weight: 700;
   flex-shrink: 0;
 }
-
 #jav-group-by-code-panel .jav-result-thumbnail {
   position: relative;
   width: 80px;
@@ -351,13 +339,11 @@
   overflow: hidden;
   flex-shrink: 0;
 }
-
 #jav-group-by-code-panel .jav-result-thumbnail img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-
 #jav-group-by-code-panel .jav-result-duration {
   position: absolute;
   bottom: 2px;
@@ -369,7 +355,6 @@
   border-radius: 3px;
   font-weight: 600;
 }
-
 #jav-group-by-code-panel .jav-result-info {
   flex: 1;
   display: flex;
@@ -378,7 +363,6 @@
   min-width: 0;
   align-items: flex-start; /* Ensure text aligns left */
 }
-
 #jav-group-by-code-panel .jav-result-title {
   font-size: 12px;
   color: #e0e0e0;
@@ -392,11 +376,9 @@
   max-height: calc(1.4em * 3);
   transition: color 0.15s ease;
 }
-
 #jav-group-by-code-panel .jav-result-title:hover {
   color: #fbbf24;
 }
-
 /* ── Toast Notification ─────────────────── */
 .jav-toast {
   position: fixed;
@@ -416,12 +398,10 @@
   z-index: 2147483647;
   pointer-events: none;
 }
-
 .jav-toast.jav-toast-show {
   transform: translateX(-50%) translateY(0);
   opacity: 1;
 }
-
 /* ── Highlight ──────────────────────────── */
 .jav-grouped-highlight {
   outline: 3px solid #fbbf24 !important;
@@ -433,7 +413,6 @@
     box-shadow 0.15s ease;
   box-shadow: 0 0 16px rgba(251, 191, 36, 0.25);
 }
-
 .jav-grouped-highlight::after {
   content: "";
   position: absolute;
@@ -443,7 +422,6 @@
   pointer-events: none;
   z-index: 10;
 }
-
 /* ── Unprioritized Items ────────────────── */
 .jav-grouped-hidden {
   opacity: 0.5;

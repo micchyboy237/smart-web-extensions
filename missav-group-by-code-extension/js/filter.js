@@ -188,13 +188,45 @@ function applyCombinedFilter(config) {
   console.log(
     `[GroupByCode] Filter result: ${prioritizedItems.length} matched, ${unprioritizedItems.length} unmatched`,
   );
+
+  // Sort prioritized items by code count (descending) for consistent ordering
+  if (mode === "group" && prioritizedItems.length > 0) {
+    prioritizedItems.sort((a, b) => {
+      const anchorA = a.querySelector(config.videoAnchorSelector);
+      const anchorB = b.querySelector(config.videoAnchorSelector);
+      const codeA = anchorA
+        ? extractCode(anchorA.getAttribute(config.altAttr))
+        : null;
+      const codeB = anchorB
+        ? extractCode(anchorB.getAttribute(config.altAttr))
+        : null;
+      const countA = codeA ? activeCodeCounts.get(codeA) || 0 : 0;
+      const countB = codeB ? activeCodeCounts.get(codeB) || 0 : 0;
+      return countB - countA;
+    });
+  }
+
   rearrangeItems(prioritizedItems, unprioritizedItems, config);
   if (mode === "group") {
     const panel = document.getElementById(config.containerId);
     if (panel) {
-      // Build dynamic groups from ALL matched items, not just stored groups
+      // When a group is selected, build chips from ALL items matching search/filters
+      // (not just the selected group's items) so users can see other available codes
+      const itemsForChipCalculation = selectedCode
+        ? [...prioritizedItems, ...unprioritizedItems].filter((item) => {
+            // Only include items that match search/filter criteria
+            const titleEl = item.querySelector(config.titleSelector);
+            const titleText = titleEl?.textContent?.trim() || "";
+            if (primaryRegex && !primaryRegex.test(titleText)) return false;
+            const failedFilters = filterRegexes.filter(
+              ({ regex }) => !regex.test(titleText),
+            );
+            return failedFilters.length === 0;
+          })
+        : prioritizedItems;
+
       const dynamicGroupMap = new Map();
-      prioritizedItems.forEach((container) => {
+      itemsForChipCalculation.forEach((container) => {
         const videoAnchor = container.querySelector(config.videoAnchorSelector);
         if (videoAnchor) {
           const rawAlt = videoAnchor.getAttribute(config.altAttr);
