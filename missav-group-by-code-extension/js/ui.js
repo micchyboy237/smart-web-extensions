@@ -329,18 +329,14 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
   console.log(`[GroupByCode] 🏷️ Rendering ${groups.length} chips`);
   const existingChips = panel.querySelector(".jav-chips-container");
   if (existingChips) existingChips.remove();
-
   const existingLabel = panel.querySelector(".jav-panel-label");
   if (existingLabel) existingLabel.remove();
-
   const label = document.createElement("span");
   label.className = "jav-panel-label";
   label.textContent = "Filter by Code";
   panel.appendChild(label);
-
   const chipsContainer = document.createElement("div");
   chipsContainer.className = "jav-chips-container";
-
   const isAllActive = currentSelectedCode === null;
   const allChip = document.createElement("span");
   allChip.className = `jav-chip ${isAllActive ? config.activeChipClass : ""}`;
@@ -349,7 +345,6 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
     resetAll(config);
   });
   chipsContainer.appendChild(allChip);
-
   groups.forEach((group) => {
     if (
       group.count < config.dynamicMinCount &&
@@ -358,23 +353,19 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
       return;
     }
     if (group.code === currentSelectedCode && group.count < 1) return;
-
     const chipWrapper = document.createElement("div");
     chipWrapper.className = "jav-chip-wrapper";
-
     const chip = document.createElement("span");
     const isActive = group.code === currentSelectedCode;
     chip.className = `jav-chip ${isActive ? config.activeChipClass : ""}`;
     chip.textContent = `${group.code.toUpperCase()} (${group.count})`;
     chip.dataset.code = group.code;
-
     chip.addEventListener("click", () => {
       console.log(`[GroupByCode] Chip clicked: ${group.code}`);
       currentState.selectedCode = group.code;
       setActiveChip(chip, config);
       applyCombinedFilter(config);
     });
-
     const expandBtn = document.createElement("button");
     expandBtn.className = "jav-expand-btn";
     expandBtn.innerHTML = ICONS.chevronDown;
@@ -384,12 +375,10 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
       console.log(`[GroupByCode] Expand button clicked for: ${group.code}`);
       toggleGroupExpansion(group.code, config);
     });
-
     chipWrapper.appendChild(chip);
     chipWrapper.appendChild(expandBtn);
     chipsContainer.appendChild(chipWrapper);
   });
-
   panel.appendChild(chipsContainer);
   console.log("[GroupByCode] ✅ Chips rendered");
 }

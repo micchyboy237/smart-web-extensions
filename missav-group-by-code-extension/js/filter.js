@@ -237,7 +237,6 @@ function resetAll(config) {
   if (panel) {
     const searchInput = panel.querySelector(".jav-search-input");
     if (searchInput) searchInput.value = "";
-
     const filtersContainer = panel.querySelector(".jav-filters-container");
     if (filtersContainer) {
       const existingTags = filtersContainer.querySelectorAll(".jav-filter-tag");
@@ -260,6 +259,9 @@ function resetAll(config) {
       hideResultsList();
     }
   }
+
+  // Ensure no residual filter state
+  applyCombinedFilter(config);
 }
 
 if (typeof module !== "undefined" && module.exports) {

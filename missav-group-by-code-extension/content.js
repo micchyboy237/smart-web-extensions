@@ -10,7 +10,19 @@ function checkForUpdates(config) {
     return;
   }
 
+  // Skip if filters/search are active to prevent overwriting filtered state
+  const hasActiveFilters =
+    (currentState.mode === "group" && currentState.selectedCode !== null) ||
+    (currentState.searchTerm && currentState.searchTerm.trim() !== "") ||
+    currentState.filters.length > 0;
+
+  if (hasActiveFilters) {
+    console.log("[GroupByCode] ⏭️ Skipping update check (filters active)");
+    return;
+  }
+
   console.log("[GroupByCode] 🔍 Checking for content updates...");
+
   const { groups, totalItems } = extractGroupedCodes(config);
   const itemCountChanged =
     Math.abs(totalItems - currentState.lastItemCount) > 5;
