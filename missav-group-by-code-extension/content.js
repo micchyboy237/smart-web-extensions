@@ -9,7 +9,6 @@ function checkForUpdates(config) {
     );
     return;
   }
-
   console.log("[GroupByCode] 🔍 Checking for content updates...");
   const { groups, totalItems } = extractGroupedCodes(config);
   const itemCountChanged =
@@ -23,11 +22,11 @@ function checkForUpdates(config) {
     console.log(
       `[GroupByCode] 📄 Content change detected. Items: ${currentState.lastItemCount} -> ${totalItems}`,
     );
+    // CRITICAL FIX: Always update groups with fresh DOM references BEFORE re-applying filters
     currentState.groups = groups;
     currentState.lastItemCount = totalItems;
     saveOriginalOrder();
 
-    // Check if filters are active
     const hasActiveFilters =
       (currentState.mode === "group" && currentState.selectedCode !== null) ||
       (currentState.searchTerm && currentState.searchTerm.trim() !== "") ||
@@ -37,8 +36,20 @@ function checkForUpdates(config) {
     if (panel && currentState.mode === "group") {
       if (hasActiveFilters) {
         console.log(
-          "[GroupByCode] Filters active, re-applying with updated groups",
+          "[GroupByCode] Filters active, re-applying with FRESH groups",
         );
+        // If a code is selected, verify it still exists in new groups
+        if (currentState.selectedCode) {
+          const stillExists = groups.some(
+            (g) => g.code === currentState.selectedCode,
+          );
+          if (!stillExists) {
+            console.warn(
+              `[GroupByCode] ⚠️ Selected code "${currentState.selectedCode}" no longer exists after content update, clearing selection`,
+            );
+            currentState.selectedCode = null;
+          }
+        }
         applyCombinedFilter(config);
       } else {
         renderChips(panel, groups, config, currentState.selectedCode);
