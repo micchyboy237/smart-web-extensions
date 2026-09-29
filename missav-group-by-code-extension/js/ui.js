@@ -3,8 +3,12 @@
  */
 
 function setActiveChip(activeChip, config) {
+  console.log("[GroupByCode] 🎯 Setting active chip");
   const panel = document.getElementById(config.containerId);
-  if (!panel) return;
+  if (!panel) {
+    console.log("[GroupByCode] ⚠️ Panel not found for setActiveChip");
+    return;
+  }
 
   panel.querySelectorAll(".jav-chip").forEach((c) => {
     c.classList.remove(config.activeChipClass);
@@ -17,12 +21,14 @@ function setActiveChip(activeChip, config) {
 
 function handleSearchInput(event, config) {
   currentState.searchTerm = event.target.value;
+  console.log(`[GroupByCode] 🔍 Search term: "${currentState.searchTerm}"`);
   applyCombinedFilter(config);
 }
 
 function handleAddFilter(event, config) {
   if (event.key === "Enter" && event.target.value.trim()) {
     const newFilter = event.target.value.trim();
+    console.log(`[GroupByCode] ➕ Adding filter: "${newFilter}"`);
     if (!currentState.filters.includes(newFilter)) {
       currentState.filters.push(newFilter);
       renderFilters(config);
@@ -33,17 +39,25 @@ function handleAddFilter(event, config) {
 }
 
 function removeFilter(filterTerm, config) {
+  console.log(`[GroupByCode] ➖ Removing filter: "${filterTerm}"`);
   currentState.filters = currentState.filters.filter((f) => f !== filterTerm);
   renderFilters(config);
   applyCombinedFilter(config);
 }
 
 function renderFilters(config) {
+  console.log("[GroupByCode] 🏷️ Rendering filters:", currentState.filters);
   const panel = document.getElementById(config.containerId);
-  if (!panel) return;
+  if (!panel) {
+    console.log("[GroupByCode] ⚠️ Panel not found for renderFilters");
+    return;
+  }
 
   const filtersContainer = panel.querySelector(".jav-filters-container");
-  if (!filtersContainer) return;
+  if (!filtersContainer) {
+    console.log("[GroupByCode] ⚠️ Filters container not found");
+    return;
+  }
 
   const existingTags = filtersContainer.querySelectorAll(".jav-filter-tag");
   existingTags.forEach((tag) => tag.remove());
@@ -67,12 +81,16 @@ function renderFilters(config) {
 }
 
 function handleModeToggle(mode, config) {
+  console.log(`[GroupByCode] 🔄 Toggling mode to: ${mode}`);
   currentState.mode = mode;
   currentState.selectedCode = null;
   currentState.expandedGroup = null;
 
   const panel = document.getElementById(config.containerId);
-  if (!panel) return;
+  if (!panel) {
+    console.log("[GroupByCode] ⚠️ Panel not found for mode toggle");
+    return;
+  }
 
   panel.querySelectorAll(".jav-mode-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.mode === mode);
@@ -97,7 +115,7 @@ function handleModeToggle(mode, config) {
 }
 
 function handleRefresh(config) {
-  console.log("[GroupByCode] 🔄 Manual Refresh...");
+  console.log("[GroupByCode] 🔄 Manual Refresh triggered");
   const { groups, totalItems } = extractGroupedCodes(config);
 
   if (groups.length > 0) {
@@ -107,47 +125,87 @@ function handleRefresh(config) {
     currentState.expandedGroup = null;
     saveOriginalOrder();
     renderEnhancedPanel(groups, config);
+  } else {
+    console.log("[GroupByCode] ⚠️ No groups found after refresh");
   }
 }
 
 function toggleGroupExpansion(groupCode, config) {
+  console.log(`[GroupByCode] 📂 Toggling expansion for group: ${groupCode}`);
   const panel = document.getElementById(config.containerId);
-  if (!panel) return;
+  if (!panel) {
+    console.log("[GroupByCode] ⚠️ Panel not found for toggleGroupExpansion");
+    return;
+  }
 
   const resultsList = panel.querySelector(".jav-results-list");
-  const groupHeader = panel.querySelector(
-    `.jav-group-header[data-code="${groupCode}"]`,
-  );
+  if (!resultsList) {
+    console.log("[GroupByCode] ⚠️ Results list element not found in panel");
+    console.log(
+      "[GroupByCode] Panel children:",
+      Array.from(panel.children).map((c) => c.className),
+    );
+    return;
+  }
 
-  if (!resultsList || !groupHeader) return;
-
-  // Toggle expansion
   if (currentState.expandedGroup === groupCode) {
+    console.log(`[GroupByCode] Closing results for ${groupCode}`);
     currentState.expandedGroup = null;
     hideResultsList();
 
-    // Update chevron
-    const chevron = groupHeader.querySelector(".jav-chevron");
-    if (chevron) chevron.innerHTML = ICONS.chevronDown;
+    const groupHeader = panel.querySelector(
+      `.jav-group-header[data-code="${groupCode}"]`,
+    );
+    if (groupHeader) {
+      const chevron = groupHeader.querySelector(".jav-chevron");
+      if (chevron) chevron.innerHTML = ICONS.chevronDown;
+    }
   } else {
+    console.log(`[GroupByCode] Opening results for ${groupCode}`);
     currentState.expandedGroup = groupCode;
     showResultsListForGroup(groupCode, config);
 
-    // Update chevron
-    const chevron = groupHeader.querySelector(".jav-chevron");
-    if (chevron) chevron.innerHTML = ICONS.chevronUp;
+    const groupHeader = panel.querySelector(
+      `.jav-group-header[data-code="${groupCode}"]`,
+    );
+    if (groupHeader) {
+      const chevron = groupHeader.querySelector(".jav-chevron");
+      if (chevron) chevron.innerHTML = ICONS.chevronUp;
+    }
   }
 }
 
 function showResultsListForGroup(groupCode, config) {
+  console.log(`[GroupByCode] 📋 Showing results list for: ${groupCode}`);
   const panel = document.getElementById(config.containerId);
-  if (!panel) return;
+  if (!panel) {
+    console.log("[GroupByCode] ⚠️ Panel not found");
+    return;
+  }
 
   const group = currentState.groups.find((g) => g.code === groupCode);
-  if (!group) return;
+  if (!group) {
+    console.log(`[GroupByCode] ⚠️ Group not found for code: ${groupCode}`);
+    console.log(
+      "[GroupByCode] Available groups:",
+      currentState.groups.map((g) => g.code),
+    );
+    return;
+  }
+
+  console.log(
+    `[GroupByCode] Found group with ${group.elements.length} elements`,
+  );
 
   const resultsList = panel.querySelector(".jav-results-list");
-  if (!resultsList) return;
+  if (!resultsList) {
+    console.log("[GroupByCode] ⚠️ Results list container not found in panel");
+    console.log(
+      "[GroupByCode] Panel HTML structure:",
+      panel.innerHTML.substring(0, 500),
+    );
+    return;
+  }
 
   // Clear previous content
   resultsList.innerHTML = "";
@@ -168,6 +226,7 @@ function showResultsListForGroup(groupCode, config) {
   });
 
   resultsList.appendChild(header);
+  console.log("[GroupByCode] Added results header");
 
   // Add items
   const itemsContainer = document.createElement("div");
@@ -180,13 +239,16 @@ function showResultsListForGroup(groupCode, config) {
 
   resultsList.appendChild(itemsContainer);
   resultsList.style.display = "block";
+  console.log(
+    `[GroupByCode] ✅ Results list displayed with ${group.elements.length} items`,
+  );
 }
 
 function createResultCard(element, config, index) {
+  console.log(`[GroupByCode] 🃏 Creating result card #${index}`);
   const card = document.createElement("div");
   card.className = "jav-result-card";
 
-  // Extract data from element
   const videoAnchor = element.querySelector(config.videoAnchorSelector);
   const titleEl = element.querySelector(config.titleSelector);
   const img = element.querySelector("img");
@@ -197,6 +259,10 @@ function createResultCard(element, config, index) {
   const imgSrc = img?.src || "";
   const duration = durationEl?.textContent?.trim() || "";
   const dvdId = videoAnchor?.getAttribute("alt") || "";
+
+  console.log(
+    `[GroupByCode] Card data: title="${title.substring(0, 30)}...", id="${dvdId}", img="${imgSrc ? "yes" : "no"}"`,
+  );
 
   card.innerHTML = `
     <div class="jav-result-index">${index}</div>
@@ -210,16 +276,14 @@ function createResultCard(element, config, index) {
     </div>
   `;
 
-  // Click to highlight on page
   card.addEventListener("click", (e) => {
-    if (e.target.tagName === "A") return; // Don't interfere with link clicks
+    if (e.target.tagName === "A") return;
 
-    // Remove previous highlights
+    console.log(`[GroupByCode] 👆 Result card clicked, highlighting item`);
     document.querySelectorAll(".jav-grouped-highlight").forEach((el) => {
       el.classList.remove("jav-grouped-highlight");
     });
 
-    // Highlight this item
     element.classList.add("jav-grouped-highlight");
     element.scrollIntoView({ behavior: "smooth", block: "center" });
   });
@@ -228,17 +292,25 @@ function createResultCard(element, config, index) {
 }
 
 function hideResultsList() {
+  console.log("[GroupByCode] 🙈 Hiding results list");
   const panel = document.getElementById(DEFAULT_CONFIG.containerId);
-  if (!panel) return;
+  if (!panel) {
+    console.log("[GroupByCode] ⚠️ Panel not found for hideResultsList");
+    return;
+  }
 
   const resultsList = panel.querySelector(".jav-results-list");
   if (resultsList) {
     resultsList.style.display = "none";
     resultsList.innerHTML = "";
+    console.log("[GroupByCode] Results list hidden and cleared");
+  } else {
+    console.log("[GroupByCode] ⚠️ Results list element not found");
   }
 }
 
 function showToast(message) {
+  console.log(`[GroupByCode] 🍞 Toast: ${message}`);
   const toast = document.createElement("div");
   toast.className = "jav-toast";
   toast.textContent = message;
@@ -255,6 +327,7 @@ function showToast(message) {
 }
 
 function renderChips(panel, groups, config, currentSelectedCode = null) {
+  console.log(`[GroupByCode] 🏷️ Rendering ${groups.length} chips`);
   const existingChips = panel.querySelector(".jav-chips-container");
   if (existingChips) existingChips.remove();
 
@@ -269,7 +342,6 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
   const chipsContainer = document.createElement("div");
   chipsContainer.className = "jav-chips-container";
 
-  // "All" chip
   const isAllActive = currentSelectedCode === null;
   const allChip = document.createElement("span");
   allChip.className = `jav-chip ${isAllActive ? config.activeChipClass : ""}`;
@@ -279,7 +351,6 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
   });
   chipsContainer.appendChild(allChip);
 
-  // Group chips with expand functionality
   groups.forEach((group) => {
     if (
       group.count < config.dynamicMinCount &&
@@ -299,6 +370,7 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
     chip.dataset.code = group.code;
 
     chip.addEventListener("click", () => {
+      console.log(`[GroupByCode] Chip clicked: ${group.code}`);
       currentState.selectedCode = group.code;
       setActiveChip(chip, config);
       applyCombinedFilter(config);
@@ -310,6 +382,7 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
     expandBtn.title = "Show results list";
     expandBtn.addEventListener("click", (e) => {
       e.stopPropagation();
+      console.log(`[GroupByCode] Expand button clicked for: ${group.code}`);
       toggleGroupExpansion(group.code, config);
     });
 
@@ -319,11 +392,16 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
   });
 
   panel.appendChild(chipsContainer);
+  console.log("[GroupByCode] ✅ Chips rendered");
 }
 
 function renderEnhancedPanel(groups, config) {
+  console.log("[GroupByCode] 🎨 Rendering enhanced panel");
   const existing = document.getElementById(config.containerId);
-  if (existing) existing.remove();
+  if (existing) {
+    console.log("[GroupByCode] Removing existing panel");
+    existing.remove();
+  }
 
   currentState = {
     ...currentState,
@@ -415,13 +493,17 @@ function renderEnhancedPanel(groups, config) {
     renderChips(panel, groups, config);
   }
 
-  // Results List Panel
+  // Results List Panel - THIS IS THE KEY ADDITION
+  console.log("[GroupByCode] Creating results list container");
   const resultsList = document.createElement("div");
   resultsList.className = "jav-results-list";
   resultsList.style.display = "none";
   panel.appendChild(resultsList);
+  console.log("[GroupByCode] Results list container added to panel");
 
   document.body.appendChild(panel);
+  console.log("[GroupByCode] Panel appended to body");
+
   applyCombinedFilter(config);
 }
 

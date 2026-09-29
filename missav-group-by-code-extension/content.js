@@ -2,13 +2,15 @@
  * content.js - MissAV Group by Code Extension (Entry Point)
  */
 
-// ============================================================================
-// LIVE UPDATE LOGIC
-// ============================================================================
-
 function checkForUpdates(config) {
-  if (!currentState.isActive || currentState.isRearranging) return;
+  if (!currentState.isActive || currentState.isRearranging) {
+    console.log(
+      "[GroupByCode] ⏭️ Skipping update check (inactive or rearranging)",
+    );
+    return;
+  }
 
+  console.log("[GroupByCode] 🔍 Checking for content updates...");
   const { groups, totalItems } = extractGroupedCodes(config);
   const itemCountChanged =
     Math.abs(totalItems - currentState.lastItemCount) > 5;
@@ -30,12 +32,10 @@ function checkForUpdates(config) {
       renderChips(panel, groups, config, currentState.selectedCode);
       applyCombinedFilter(config);
     }
+  } else {
+    console.log("[GroupByCode] No significant changes detected");
   }
 }
-
-// ============================================================================
-// INITIALIZATION
-// ============================================================================
 
 function initExtension() {
   console.log("[GroupByCode] 🚀 Extension initializing on missav.ws");
@@ -48,11 +48,15 @@ function initExtension() {
 }
 
 function activateExtension() {
+  console.log("[GroupByCode] Activating extension...");
   const config = { ...DEFAULT_CONFIG };
   currentState.config = config;
 
   const items = document.querySelectorAll(config.itemSelector);
+  console.log(`[GroupByCode] Found ${items.length} items on page`);
+
   if (items.length === 0) {
+    console.log("[GroupByCode] ⚠️ No items found, retrying in 2s...");
     setTimeout(() => activateExtension(), 2000);
     return;
   }
@@ -63,7 +67,7 @@ function activateExtension() {
   if (groups.length > 0) {
     currentState.lastItemCount = totalItems;
     renderEnhancedPanel(groups, config);
-    console.log("[GroupByCode] ✅ Extension activated!");
+    console.log("[GroupByCode] ✅ Extension activated successfully!");
   } else {
     console.warn("[GroupByCode] ⚠️ No code groups found initially");
   }
@@ -72,8 +76,12 @@ function activateExtension() {
 initExtension();
 
 // Live Update Observer
+console.log("[GroupByCode] Setting up MutationObserver");
 const observer = new MutationObserver(() => {
-  if (currentState.isRearranging) return;
+  if (currentState.isRearranging) {
+    console.log("[GroupByCode] ⏭️ Skipping mutation (rearranging)");
+    return;
+  }
 
   if (!currentState.isActive) {
     const items = document.querySelectorAll(DEFAULT_CONFIG.itemSelector);
@@ -81,6 +89,9 @@ const observer = new MutationObserver(() => {
       items.length > 0 &&
       !document.getElementById(DEFAULT_CONFIG.containerId)
     ) {
+      console.log(
+        "[GroupByCode] Items detected but panel not active, scheduling activation",
+      );
       clearTimeout(updateTimer);
       updateTimer = setTimeout(activateExtension, 1000);
     }

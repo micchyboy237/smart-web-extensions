@@ -18,14 +18,21 @@ function extractCode(text) {
 }
 
 function extractGroupedCodes(config) {
+  console.log("[GroupByCode] 🔍 Extracting grouped codes...");
   const items = document.querySelectorAll(config.itemSelector);
+  console.log(
+    `[GroupByCode] Found ${items.length} items with selector: ${config.itemSelector}`,
+  );
+
   const codeMap = new Map();
   let skipped = 0;
 
-  items.forEach((item) => {
+  items.forEach((item, idx) => {
     const videoAnchor = item.querySelector(config.videoAnchorSelector);
     if (!videoAnchor) {
       skipped++;
+      if (idx < 3)
+        console.log(`[GroupByCode] ⚠️ Item ${idx}: No video anchor found`);
       return;
     }
 
@@ -34,6 +41,10 @@ function extractGroupedCodes(config) {
 
     if (!code) {
       skipped++;
+      if (idx < 3)
+        console.log(
+          `[GroupByCode] ⚠️ Item ${idx}: No code extracted from alt="${rawAlt}"`,
+        );
       return;
     }
 
@@ -47,10 +58,21 @@ function extractGroupedCodes(config) {
     entry.elements.push(item);
   });
 
+  console.log(
+    `[GroupByCode] Skipped ${skipped} items, found ${codeMap.size} unique codes`,
+  );
+
   const result = Array.from(codeMap.values())
     .filter((g) => g.count >= config.minCount)
     .sort((a, b) => b.count - a.count)
     .slice(0, config.topN);
+
+  console.log(
+    `[GroupByCode] ✅ Extracted ${result.length} groups (top ${config.topN})`,
+  );
+  result.forEach((g) => {
+    console.log(`[GroupByCode]   - ${g.code.toUpperCase()}: ${g.count} items`);
+  });
 
   return { groups: result, totalItems: items.length };
 }

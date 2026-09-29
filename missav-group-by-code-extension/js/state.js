@@ -13,7 +13,7 @@ let currentState = {
   lastItemCount: 0,
   originalOrder: [],
   isRearranging: false,
-  expandedGroup: null, // Track which group panel is expanded
+  expandedGroup: null,
 };
 
 function getState() {
@@ -21,10 +21,12 @@ function getState() {
 }
 
 function setState(updates) {
+  console.log("[GroupByCode] 📦 State update:", updates);
   currentState = { ...currentState, ...updates };
 }
 
 function resetState() {
+  console.log("[GroupByCode] 🔄 Resetting state");
   currentState = {
     groups: [],
     selectedCode: null,
