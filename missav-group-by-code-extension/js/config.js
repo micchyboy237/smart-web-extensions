@@ -2,14 +2,18 @@
  * config.js - Configuration & Constants
  */
 
+// In js/config.js
 const DEFAULT_CONFIG = {
   minCount: 1,
   dynamicMinCount: 1,
   topN: 10,
-  itemSelector: ".thumbnail.group",
+  // Only match the parent flex container, not the thumbnail itself
+  itemSelector:
+    ".order-last .flex, .thumbnail.group:not(.order-last .flex .thumbnail.group)",
   videoAnchorSelector: "a:has(video)",
   altAttr: "alt",
-  titleSelector: 'a[x-text="item.full_title"], .my-2.text-sm a',
+  titleSelector:
+    'a[x-text="item.full_title"], .my-2.text-sm a, .text-secondary',
   containerId: "jav-group-by-code-panel",
   activeChipClass: "jav-chip-active",
   hiddenItemClass: "jav-grouped-hidden",
