@@ -258,10 +258,10 @@ function createResultCard(element, config, index) {
   const title = titleEl?.textContent?.trim() || "Untitled";
   const imgSrc = img?.src || "";
   const duration = durationEl?.textContent?.trim() || "";
-  const dvdId = videoAnchor?.getAttribute("alt") || "";
+  // dvdId is no longer needed for display
 
   console.log(
-    `[GroupByCode] Card data: title="${title.substring(0, 30)}...", id="${dvdId}", img="${imgSrc ? "yes" : "no"}"`,
+    `[GroupByCode] Card data: title="${title.substring(0, 30)}...", img="${imgSrc ? "yes" : "no"}"`,
   );
 
   card.innerHTML = `
@@ -272,7 +272,6 @@ function createResultCard(element, config, index) {
     </div>
     <div class="jav-result-info">
       <a href="${href}" class="jav-result-title" target="_blank">${title}</a>
-      <span class="jav-result-id">${dvdId}</span>
     </div>
   `;
 

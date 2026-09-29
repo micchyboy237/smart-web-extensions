@@ -376,26 +376,25 @@
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  align-items: flex-start; /* Ensure text aligns left */
 }
 
 #jav-group-by-code-panel .jav-result-title {
   font-size: 12px;
   color: #e0e0e0;
   text-decoration: none;
+  /* Allow up to 3 lines with ellipsis */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  max-height: calc(1.4em * 3);
   transition: color 0.15s ease;
 }
 
 #jav-group-by-code-panel .jav-result-title:hover {
   color: #fbbf24;
-}
-
-#jav-group-by-code-panel .jav-result-id {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.5);
-  font-family: monospace;
 }
 
 /* ── Toast Notification ─────────────────── */
