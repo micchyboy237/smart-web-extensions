@@ -248,17 +248,20 @@ function createResultCard(element, config, index) {
   console.log(`[GroupByCode] 🃏 Creating result card #${index}`);
   const card = document.createElement("div");
   card.className = "jav-result-card";
-
   const videoAnchor = element.querySelector(config.videoAnchorSelector);
   const titleEl = element.querySelector(config.titleSelector);
   const img = element.querySelector("img");
   const durationEl = element.querySelector(".absolute.bottom-1.right-1");
-
   const href = videoAnchor?.href || "#";
   const title = titleEl?.textContent?.trim() || "Untitled";
-  const imgSrc = img?.src || "";
+
+  // Get the actual image source - prefer data-src for lazy-loaded images
+  let imgSrc = "";
+  if (img) {
+    imgSrc = img.getAttribute("data-src") || img.dataset.src || img.src || "";
+  }
+
   const duration = durationEl?.textContent?.trim() || "";
-  // dvdId is no longer needed for display
 
   console.log(
     `[GroupByCode] Card data: title="${title.substring(0, 30)}...", img="${imgSrc ? "yes" : "no"}"`,
@@ -277,12 +280,10 @@ function createResultCard(element, config, index) {
 
   card.addEventListener("click", (e) => {
     if (e.target.tagName === "A") return;
-
     console.log(`[GroupByCode] 👆 Result card clicked, highlighting item`);
     document.querySelectorAll(".jav-grouped-highlight").forEach((el) => {
       el.classList.remove("jav-grouped-highlight");
     });
-
     element.classList.add("jav-grouped-highlight");
     element.scrollIntoView({ behavior: "smooth", block: "center" });
   });
