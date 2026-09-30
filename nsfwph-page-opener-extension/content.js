@@ -1,26 +1,21 @@
 (function () {
   if (document.getElementById("pto-panel")) return;
-
   // ============================================================
   // DEBUG CONFIGURATION
   // ============================================================
   const DEBUG = true;
-
   function log(...args) {
     if (DEBUG) console.log("[PTO-CS]", ...args);
   }
-
   function logWarn(...args) {
     if (DEBUG) console.warn("[PTO-CS]", ...args);
   }
-
   // ============================================================
   // CONFIGURATION
   // ============================================================
   const DELAY_BETWEEN_TABS_MS = 800;
   const DELAY_FOR_PAGE_LOAD_MS = 2000;
   const EXCLUDED_FORUM_TEXT = "Non-Pinay Videos";
-
   // ============================================================
   // STATE
   // ============================================================
@@ -28,8 +23,8 @@
   let openedCount = 0;
   let skippedDuplicates = 0;
   let skippedExcluded = 0;
-  let targetCount = 0;
-
+  let targetCount = null; // null means process all available rows
+  let useTargetLimit = false; // toggle for using target limit
   // ============================================================
   // COMMUNICATION WITH BACKGROUND WORKER
   // ============================================================
@@ -55,7 +50,6 @@
       );
     });
   }
-
   async function getStats() {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "GET_STATS" }, (response) => {
@@ -63,7 +57,6 @@
       });
     });
   }
-
   // ============================================================
   // UI CREATION
   // ============================================================
@@ -73,6 +66,17 @@
     panel.innerHTML = `
       <h4>🔗 Thread Opener <span id="pto-debug-toggle" style="cursor:pointer;font-size:11px;color:#666;margin-left:6px;">[debug]</span></h4>
       <div class="pto-row">
+        <label>Current Page Available:</label>
+        <span id="pto-available-count" style="color:#e94560;font-weight:bold;">-</span>
+      </div>
+      <div class="pto-row">
+        <label>Use Target Limit:</label>
+        <label class="switch">
+          <input type="checkbox" id="pto-limit-toggle">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="pto-row" id="pto-target-row" style="display:none;">
         <label>Target Tabs:</label>
         <input type="number" id="pto-target" value="10" min="1" max="100" />
       </div>
@@ -85,6 +89,7 @@
     `;
     document.body.appendChild(panel);
 
+    // Add event listeners
     document
       .getElementById("pto-start-btn")
       .addEventListener("click", startProcess);
@@ -97,6 +102,60 @@
         const logEl = document.getElementById("pto-debug-log");
         logEl.style.display = logEl.style.display === "none" ? "block" : "none";
       });
+
+    // Toggle switch for target limit
+    document
+      .getElementById("pto-limit-toggle")
+      .addEventListener("change", (e) => {
+        useTargetLimit = e.target.checked;
+        const targetRow = document.getElementById("pto-target-row");
+        targetRow.style.display = useTargetLimit ? "flex" : "none";
+        updateAvailableCount(); // Refresh count display
+      });
+
+    // Initial count update
+    setTimeout(updateAvailableCount, 500);
+  }
+
+  // NEW: Count available rows on current page
+  function countAvailableRows() {
+    const rows = document.querySelectorAll(
+      "li.block-row.js-inlineModContainer",
+    );
+    let available = 0;
+    let excluded = 0;
+
+    rows.forEach((row) => {
+      const forumLink = row.querySelector(
+        '.contentRow-minor a[href^="/forums/"]',
+      );
+      const forumName = forumLink ? forumLink.textContent.trim() : "";
+
+      if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
+        excluded++;
+      } else {
+        const titleLink = row.querySelector("h3.contentRow-title a");
+        if (titleLink && titleLink.getAttribute("href")) {
+          available++;
+        }
+      }
+    });
+
+    return { total: rows.length, available, excluded };
+  }
+
+  // NEW: Update the available count display
+  function updateAvailableCount() {
+    const countEl = document.getElementById("pto-available-count");
+    if (!countEl) return;
+
+    const counts = countAvailableRows();
+
+    if (useTargetLimit) {
+      countEl.textContent = `${counts.available} (excl: ${counts.excluded})`;
+    } else {
+      countEl.textContent = `${counts.available} / ${counts.total}`;
+    }
   }
 
   function appendDebugLog(msg) {
@@ -110,36 +169,42 @@
     logEl.textContent += `[${time}] ${msg}\n`;
     logEl.scrollTop = logEl.scrollHeight;
   }
-
   // NEW: Helper to highlight and scroll to active row
   function highlightRow(rowElement) {
     // Remove previous highlight
     const prev = document.querySelector(".pto-active-row");
     if (prev) prev.classList.remove("pto-active-row");
-
     // Add new highlight and scroll
     if (rowElement) {
       rowElement.classList.add("pto-active-row");
       rowElement.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }
-
   // NEW: Cleanup helper
   function clearHighlight() {
     const active = document.querySelector(".pto-active-row");
     if (active) active.classList.remove("pto-active-row");
   }
-
   // ============================================================
   // CORE LOGIC
   // ============================================================
   async function startProcess() {
-    const input = document.getElementById("pto-target");
-    targetCount = parseInt(input.value, 10);
-
-    if (!targetCount || targetCount <= 0) {
-      alert("Please enter a valid target count.");
-      return;
+    // Determine target count based on toggle
+    if (useTargetLimit) {
+      const input = document.getElementById("pto-target");
+      targetCount = parseInt(input.value, 10);
+      if (!targetCount || targetCount <= 0) {
+        alert("Please enter a valid target count.");
+        return;
+      }
+    } else {
+      // Process all available rows
+      const counts = countAvailableRows();
+      targetCount = counts.available;
+      if (targetCount === 0) {
+        alert("No available threads to open on this page.");
+        return;
+      }
     }
 
     isRunning = true;
@@ -147,21 +212,23 @@
     skippedDuplicates = 0;
     skippedExcluded = 0;
     toggleButtons(true);
-
     // Clear debug log on new run
     const logEl = document.getElementById("pto-debug-log");
     if (logEl) logEl.textContent = "";
-
     const stats = await getStats();
-    log("▶️ Starting process", { targetCount, backgroundStats: stats });
+    log("▶️ Starting process", {
+      targetCount,
+      useTargetLimit,
+      backgroundStats: stats,
+    });
     appendDebugLog(
-      `START | target=${targetCount} | bg_opened=${stats.openedCount} | bg_pending=${stats.pendingCount}`,
+      `START | target=${targetCount} | limit=${useTargetLimit} | bg_opened=${stats.openedCount} | bg_pending=${stats.pendingCount}`,
     );
-    updateStatus(`Starting... Target: ${targetCount}`);
-
+    updateStatus(
+      `Starting... Target: ${targetCount}${useTargetLimit ? " (limited)" : " (all available)"}`,
+    );
     await processCurrentPage();
   }
-
   function stopProcess() {
     isRunning = false;
     clearHighlight(); // NEW: Clean up visual indicator on stop
@@ -171,10 +238,9 @@
     updateStatus(summary);
     toggleButtons(false);
   }
-
   async function processCurrentPage() {
-    if (!isRunning || openedCount >= targetCount) {
-      if (openedCount >= targetCount) {
+    if (!isRunning || (useTargetLimit && openedCount >= targetCount)) {
+      if (useTargetLimit && openedCount >= targetCount) {
         clearHighlight(); // NEW: Clean up on completion
         const summary = `✅ Done! Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
         log("✅ Target reached:", summary);
@@ -184,33 +250,27 @@
       }
       return;
     }
-
     const rows = document.querySelectorAll(
       "li.block-row.js-inlineModContainer",
     );
     log(`📄 Processing page: ${rows.length} rows found`);
     appendDebugLog(`PAGE | ${rows.length} rows found`);
-
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
-      if (!isRunning || openedCount >= targetCount) break;
-
+      if (!isRunning || (useTargetLimit && openedCount >= targetCount)) break;
       // NEW: Highlight current row and scroll into view
       highlightRow(row);
-
       // --- Exclusion check ---
       const forumLink = row.querySelector(
         '.contentRow-minor a[href^="/forums/"]',
       );
       const forumName = forumLink ? forumLink.textContent.trim() : "";
-
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
         skippedExcluded++;
         log(`🚫 Row ${i}: Excluded forum "${forumName}"`);
         appendDebugLog(`SKIP[${i}] | excluded: ${forumName}`);
         continue;
       }
-
       // --- Get thread link ---
       const titleLink = row.querySelector("h3.contentRow-title a");
       if (!titleLink) {
@@ -218,29 +278,24 @@
         appendDebugLog(`WARN[${i}] | no title link`);
         continue;
       }
-
       let href = titleLink.getAttribute("href");
       if (!href) {
         logWarn(`⚠️ Row ${i}: Empty href`);
         appendDebugLog(`WARN[${i}] | empty href`);
         continue;
       }
-
       // Normalize to absolute URL
       if (href.startsWith("/")) {
         href = window.location.origin + href;
       }
-
       const titleText = titleLink.textContent.substring(0, 35);
       log(`🔗 Row ${i}: Checking "${titleText}..." → ${href}`);
       appendDebugLog(`CHECK[${i}] | ${titleText}`);
-
       // --- Ask background to check & open ---
       updateStatus(
         `Checking ${openedCount + skippedDuplicates + skippedExcluded + 1}: ${titleText}...`,
       );
       const result = await checkAndOpenTab(href);
-
       if (result.opened) {
         openedCount++;
         log(`✅ OPENED ${openedCount}/${targetCount}: tabId=${result.tabId}`);
@@ -258,16 +313,13 @@
         appendDebugLog(`ERR[${i}] | ${result.error}`);
         updateStatus(`❌ Error: ${result.error || "Unknown"}`);
       }
-
       await sleep(DELAY_BETWEEN_TABS_MS);
     }
-
     // --- Paginate if target not yet reached ---
-    if (isRunning && openedCount < targetCount) {
+    if (isRunning && (!useTargetLimit || openedCount < targetCount)) {
       const nextBtn = document.querySelector(
         "a.pageNav-jump--next, a.pageNavSimple-el--next",
       );
-
       if (nextBtn) {
         log(`📃 Navigating to next page... (${openedCount}/${targetCount})`);
         appendDebugLog(
@@ -279,6 +331,8 @@
         await waitForPageLoad();
         log("📃 New page loaded");
         appendDebugLog(`LOADED | new page ready`);
+        // Update available count after page load
+        updateAvailableCount();
         await processCurrentPage();
       } else {
         const summary = `⚠️ No more pages. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
@@ -289,14 +343,12 @@
       }
     }
   }
-
   // ============================================================
   // UTILITIES
   // ============================================================
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
-
   function waitForPageLoad() {
     return new Promise((resolve) => {
       let checks = 0;
@@ -311,7 +363,6 @@
           resolve();
         }
       }, 500);
-
       setTimeout(() => {
         clearInterval(checkInterval);
         logWarn(`📃 Page load timeout after ${checks} checks`);
@@ -319,12 +370,10 @@
       }, DELAY_FOR_PAGE_LOAD_MS * 2);
     });
   }
-
   function updateStatus(msg) {
     const el = document.getElementById("pto-status");
     if (el) el.textContent = msg;
   }
-
   function toggleButtons(running) {
     document.getElementById("pto-start-btn").style.display = running
       ? "none"
@@ -333,7 +382,6 @@
       ? "inline-block"
       : "none";
   }
-
   // Initialize
   createPanel();
 })();
