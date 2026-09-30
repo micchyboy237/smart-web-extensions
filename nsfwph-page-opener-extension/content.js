@@ -16,6 +16,115 @@
   const DELAY_BETWEEN_TABS_MS = 800;
   const DELAY_FOR_PAGE_LOAD_MS = 2000;
   const EXCLUDED_FORUM_TEXT = "Non-Pinay Videos";
+
+  // ============================================================
+  // PAGE STRUCTURE STRATEGIES
+  // ============================================================
+
+  /**
+   * Strategy for Structure 1: Search results / block-row layout
+   */
+  const Structure1Strategy = {
+    name: "Structure1 (Block Rows)",
+
+    getRows() {
+      return document.querySelectorAll("li.block-row.js-inlineModContainer");
+    },
+
+    getForumName(row) {
+      const forumLink = row.querySelector(
+        '.contentRow-minor a[href^="/forums/"]',
+      );
+      return forumLink ? forumLink.textContent.trim() : "";
+    },
+
+    getTitleLink(row) {
+      return row.querySelector("h3.contentRow-title a");
+    },
+
+    getNextButton() {
+      return document.querySelector(
+        "a.pageNav-jump--next, a.pageNavSimple-el--next",
+      );
+    },
+
+    isValidRow(row) {
+      const titleLink = this.getTitleLink(row);
+      return titleLink && titleLink.getAttribute("href");
+    },
+  };
+
+  /**
+   * Strategy for Structure 2: Article/message preview layout
+   */
+  const Structure2Strategy = {
+    name: "Structure2 (Article Previews)",
+
+    getRows() {
+      return document.querySelectorAll(
+        "article.message--articlePreview.js-inlineModContainer",
+      );
+    },
+
+    getForumName(row) {
+      // In structure 2, forum info might be in different location
+      // Try multiple selectors
+      const forumLink =
+        row.querySelector('.labelLink a[href^="/forums/"]') ||
+        row.querySelector(".articlePreview-headline .labelLink a");
+      return forumLink ? forumLink.textContent.trim() : "";
+    },
+
+    getTitleLink(row) {
+      return row.querySelector(".articlePreview-title a:not(.labelLink)");
+    },
+
+    getNextButton() {
+      return document.querySelector(
+        "a.pageNav-jump--next, a.pageNavSimple-el--next",
+      );
+    },
+
+    isValidRow(row) {
+      const titleLink = this.getTitleLink(row);
+      return titleLink && titleLink.getAttribute("href");
+    },
+  };
+
+  /**
+   * Strategy Registry - detects and returns appropriate strategy
+   */
+  const StrategyRegistry = {
+    strategies: [Structure1Strategy, Structure2Strategy],
+
+    detect() {
+      // Try each strategy to see which one finds rows
+      for (const strategy of this.strategies) {
+        const rows = strategy.getRows();
+        if (rows.length > 0) {
+          log(`📋 Detected page structure: ${strategy.name}`);
+          return strategy;
+        }
+      }
+
+      // Fallback to Structure1 if no rows found yet (page might still be loading)
+      log("⚠️ No rows detected, defaulting to Structure1");
+      return Structure1Strategy;
+    },
+
+    // Allow manual override if needed
+    setStrategy(strategyName) {
+      const strategy = this.strategies.find((s) =>
+        s.name.includes(strategyName),
+      );
+      if (strategy) {
+        log(`🔧 Manual strategy set to: ${strategy.name}`);
+        return strategy;
+      }
+      return this.detect();
+    },
+  };
+
   // ============================================================
   // STATE
   // ============================================================
@@ -25,6 +134,8 @@
   let skippedExcluded = 0;
   let targetCount = null; // null means process all available rows
   let useTargetLimit = false; // toggle for using target limit
+  let currentStrategy = null; // Will be set on initialization
+
   // ============================================================
   // COMMUNICATION WITH BACKGROUND WORKER
   // ============================================================
@@ -65,6 +176,10 @@
     panel.id = "pto-panel";
     panel.innerHTML = `
       <h4>🔗 Thread Opener <span id="pto-debug-toggle" style="cursor:pointer;font-size:11px;color:#666;margin-left:6px;">[debug]</span></h4>
+      <div class="pto-row">
+        <label>Page Structure:</label>
+        <span id="pto-structure-name" style="color:#0f3460;font-weight:bold;font-size:11px;">Detecting...</span>
+      </div>
       <div class="pto-row">
         <label>Current Page Available:</label>
         <span id="pto-available-count" style="color:#e94560;font-weight:bold;">-</span>
@@ -113,31 +228,39 @@
         updateAvailableCount(); // Refresh count display
       });
 
-    // Initial count update
-    setTimeout(updateAvailableCount, 500);
+    // Initial detection and count update
+    setTimeout(() => {
+      currentStrategy = StrategyRegistry.detect();
+      updateStructureDisplay();
+      updateAvailableCount();
+    }, 500);
   }
 
-  // NEW: Count available rows on current page
+  // NEW: Update structure name display
+  function updateStructureDisplay() {
+    const el = document.getElementById("pto-structure-name");
+    if (el && currentStrategy) {
+      el.textContent = currentStrategy.name;
+    }
+  }
+
+  // NEW: Count available rows on current page using current strategy
   function countAvailableRows() {
-    const rows = document.querySelectorAll(
-      "li.block-row.js-inlineModContainer",
-    );
+    if (!currentStrategy) {
+      currentStrategy = StrategyRegistry.detect();
+    }
+
+    const rows = currentStrategy.getRows();
     let available = 0;
     let excluded = 0;
 
     rows.forEach((row) => {
-      const forumLink = row.querySelector(
-        '.contentRow-minor a[href^="/forums/"]',
-      );
-      const forumName = forumLink ? forumLink.textContent.trim() : "";
+      const forumName = currentStrategy.getForumName(row);
 
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
         excluded++;
-      } else {
-        const titleLink = row.querySelector("h3.contentRow-title a");
-        if (titleLink && titleLink.getAttribute("href")) {
-          available++;
-        }
+      } else if (currentStrategy.isValidRow(row)) {
+        available++;
       }
     });
 
@@ -169,7 +292,8 @@
     logEl.textContent += `[${time}] ${msg}\n`;
     logEl.scrollTop = logEl.scrollHeight;
   }
-  // NEW: Helper to highlight and scroll to active row
+
+  // Helper to highlight and scroll to active row
   function highlightRow(rowElement) {
     // Remove previous highlight
     const prev = document.querySelector(".pto-active-row");
@@ -180,15 +304,21 @@
       rowElement.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }
-  // NEW: Cleanup helper
+
+  // Cleanup helper
   function clearHighlight() {
     const active = document.querySelector(".pto-active-row");
     if (active) active.classList.remove("pto-active-row");
   }
+
   // ============================================================
   // CORE LOGIC
   // ============================================================
   async function startProcess() {
+    // Re-detect strategy in case page structure changed
+    currentStrategy = StrategyRegistry.detect();
+    updateStructureDisplay();
+
     // Determine target count based on toggle
     if (useTargetLimit) {
       const input = document.getElementById("pto-target");
@@ -212,36 +342,43 @@
     skippedDuplicates = 0;
     skippedExcluded = 0;
     toggleButtons(true);
+
     // Clear debug log on new run
     const logEl = document.getElementById("pto-debug-log");
     if (logEl) logEl.textContent = "";
+
     const stats = await getStats();
     log("▶️ Starting process", {
       targetCount,
       useTargetLimit,
+      strategy: currentStrategy.name,
       backgroundStats: stats,
     });
+
     appendDebugLog(
-      `START | target=${targetCount} | limit=${useTargetLimit} | bg_opened=${stats.openedCount} | bg_pending=${stats.pendingCount}`,
+      `START | target=${targetCount} | limit=${useTargetLimit} | strategy=${currentStrategy.name} | bg_opened=${stats.openedCount} | bg_pending=${stats.pendingCount}`,
     );
+
     updateStatus(
       `Starting... Target: ${targetCount}${useTargetLimit ? " (limited)" : " (all available)"}`,
     );
     await processCurrentPage();
   }
+
   function stopProcess() {
     isRunning = false;
-    clearHighlight(); // NEW: Clean up visual indicator on stop
+    clearHighlight();
     const summary = `Stopped. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
     log("⏹️ Process stopped:", summary);
     appendDebugLog(`STOP | ${summary}`);
     updateStatus(summary);
     toggleButtons(false);
   }
+
   async function processCurrentPage() {
     if (!isRunning || (useTargetLimit && openedCount >= targetCount)) {
       if (useTargetLimit && openedCount >= targetCount) {
-        clearHighlight(); // NEW: Clean up on completion
+        clearHighlight();
         const summary = `✅ Done! Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
         log("✅ Target reached:", summary);
         appendDebugLog(`DONE | ${summary}`);
@@ -250,52 +387,61 @@
       }
       return;
     }
-    const rows = document.querySelectorAll(
-      "li.block-row.js-inlineModContainer",
+
+    // Use current strategy to get rows
+    const rows = currentStrategy.getRows();
+    log(
+      `📄 Processing page: ${rows.length} rows found (${currentStrategy.name})`,
     );
-    log(`📄 Processing page: ${rows.length} rows found`);
-    appendDebugLog(`PAGE | ${rows.length} rows found`);
+    appendDebugLog(`PAGE | ${rows.length} rows | ${currentStrategy.name}`);
+
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (!isRunning || (useTargetLimit && openedCount >= targetCount)) break;
-      // NEW: Highlight current row and scroll into view
+
+      // Highlight current row and scroll into view
       highlightRow(row);
+
       // --- Exclusion check ---
-      const forumLink = row.querySelector(
-        '.contentRow-minor a[href^="/forums/"]',
-      );
-      const forumName = forumLink ? forumLink.textContent.trim() : "";
+      const forumName = currentStrategy.getForumName(row);
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
         skippedExcluded++;
         log(`🚫 Row ${i}: Excluded forum "${forumName}"`);
         appendDebugLog(`SKIP[${i}] | excluded: ${forumName}`);
         continue;
       }
+
       // --- Get thread link ---
-      const titleLink = row.querySelector("h3.contentRow-title a");
+      const titleLink = currentStrategy.getTitleLink(row);
       if (!titleLink) {
         logWarn(`⚠️ Row ${i}: No title link found`);
         appendDebugLog(`WARN[${i}] | no title link`);
         continue;
       }
+
       let href = titleLink.getAttribute("href");
       if (!href) {
         logWarn(`⚠️ Row ${i}: Empty href`);
         appendDebugLog(`WARN[${i}] | empty href`);
         continue;
       }
+
       // Normalize to absolute URL
       if (href.startsWith("/")) {
         href = window.location.origin + href;
       }
+
       const titleText = titleLink.textContent.substring(0, 35);
       log(`🔗 Row ${i}: Checking "${titleText}..." → ${href}`);
       appendDebugLog(`CHECK[${i}] | ${titleText}`);
+
       // --- Ask background to check & open ---
       updateStatus(
         `Checking ${openedCount + skippedDuplicates + skippedExcluded + 1}: ${titleText}...`,
       );
+
       const result = await checkAndOpenTab(href);
+
       if (result.opened) {
         openedCount++;
         log(`✅ OPENED ${openedCount}/${targetCount}: tabId=${result.tabId}`);
@@ -313,13 +459,13 @@
         appendDebugLog(`ERR[${i}] | ${result.error}`);
         updateStatus(`❌ Error: ${result.error || "Unknown"}`);
       }
+
       await sleep(DELAY_BETWEEN_TABS_MS);
     }
+
     // --- Paginate if target not yet reached ---
     if (isRunning && (!useTargetLimit || openedCount < targetCount)) {
-      const nextBtn = document.querySelector(
-        "a.pageNav-jump--next, a.pageNavSimple-el--next",
-      );
+      const nextBtn = currentStrategy.getNextButton();
       if (nextBtn) {
         log(`📃 Navigating to next page... (${openedCount}/${targetCount})`);
         appendDebugLog(
@@ -331,8 +477,12 @@
         await waitForPageLoad();
         log("📃 New page loaded");
         appendDebugLog(`LOADED | new page ready`);
-        // Update available count after page load
+
+        // Re-detect strategy after page load (structure might change)
+        currentStrategy = StrategyRegistry.detect();
+        updateStructureDisplay();
         updateAvailableCount();
+
         await processCurrentPage();
       } else {
         const summary = `⚠️ No more pages. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
@@ -343,26 +493,34 @@
       }
     }
   }
+
   // ============================================================
   // UTILITIES
   // ============================================================
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+
   function waitForPageLoad() {
     return new Promise((resolve) => {
       let checks = 0;
       const checkInterval = setInterval(() => {
         checks++;
-        const rows = document.querySelectorAll(
+        // Check for both possible row types
+        const rows1 = document.querySelectorAll(
           "li.block-row.js-inlineModContainer",
         );
-        if (rows.length > 0) {
+        const rows2 = document.querySelectorAll(
+          "article.message--articlePreview.js-inlineModContainer",
+        );
+
+        if (rows1.length > 0 || rows2.length > 0) {
           log(`📃 Page load confirmed after ${checks} checks`);
           clearInterval(checkInterval);
           resolve();
         }
       }, 500);
+
       setTimeout(() => {
         clearInterval(checkInterval);
         logWarn(`📃 Page load timeout after ${checks} checks`);
@@ -370,10 +528,12 @@
       }, DELAY_FOR_PAGE_LOAD_MS * 2);
     });
   }
+
   function updateStatus(msg) {
     const el = document.getElementById("pto-status");
     if (el) el.textContent = msg;
   }
+
   function toggleButtons(running) {
     document.getElementById("pto-start-btn").style.display = running
       ? "none"
@@ -382,6 +542,7 @@
       ? "inline-block"
       : "none";
   }
+
   // Initialize
   createPanel();
 })();
