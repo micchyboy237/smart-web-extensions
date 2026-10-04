@@ -50,67 +50,101 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============================================================
 async function handleCheckAndOpen(url) {
   const normalized = normalizeUrl(url);
-  log("🔍 Checking URL:", { original: url, normalized });
+  log("🔍 [DUPE-CHECK] Normalizing URL:", { original: url, normalized });
 
   // --- Check 1: Pending opens (race condition guard) ---
   if (pendingOpens.has(normalized)) {
-    log("⏳ DUPLICATE (pending):", normalized);
+    log(
+      "🚫 [DUPE-DETECTED] Reason: PENDING (Already being opened by another process)",
+    );
+    log("   -> URL:", normalized);
     return { opened: false, duplicate: true, reason: "pending" };
   }
 
   try {
     // --- Check 2: Already open in any tab ---
+    log("🔎 [DUPE-CHECK] Querying all open tabs...");
     const tabs = await chrome.tabs.query({});
-    log(`📋 Queried ${tabs.length} open tabs`);
+    log(`   -> Found ${tabs.length} total tabs.`);
 
     let matchedTabId = null;
+    let matchReason = "";
+
     const isDuplicate = tabs.some((tab) => {
-      if (!tab.url) return false;
-      const tabNormalized = normalizeUrl(tab.url);
-      const match = tabNormalized === normalized;
-      if (match) {
-        matchedTabId = tab.id;
-        log("  ✅ MATCH found:", { tabId: tab.id, tabUrl: tab.url });
+      if (!tab.url) {
+        // log("   -> Skipping tab", tab.id, "(no URL yet)");
+        return false;
       }
-      return match;
+
+      const tabNormalized = normalizeUrl(tab.url);
+
+      // Exact Match
+      if (tabNormalized === normalized) {
+        matchedTabId = tab.id;
+        matchReason = "EXACT_MATCH";
+        log("   -> ✅ MATCH FOUND! Tab ID:", tab.id, "| URL:", tab.url);
+        return true;
+      }
+
+      // Partial/Hash Match (for debugging near-misses)
+      if (DEBUG && tabNormalized.includes(normalized.split("/").pop())) {
+        log(
+          "   -> ⚠️ Near-match detected (ignoring): Tab",
+          tab.id,
+          tabNormalized,
+        );
+      }
+
+      return false;
     });
 
     if (isDuplicate) {
-      log("🚫 DUPLICATE (open tab):", { normalized, matchedTabId });
+      log("🚫 [DUPE-DETECTED] Reason: OPEN_TAB (" + matchReason + ")");
+      log("   -> Conflicting Tab ID:", matchedTabId);
       return {
         opened: false,
         duplicate: true,
         reason: "open_tab",
         matchedTabId,
       };
+    } else {
+      log("✅ [DUPE-CHECK] No duplicates found. Proceeding to open.");
     }
 
     // --- Open new tab ---
-    log("🆕 Opening new tab:", normalized);
+    log("🆕 [ACTION] Opening new tab:", normalized);
     pendingOpens.add(normalized);
+    log("   -> Added to pendingOpens. Current size:", pendingOpens.size);
 
     // Open in background (active: false)
     const newTab = await chrome.tabs.create({ url, active: false });
     openedCount++;
-    log("✅ Tab created:", { tabId: newTab.id, openedCount });
+    log(
+      "✅ [SUCCESS] Tab created. ID:",
+      newTab.id,
+      "| Total Opened:",
+      openedCount,
+    );
 
     // --- Setup Auto-Close Listener ---
     const onUpdatedListener = async (tabId, changeInfo, tab) => {
       if (tabId === newTab.id && changeInfo.status === "complete") {
+        log("🔄 [LOAD] Tab", tabId, "finished loading. Checking auto-close...");
+
         // Remove listener once handled
         chrome.tabs.onUpdated.removeListener(onUpdatedListener);
         pendingOpens.delete(normalized);
-
-        log(`🔄 Tab ${tabId} loaded. Checking auto-close settings...`);
+        log("   -> Removed from pendingOpens. Remaining:", pendingOpens.size);
 
         // Check if auto-close is enabled in storage
         const settings = await chrome.storage.local.get(
           "pto_autoCloseIfReacted",
         );
         if (settings.pto_autoCloseIfReacted) {
+          log("   -> Auto-Close is ENABLED. Injecting check script...");
           await checkAndCloseIfReacted(newTab.id, normalized);
         } else {
-          log("ℹ️ Auto-close disabled. Keeping tab open.");
+          log("   -> Auto-Close is DISABLED. Keeping tab open.");
         }
       }
     };
@@ -122,14 +156,20 @@ async function handleCheckAndOpen(url) {
       if (pendingOpens.has(normalized)) {
         pendingOpens.delete(normalized);
         chrome.tabs.onUpdated.removeListener(onUpdatedListener);
-        logWarn("⏰ Safety timeout: removed from pendingOpens:", normalized);
+        logWarn(
+          "⏰ [TIMEOUT] Safety timeout: removed from pendingOpens:",
+          normalized,
+        );
       }
     }, 15000);
 
     return { opened: true, duplicate: false, tabId: newTab.id };
   } catch (err) {
     pendingOpens.delete(normalized);
-    logError("💥 Failed to open tab:", { url: normalized, error: err.message });
+    logError("💥 [ERROR] Failed to open tab:", {
+      url: normalized,
+      error: err.message,
+    });
     throw new Error(`Failed to open tab: ${err.message}`);
   }
 }
@@ -141,11 +181,11 @@ async function checkAndCloseIfReacted(tabId, url) {
   try {
     // We only want to check thread/post pages, not forum lists
     if (!/\/threads\/\d+/.test(url) && !/\/posts\/\d+/.test(url)) {
-      log("ℹ️ Skipping reaction check: Not a thread/post URL");
+      log("ℹ️ [AUTO-CLOSE] Skipping reaction check: Not a thread/post URL");
       return;
     }
 
-    log(`🔍 Injecting reaction check into tab ${tabId}...`);
+    log(`🔍 [AUTO-CLOSE] Injecting reaction check into tab ${tabId}...`);
 
     const results = await chrome.scripting.executeScript({
       target: { tabId: tabId },
@@ -175,10 +215,12 @@ async function checkAndCloseIfReacted(tabId, url) {
     });
 
     if (results && results[0] && results[0].result === true) {
-      log(`🚫 Reaction detected in tab ${tabId}. Closing tab.`);
+      log(`🚫 [AUTO-CLOSE] Reaction detected in tab ${tabId}. Closing tab.`);
       chrome.tabs.remove(tabId);
     } else {
-      log(`✅ No reaction detected in tab ${tabId}. Keeping open.`);
+      log(
+        `✅ [AUTO-CLOSE] No reaction detected in tab ${tabId}. Keeping open.`,
+      );
     }
   } catch (e) {
     logWarn("Failed to check reaction in background:", e);
@@ -191,6 +233,7 @@ async function checkAndCloseIfReacted(tabId, url) {
 function normalizeUrl(u) {
   try {
     const parsed = new URL(u);
+    // Include hash fragment — XF uses #profile-post-XXXXX to identify specific posts
     return parsed.origin + parsed.pathname + parsed.hash;
   } catch {
     logWarn("⚠️ Could not parse URL, returning raw:", u);

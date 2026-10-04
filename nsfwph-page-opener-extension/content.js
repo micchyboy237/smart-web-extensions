@@ -163,7 +163,7 @@
   // COMMUNICATION WITH BACKGROUND WORKER
   // ============================================================
   async function checkAndOpenTab(url) {
-    log("📡 Sending CHECK_AND_OPEN to background:", url);
+    log("📡 [REQ] Sending CHECK_AND_OPEN to background:", url);
     return new Promise((resolve) => {
       chrome.runtime.sendMessage(
         { type: "CHECK_AND_OPEN", url },
@@ -172,7 +172,7 @@
             logWarn("📡 Message error:", chrome.runtime.lastError.message);
             resolve({ opened: false, error: chrome.runtime.lastError.message });
           } else {
-            log("📡 Response received:", response);
+            log("📡 [RES] Response received:", response);
             resolve(
               response || {
                 opened: false,
@@ -449,24 +449,27 @@
       updateStatus(
         `Checking ${openedCount + skippedDuplicates + skippedExcluded + 1}: ${titleText}...`,
       );
+
       const result = await checkAndOpenTab(href);
+
       if (result.opened) {
         openedCount++;
-        log(`✅ OPENED ${openedCount}/${targetCount}: tabId=${result.tabId}`);
+        log(`✅ [OPENED] ${openedCount}/${targetCount}: tabId=${result.tabId}`);
         appendDebugLog(
           `OPEN[${i}] | #${openedCount}/${targetCount} | tab=${result.tabId}`,
         );
         updateStatus(`Opened ${openedCount}/${targetCount}: ${titleText}...`);
       } else if (result.duplicate) {
         skippedDuplicates++;
-        log(`⏭️ DUPLICATE (${result.reason}): "${titleText}..."`);
+        log(`⏭️ [DUPE-SKIP] Reason: ${result.reason} | "${titleText}..."`);
         appendDebugLog(`DUPE[${i}] | ${result.reason} | ${titleText}`);
         updateStatus(`⏭️ Dupe (${result.reason}): ${titleText}...`);
       } else {
-        logError(`❌ ERROR: ${result.error}`);
+        logError(`❌ [ERROR] ${result.error}`);
         appendDebugLog(`ERR[${i}] | ${result.error}`);
         updateStatus(`❌ Error: ${result.error || "Unknown"}`);
       }
+
       await sleep(DELAY_BETWEEN_TABS_MS);
     }
     if (isRunning && (!useTargetLimit || openedCount < targetCount)) {
