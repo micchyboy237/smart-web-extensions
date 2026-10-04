@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "nsfwPH - Pinay Thread Auto-Opener",
-  "version": "3.0",
+  "version": "3.1.0",
   "description": "Opens search result threads in new tabs with duplicate detection via chrome.tabs API and debug logging.",
-  "permissions": ["activeTab", "tabs"],
+  "permissions": ["activeTab", "tabs", "storage"],
   "background": {
     "service_worker": "background.js"
   },
