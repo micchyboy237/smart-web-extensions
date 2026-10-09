@@ -69,16 +69,67 @@
       return titleLink && titleLink.getAttribute("href");
     },
   };
-  const StrategyRegistry = {
-    strategies: [Structure1Strategy, Structure2Strategy],
-    detect() {
-      for (const strategy of this.strategies) {
-        const rows = strategy.getRows();
-        if (rows.length > 0) {
-          log(`📋 Detected page structure: ${strategy.name}`);
-          return strategy;
+  const DataListStrategy = {
+    name: "DataList (Quick Search Results)",
+    getRows() {
+      return document.querySelectorAll(".dataList-row");
+    },
+    getForumName(row) {
+      // Data list rows don't have forum names in the same way
+      // Return empty string to skip exclusion check
+      return "";
+    },
+    getTitleLink(row) {
+      // Look for thread links in the second cell
+      const cells = row.querySelectorAll("td.dataList-cell");
+      if (cells.length >= 2) {
+        const links = cells[1].querySelectorAll("a[href^='/threads/']");
+        // Get the link with actual text content (not empty)
+        for (const link of links) {
+          if (link.textContent.trim()) {
+            return link;
+          }
         }
+        // Fallback to first link if no text found
+        return links.length > 0 ? links[0] : null;
       }
+      return null;
+    },
+    getNextButton() {
+      // Data list doesn't have pagination - return null
+      return null;
+    },
+    isValidRow(row) {
+      const titleLink = this.getTitleLink(row);
+      return titleLink && titleLink.getAttribute("href");
+    },
+  };
+  const StrategyRegistry = {
+    strategies: [Structure1Strategy, Structure2Strategy, DataListStrategy],
+    detect() {
+      // Check for data list first (highest priority if exists)
+      const dataListRows = DataListStrategy.getRows();
+      if (dataListRows.length > 0) {
+        log(
+          `📋 Detected page structure: ${DataListStrategy.name} (${dataListRows.length} rows)`,
+        );
+        return DataListStrategy;
+      }
+
+      // Then check for block rows
+      const blockRows = Structure1Strategy.getRows();
+      if (blockRows.length > 0) {
+        log(`📋 Detected page structure: ${Structure1Strategy.name}`);
+        return Structure1Strategy;
+      }
+
+      // Finally check for article previews
+      const articleRows = Structure2Strategy.getRows();
+      if (articleRows.length > 0) {
+        log(`📋 Detected page structure: ${Structure2Strategy.name}`);
+        return Structure2Strategy;
+      }
+
       log("⚠️ No rows detected, defaulting to Structure1");
       return Structure1Strategy;
     },
@@ -104,11 +155,11 @@
   let useTargetLimit = false;
   let autoCloseIfReacted = false;
   let currentStrategy = null;
+  let hasProcessedDataList = false;
   // ============================================================
   // STORAGE HELPERS
   // ============================================================
   const SESSION_KEY_PREFIX = "pto_session_";
-
   function saveToSession(key, value) {
     try {
       sessionStorage.setItem(SESSION_KEY_PREFIX + key, JSON.stringify(value));
@@ -116,7 +167,6 @@
       logWarn("Failed to save to session:", e);
     }
   }
-
   function loadFromSession(key, defaultValue = null) {
     try {
       const value = sessionStorage.getItem(SESSION_KEY_PREFIX + key);
@@ -126,7 +176,6 @@
       return defaultValue;
     }
   }
-
   async function saveAutoCloseSetting(enabled) {
     try {
       await chrome.storage.local.set({ pto_autoCloseIfReacted: enabled });
@@ -135,7 +184,6 @@
       logWarn("Failed to save auto-close setting:", e);
     }
   }
-
   async function loadAutoCloseSetting() {
     try {
       const result = await chrome.storage.local.get("pto_autoCloseIfReacted");
@@ -147,14 +195,12 @@
       return false;
     }
   }
-
   function loadPanelState() {
     return {
       useTargetLimit: loadFromSession("useTargetLimit", false),
       targetCount: loadFromSession("targetCount", 10),
     };
   }
-
   function savePanelState() {
     saveToSession("useTargetLimit", useTargetLimit);
     saveToSession("targetCount", targetCount);
@@ -199,7 +245,6 @@
     useTargetLimit = savedState.useTargetLimit;
     targetCount = savedState.targetCount || 10;
     autoCloseIfReacted = await loadAutoCloseSetting();
-
     const panel = document.createElement("div");
     panel.id = "pto-panel";
     panel.innerHTML = `
@@ -238,7 +283,6 @@
       <button id="pto-stop-btn" style="display:none; background:#d9534f;">Stop</button>
     `;
     document.body.appendChild(panel);
-
     document
       .getElementById("pto-start-btn")
       .addEventListener("click", startProcess);
@@ -251,7 +295,6 @@
         const logEl = document.getElementById("pto-debug-log");
         logEl.style.display = logEl.style.display === "none" ? "block" : "none";
       });
-
     document
       .getElementById("pto-limit-toggle")
       .addEventListener("change", (e) => {
@@ -261,7 +304,6 @@
         updateAvailableCount();
         savePanelState();
       });
-
     document
       .getElementById("pto-autoclose-toggle")
       .addEventListener("change", async (e) => {
@@ -271,30 +313,36 @@
         );
         await saveAutoCloseSetting(autoCloseIfReacted);
       });
-
     document.getElementById("pto-target").addEventListener("change", (e) => {
       targetCount = parseInt(e.target.value, 10);
       savePanelState();
     });
-
     setTimeout(() => {
       currentStrategy = StrategyRegistry.detect();
       updateStructureDisplay();
       updateAvailableCount();
     }, 500);
   }
-
   function updateStructureDisplay() {
     const el = document.getElementById("pto-structure-name");
     if (el && currentStrategy) {
       el.textContent = currentStrategy.name;
     }
   }
-
   function countAvailableRows() {
     if (!currentStrategy) {
       currentStrategy = StrategyRegistry.detect();
     }
+
+    // Count data list rows separately if they exist
+    const dataListRows = Array.from(DataListStrategy.getRows());
+    const dataListAvailable = dataListRows.filter(
+      (row) =>
+        DataListStrategy.isValidRow(row) &&
+        !DataListStrategy.getForumName(row).includes(EXCLUDED_FORUM_TEXT),
+    ).length;
+
+    // Count main strategy rows
     const rows = currentStrategy.getRows();
     let available = 0;
     let excluded = 0;
@@ -306,9 +354,18 @@
         available++;
       }
     });
-    return { total: rows.length, available, excluded };
-  }
 
+    const totalAvailable = dataListAvailable + available;
+    const totalExcluded = excluded;
+
+    return {
+      total: rows.length + dataListRows.length,
+      available: totalAvailable,
+      excluded: totalExcluded,
+      dataListAvailable: dataListAvailable,
+      mainStrategyAvailable: available,
+    };
+  }
   function updateAvailableCount() {
     const countEl = document.getElementById("pto-available-count");
     if (!countEl) return;
@@ -319,7 +376,6 @@
       countEl.textContent = `${counts.available} / ${counts.total}`;
     }
   }
-
   function appendDebugLog(msg) {
     if (!DEBUG) return;
     const logEl = document.getElementById("pto-debug-log");
@@ -331,7 +387,6 @@
     logEl.textContent += `[${time}] ${msg}\n`;
     logEl.scrollTop = logEl.scrollHeight;
   }
-
   function highlightRow(rowElement) {
     const prev = document.querySelector(".pto-active-row");
     if (prev) prev.classList.remove("pto-active-row");
@@ -340,7 +395,6 @@
       rowElement.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }
-
   function clearHighlight() {
     const active = document.querySelector(".pto-active-row");
     if (active) active.classList.remove("pto-active-row");
@@ -351,6 +405,8 @@
   async function startProcess() {
     currentStrategy = StrategyRegistry.detect();
     updateStructureDisplay();
+    hasProcessedDataList = false;
+
     if (useTargetLimit) {
       const input = document.getElementById("pto-target");
       targetCount = parseInt(input.value, 10);
@@ -387,9 +443,24 @@
     updateStatus(
       `Starting... Target: ${targetCount}${useTargetLimit ? " (limited)" : " (all available)"}${autoCloseIfReacted ? " [Auto-Close ON]" : ""}`,
     );
-    await processCurrentPage();
-  }
 
+    // First, process data list rows if they exist
+    const dataListRows = DataListStrategy.getRows();
+    if (dataListRows.length > 0) {
+      log(`📋 Processing ${dataListRows.length} data list rows first...`);
+      appendDebugLog(`DATALIST | Processing ${dataListRows.length} rows`);
+      updateStatus(
+        `Processing data list rows... (${openedCount}/${targetCount})`,
+      );
+      await processDataListRows();
+      hasProcessedDataList = true;
+    }
+
+    // Then process main strategy rows (articles or blocks)
+    if (isRunning && (!useTargetLimit || openedCount < targetCount)) {
+      await processCurrentPage();
+    }
+  }
   function stopProcess() {
     isRunning = false;
     clearHighlight();
@@ -398,6 +469,82 @@
     appendDebugLog(`STOP | ${summary}`);
     updateStatus(summary);
     toggleButtons(false);
+  }
+
+  /**
+   * Process data list rows (quick search results)
+   */
+  async function processDataListRows() {
+    if (!isRunning) return;
+
+    const rows = DataListStrategy.getRows();
+    log(`📄 Processing data list: ${rows.length} rows found`);
+    appendDebugLog(`DATALIST | ${rows.length} rows`);
+
+    for (let i = 0; i < rows.length; i++) {
+      if (!isRunning || (useTargetLimit && openedCount >= targetCount)) break;
+
+      const row = rows[i];
+      highlightRow(row);
+
+      const forumName = DataListStrategy.getForumName(row);
+      if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
+        skippedExcluded++;
+        log(`🚫 DataList Row ${i}: Excluded forum "${forumName}"`);
+        appendDebugLog(`SKIP-DL[${i}] | excluded: ${forumName}`);
+        continue;
+      }
+
+      const titleLink = DataListStrategy.getTitleLink(row);
+      if (!titleLink) {
+        logWarn(`⚠️ DataList Row ${i}: No title link found`);
+        appendDebugLog(`WARN-DL[${i}] | no title link`);
+        continue;
+      }
+
+      let href = titleLink.getAttribute("href");
+      if (!href) {
+        logWarn(`⚠️ DataList Row ${i}: Empty href`);
+        appendDebugLog(`WARN-DL[${i}] | empty href`);
+        continue;
+      }
+      if (href.startsWith("/")) {
+        href = window.location.origin + href;
+      }
+
+      const titleText = titleLink.textContent.substring(0, 35);
+      log(`🔗 DataList Row ${i}: Checking "${titleText}..." → ${href}`);
+      appendDebugLog(`CHECK-DL[${i}] | ${titleText}`);
+      updateStatus(
+        `Checking DL ${openedCount + skippedDuplicates + skippedExcluded + 1}: ${titleText}...`,
+      );
+
+      const result = await checkAndOpenTab(href);
+      if (result.opened) {
+        openedCount++;
+        log(
+          `✅ [OPENED-DL] ${openedCount}/${targetCount}: tabId=${result.tabId}`,
+        );
+        appendDebugLog(
+          `OPEN-DL[${i}] | #${openedCount}/${targetCount} | tab=${result.tabId}`,
+        );
+        updateStatus(`Opened ${openedCount}/${targetCount}: ${titleText}...`);
+      } else if (result.duplicate) {
+        skippedDuplicates++;
+        log(`⏭️ [DUPE-SKIP-DL] Reason: ${result.reason} | "${titleText}..."`);
+        appendDebugLog(`DUPE-DL[${i}] | ${result.reason} | ${titleText}`);
+        updateStatus(`⏭️ Dupe (${result.reason}): ${titleText}...`);
+      } else {
+        logError(`❌ [ERROR-DL] ${result.error}`);
+        appendDebugLog(`ERR-DL[${i}] | ${result.error}`);
+        updateStatus(`❌ Error: ${result.error || "Unknown"}`);
+      }
+
+      await sleep(DELAY_BETWEEN_TABS_MS);
+    }
+
+    log(`✅ Data list processing complete. Opened: ${openedCount}`);
+    appendDebugLog(`DATALIST | Complete | opened=${openedCount}`);
   }
 
   async function processCurrentPage() {
@@ -412,15 +559,19 @@
       }
       return;
     }
+
     const rows = currentStrategy.getRows();
     log(
       `📄 Processing page: ${rows.length} rows found (${currentStrategy.name})`,
     );
     appendDebugLog(`PAGE | ${rows.length} rows | ${currentStrategy.name}`);
+
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (!isRunning || (useTargetLimit && openedCount >= targetCount)) break;
+
       highlightRow(row);
+
       const forumName = currentStrategy.getForumName(row);
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
         skippedExcluded++;
@@ -428,12 +579,14 @@
         appendDebugLog(`SKIP[${i}] | excluded: ${forumName}`);
         continue;
       }
+
       const titleLink = currentStrategy.getTitleLink(row);
       if (!titleLink) {
         logWarn(`⚠️ Row ${i}: No title link found`);
         appendDebugLog(`WARN[${i}] | no title link`);
         continue;
       }
+
       let href = titleLink.getAttribute("href");
       if (!href) {
         logWarn(`⚠️ Row ${i}: Empty href`);
@@ -443,6 +596,7 @@
       if (href.startsWith("/")) {
         href = window.location.origin + href;
       }
+
       const titleText = titleLink.textContent.substring(0, 35);
       log(`🔗 Row ${i}: Checking "${titleText}..." → ${href}`);
       appendDebugLog(`CHECK[${i}] | ${titleText}`);
@@ -451,7 +605,6 @@
       );
 
       const result = await checkAndOpenTab(href);
-
       if (result.opened) {
         openedCount++;
         log(`✅ [OPENED] ${openedCount}/${targetCount}: tabId=${result.tabId}`);
@@ -472,6 +625,7 @@
 
       await sleep(DELAY_BETWEEN_TABS_MS);
     }
+
     if (isRunning && (!useTargetLimit || openedCount < targetCount)) {
       const nextBtn = currentStrategy.getNextButton();
       if (nextBtn) {
