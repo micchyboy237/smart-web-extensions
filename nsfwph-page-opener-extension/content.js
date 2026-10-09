@@ -393,34 +393,102 @@
   }
 
   function setupThreadsPanel(panel) {
-    // Analyze the current thread page
-    analyzeThreadContent(panel);
+    // Fire and forget, or handle promise if needed
+    analyzeThreadContent(panel).catch((err) => {
+      logError("Failed to analyze thread:", err);
+      updateStatus("Error analyzing thread");
+    });
   }
 
   // ============================================================
   // THREADS PANEL FUNCTIONALITY
   // ============================================================
-  function analyzeThreadContent(panel) {
-    // We don't need to pass bbCodeBlocks anymore if updateBbCodeBlocks does its own scoped query
-    const reactionInfo = getReactionInfo();
+  async function analyzeThreadContent(panel) {
+    updateStatus("Analyzing thread content...");
 
-    // Pass null or let it handle internally
+    // ✅ ADD: await here
+    const reactionInfo = await getReactionInfo();
+
     updateBbCodeBlocks(panel, null);
     updateReactionInfo(panel, reactionInfo);
 
     if (!reactionInfo.hasReaction) {
-      // Use requiredReactions from our analysis for the buttons
       showReactionButtons(panel, reactionInfo.requiredReactions);
     }
   }
 
-  function getReactionInfo() {
-    // --- Get main post (for "hasReaction"/current user reaction) ---
+  /**
+   * Triggers hover on a reaction button and waits for the .reactTooltip to appear in DOM.
+   * Uses the exact event sequence proven to work via console diagnostics.
+   */
+  async function findReactTooltipWithRetry(
+    triggerBtn,
+    maxRetries = 3,
+    waitMs = 3000,
+  ) {
+    if (!triggerBtn) {
+      logWarn(`⚠️ [TOOLTIP-SEARCH] No trigger button provided.`);
+      return null;
+    }
+
+    const rect = triggerBtn.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+
+    log(
+      `🖱️ [TOOLTIP-SEARCH] Starting hover simulation at (${x.toFixed(0)}, ${y.toFixed(0)})...`,
+    );
+
+    for (let i = 1; i <= maxRetries; i++) {
+      log(
+        `⏳ [TOOLTIP-SEARCH] Attempt ${i}/${maxRetries}: Dispatching full event sequence...`,
+      );
+
+      // ✅ EXACT sequence from successful diagnoseHoverEvents()
+      const eventTypes = [
+        "mouseenter",
+        "mouseover",
+        "mousemove",
+        "pointerenter",
+        "pointerover",
+      ];
+
+      eventTypes.forEach((type) => {
+        const evt = new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: x,
+          clientY: y,
+        });
+        triggerBtn.dispatchEvent(evt);
+      });
+
+      log(
+        `⚡ [TOOLTIP-SEARCH] All 5 events dispatched. Waiting ${waitMs}ms...`,
+      );
+
+      // Wait the FULL duration before checking
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+
+      const tooltip = document.querySelector(".reactTooltip");
+      if (tooltip) {
+        log(`✅ [TOOLTIP-SEARCH] Success! Found .reactTooltip on attempt ${i}`);
+        return tooltip;
+      }
+
+      log(`⚠️ [TOOLTIP-SEARCH] Attempt ${i} failed. Tooltip not found yet.`);
+    }
+
+    logError(`❌ [TOOLTIP-SEARCH] Failed after ${maxRetries} attempts.`);
+    return null;
+  }
+
+  async function getReactionInfo() {
     const mainPost =
       document.querySelector(".js-post:first-of-type") ||
       document.querySelector(".message:first-of-type");
 
-    // Initialize all return variables at the top
     let hasReaction = false;
     let currentReaction = null;
     let availableReactions = [];
@@ -429,7 +497,6 @@
     log(`🔍 [THREAD-ANALYSIS] Main post element found: ${!!mainPost}`);
 
     if (!mainPost) {
-      logWarn(`⚠️ [THREAD-ANALYSIS] No main post container found on page`);
       return {
         hasReaction,
         currentReaction,
@@ -447,14 +514,14 @@
         title: reactedButton.querySelector("img")?.alt || "Unknown",
       };
       log(
-        `✅ [THREAD-ANALYSIS] Existing reaction detected: ID=${currentReaction.id}, Title="${currentReaction.title}"`,
+        `✅ [THREAD-ANALYSIS] Existing reaction detected: ID=${currentReaction.id}`,
       );
-    } else {
-      log(`ℹ️ [THREAD-ANALYSIS] No existing reaction found in main post`);
     }
 
-    // --- Get Available Reactions from Tooltip ---
-    const reactTooltip = document.querySelector(".reactTooltip");
+    // --- Find Tooltip with Retry Logic ---
+    const triggerBtn = mainPost.querySelector("a.reaction:not(.has-reaction)");
+    const reactTooltip = await findReactTooltipWithRetry(triggerBtn);
+
     if (reactTooltip) {
       const reactionLinks = reactTooltip.querySelectorAll("a.reaction");
       reactionLinks.forEach((link) => {
@@ -469,58 +536,70 @@
         }
       });
       log(
-        `ℹ️ [THREAD-ANALYSIS] Found ${availableReactions.length} available reactions in tooltip`,
+        `ℹ️ [THREAD-ANALYSIS] Scraped ${availableReactions.length} reactions from tooltip`,
       );
     } else {
-      log(`⚠️ [THREAD-ANALYSIS] No .reactTooltip found on page`);
+      // ⚠️ FALLBACK: If tooltip fails, try to get data from visible action bar buttons
+      logWarn(
+        `⚠️ [THREAD-ANALYSIS] Tooltip failed. Falling back to action bar scraping.`,
+      );
+      const actionBarBtns = mainPost.querySelectorAll(
+        ".actionBar-action--reaction.reaction:not(.has-reaction)",
+      );
+      actionBarBtns.forEach((btn) => {
+        const img = btn.querySelector("img");
+        if (img) {
+          availableReactions.push({
+            id: btn.dataset.reactionId,
+            title: img.alt,
+            // Construct URL manually as fallback
+            href:
+              btn.href ||
+              `${window.location.origin}/posts/${btn.dataset.checkHidePostId}/react?reaction_id=${btn.dataset.reactionId}`,
+            element: btn,
+          });
+        }
+      });
     }
 
     // --- Get Hidden Content Requirements ---
-    // ✅ CHANGE: Select bbCodeBlocks ONLY inside .message--article
     const mainArticle = document.querySelector(".message--article");
     if (mainArticle) {
-      // Look for hidden blocks specifically within the article container
       const hiddenBlocks = mainArticle.querySelectorAll(
         ".bbCodeBlock--hide.hideBlock--hidden",
       );
+
       if (hiddenBlocks.length > 0) {
-        log(
-          `🔍 [THREAD-ANALYSIS] Found ${hiddenBlocks.length} hidden block(s) within .message--article`,
-        );
         hiddenBlocks.forEach((block) => {
           const reactions = block.querySelectorAll(
             ".reaction[data-reaction-id]",
           );
           reactions.forEach((reaction) => {
             const id = reaction.dataset.reactionId;
-            // Avoid duplicates if multiple blocks require same reaction
+            const title = reaction.querySelector("img")?.alt || "Unknown";
+
             if (!requiredReactions.some((r) => r.id === id)) {
+              const match = availableReactions.find((a) => a.id === id);
               requiredReactions.push({
                 id: id,
-                title: reaction.querySelector("img")?.alt || "Unknown",
+                title: title,
+                href: match ? match.href : "#",
               });
             }
           });
         });
         log(
-          `🔒 [THREAD-ANALYSIS] Hidden content requires reactions: [${requiredReactions.map((r) => r.title).join(", ")}]`,
-        );
-      } else {
-        log(
-          `ℹ️ [THREAD-ANALYSIS] No hidden BBCode blocks found within .message--article`,
+          `🔒 [THREAD-ANALYSIS] Hidden content requires: [${requiredReactions.map((r) => r.title).join(", ")}]`,
         );
       }
-    } else {
-      logWarn(`⚠️ [THREAD-ANALYSIS] .message--article container not found`);
     }
 
-    // If no specific requirements found, assume all available reactions are valid
     if (requiredReactions.length === 0 && availableReactions.length > 0) {
       requiredReactions = [...availableReactions];
     }
 
     log(
-      `📊 [THREAD-ANALYSIS] Summary: hasReaction=${hasReaction}, requiredReactions=${requiredReactions.length}, availableReactions=${availableReactions.length}`,
+      `📊 [THREAD-ANALYSIS] Summary: hasReaction=${hasReaction}, required=${requiredReactions.length}, available=${availableReactions.length}`,
     );
 
     return {
