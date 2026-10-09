@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "nsfwPH - Pinay Thread Auto-Opener",
-  "version": "3.3",
+  "version": "3.4",
   "description": "Opens search result threads in new tabs with duplicate detection and auto-close for reacted posts.",
   "permissions": ["activeTab", "tabs", "storage", "scripting"],
   "host_permissions": ["*://*.nsfwph.org/*", "*://data.nsfwph.org/*"],

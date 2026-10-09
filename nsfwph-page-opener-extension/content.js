@@ -1,5 +1,6 @@
 (function () {
   if (document.getElementById("pto-panel")) return;
+
   // ============================================================
   // DEBUG CONFIGURATION
   // ============================================================
@@ -10,12 +11,14 @@
   function logWarn(...args) {
     if (DEBUG) console.warn("[PTO-CS]", ...args);
   }
+
   // ============================================================
   // CONFIGURATION
   // ============================================================
   const DELAY_BETWEEN_TABS_MS = 800;
   const DELAY_FOR_PAGE_LOAD_MS = 2000;
   const EXCLUDED_FORUM_TEXT = "Non-Pinay Videos";
+
   // ============================================================
   // PAGE STRUCTURE STRATEGIES
   // ============================================================
@@ -43,6 +46,7 @@
       return titleLink && titleLink.getAttribute("href");
     },
   };
+
   const Structure2Strategy = {
     name: "Structure2 (Article Previews)",
     getRows() {
@@ -69,34 +73,29 @@
       return titleLink && titleLink.getAttribute("href");
     },
   };
+
   const DataListStrategy = {
     name: "DataList (Quick Search Results)",
     getRows() {
       return document.querySelectorAll(".dataList-row");
     },
     getForumName(row) {
-      // Data list rows don't have forum names in the same way
-      // Return empty string to skip exclusion check
       return "";
     },
     getTitleLink(row) {
-      // Look for thread links in the second cell
       const cells = row.querySelectorAll("td.dataList-cell");
       if (cells.length >= 2) {
         const links = cells[1].querySelectorAll("a[href^='/threads/']");
-        // Get the link with actual text content (not empty)
         for (const link of links) {
           if (link.textContent.trim()) {
             return link;
           }
         }
-        // Fallback to first link if no text found
         return links.length > 0 ? links[0] : null;
       }
       return null;
     },
     getNextButton() {
-      // Data list doesn't have pagination - return null
       return null;
     },
     isValidRow(row) {
@@ -104,10 +103,10 @@
       return titleLink && titleLink.getAttribute("href");
     },
   };
+
   const StrategyRegistry = {
     strategies: [Structure1Strategy, Structure2Strategy, DataListStrategy],
     detect() {
-      // Check for data list first (highest priority if exists)
       const dataListRows = DataListStrategy.getRows();
       if (dataListRows.length > 0) {
         log(
@@ -116,14 +115,12 @@
         return DataListStrategy;
       }
 
-      // Then check for block rows
       const blockRows = Structure1Strategy.getRows();
       if (blockRows.length > 0) {
         log(`📋 Detected page structure: ${Structure1Strategy.name}`);
         return Structure1Strategy;
       }
 
-      // Finally check for article previews
       const articleRows = Structure2Strategy.getRows();
       if (articleRows.length > 0) {
         log(`📋 Detected page structure: ${Structure2Strategy.name}`);
@@ -144,6 +141,7 @@
       return this.detect();
     },
   };
+
   // ============================================================
   // STATE
   // ============================================================
@@ -156,10 +154,13 @@
   let autoCloseIfReacted = false;
   let currentStrategy = null;
   let hasProcessedDataList = false;
+  let currentPanelType = "structured"; // 'structured' or 'threads'
+
   // ============================================================
   // STORAGE HELPERS
   // ============================================================
   const SESSION_KEY_PREFIX = "pto_session_";
+
   function saveToSession(key, value) {
     try {
       sessionStorage.setItem(SESSION_KEY_PREFIX + key, JSON.stringify(value));
@@ -167,6 +168,7 @@
       logWarn("Failed to save to session:", e);
     }
   }
+
   function loadFromSession(key, defaultValue = null) {
     try {
       const value = sessionStorage.getItem(SESSION_KEY_PREFIX + key);
@@ -176,6 +178,7 @@
       return defaultValue;
     }
   }
+
   async function saveAutoCloseSetting(enabled) {
     try {
       await chrome.storage.local.set({ pto_autoCloseIfReacted: enabled });
@@ -184,6 +187,7 @@
       logWarn("Failed to save auto-close setting:", e);
     }
   }
+
   async function loadAutoCloseSetting() {
     try {
       const result = await chrome.storage.local.get("pto_autoCloseIfReacted");
@@ -195,16 +199,19 @@
       return false;
     }
   }
+
   function loadPanelState() {
     return {
       useTargetLimit: loadFromSession("useTargetLimit", false),
       targetCount: loadFromSession("targetCount", 10),
     };
   }
+
   function savePanelState() {
     saveToSession("useTargetLimit", useTargetLimit);
     saveToSession("targetCount", targetCount);
   }
+
   // ============================================================
   // COMMUNICATION WITH BACKGROUND WORKER
   // ============================================================
@@ -230,6 +237,7 @@
       );
     });
   }
+
   async function getStats() {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "GET_STATS" }, (response) => {
@@ -237,75 +245,134 @@
       });
     });
   }
+
   // ============================================================
-  // UI CREATION
+  // PANEL DETECTION & CREATION
   // ============================================================
+  function isThreadsPage() {
+    return (
+      /\/threads\/\d+/.test(window.location.href) ||
+      /\/posts\/\d+/.test(window.location.href)
+    );
+  }
+
   async function createPanel() {
     const savedState = loadPanelState();
     useTargetLimit = savedState.useTargetLimit;
     targetCount = savedState.targetCount || 10;
     autoCloseIfReacted = await loadAutoCloseSetting();
+
     const panel = document.createElement("div");
     panel.id = "pto-panel";
-    panel.innerHTML = `
-      <h4>🔗 Thread Opener <span id="pto-debug-toggle" style="cursor:pointer;font-size:11px;color:#666;margin-left:6px;">[debug]</span></h4>
-      <div class="pto-row">
-        <label>Page Structure:</label>
-        <span id="pto-structure-name" style="color:#0f3460;font-weight:bold;font-size:11px;">Detecting...</span>
-      </div>
-      <div class="pto-row">
-        <label>Current Page Available:</label>
-        <span id="pto-available-count" style="color:#e94560;font-weight:bold;">-</span>
-      </div>
-      <div class="pto-row">
-        <label>Use Target Limit:</label>
-        <label class="switch">
-          <input type="checkbox" id="pto-limit-toggle" ${useTargetLimit ? "checked" : ""}>
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="pto-row" id="pto-target-row" style="display:${useTargetLimit ? "flex" : "none"};">
-        <label>Target Tabs:</label>
-        <input type="number" id="pto-target" value="${targetCount}" min="1" max="100" />
-      </div>
-      <div class="pto-row">
-        <label>Auto-Close If Reacted:</label>
-        <label class="switch">
-          <input type="checkbox" id="pto-autoclose-toggle" ${autoCloseIfReacted ? "checked" : ""}>
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="pto-row">
-        <span id="pto-status">Ready</span>
-      </div>
-      <pre id="pto-debug-log" style="display:none;"></pre>
-      <button id="pto-start-btn">Start Opening</button>
-      <button id="pto-stop-btn" style="display:none; background:#d9534f;">Stop</button>
-    `;
+
+    if (isThreadsPage()) {
+      currentPanelType = "threads";
+      panel.innerHTML = await loadThreadsPanelHTML();
+      setupThreadsPanel(panel);
+    } else {
+      currentPanelType = "structured";
+      panel.innerHTML = await loadStructuredPanelHTML();
+      setupStructuredPanel(panel);
+    }
+
     document.body.appendChild(panel);
-    document
-      .getElementById("pto-start-btn")
+  }
+
+  async function loadStructuredPanelHTML() {
+    // In production, this would fetch from panel-structured.html
+    // For now, we'll use inline HTML
+    return `
+      <div class="pto-panel-content">
+        <h4>🔗 Thread Opener <span class="pto-debug-toggle" style="cursor:pointer;font-size:11px;color:#666;margin-left:6px;">[debug]</span></h4>
+        
+        <div class="pto-row">
+          <label>Page Structure:</label>
+          <span class="pto-structure-name" style="color:#0f3460;font-weight:bold;font-size:11px;">Detecting...</span>
+        </div>
+        
+        <div class="pto-row">
+          <label>Current Page Available:</label>
+          <span class="pto-available-count" style="color:#e94560;font-weight:bold;">-</span>
+        </div>
+        
+        <div class="pto-row">
+          <label>Use Target Limit:</label>
+          <label class="switch">
+            <input type="checkbox" class="pto-limit-toggle" ${useTargetLimit ? "checked" : ""}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="pto-row pto-target-row" style="display:${useTargetLimit ? "flex" : "none"};">
+          <label>Target Tabs:</label>
+          <input type="number" class="pto-target-input" value="${targetCount}" min="1" max="100" />
+        </div>
+        
+        <div class="pto-row">
+          <label>Auto-Close If Reacted:</label>
+          <label class="switch">
+            <input type="checkbox" class="pto-autoclose-toggle" ${autoCloseIfReacted ? "checked" : ""}>
+            <span class="slider"></span>
+          </label>
+        </div>
+        
+        <div class="pto-row">
+          <span class="pto-status">Ready</span>
+        </div>
+        
+        <pre class="pto-debug-log" style="display:none;"></pre>
+        
+        <button class="pto-start-btn">Start Opening</button>
+        <button class="pto-stop-btn" style="display:none; background:#d9534f;">Stop</button>
+      </div>
+    `;
+  }
+
+  async function loadThreadsPanelHTML() {
+    // In production, this would fetch from panel-threads.html
+    // For now, we'll use inline HTML
+    return `
+      <div class="pto-panel-content">
+        <h4>📖 Opened Thread</h4>
+        
+        <div class="pto-thread-info">
+          <div class="pto-section">
+            <h5>BBCode Blocks</h5>
+            <div class="pto-bbcode-list"></div>
+          </div>
+          
+          <div class="pto-section">
+            <h5>Reactions</h5>
+            <div class="pto-reaction-info"></div>
+            <div class="pto-reaction-actions"></div>
+          </div>
+        </div>
+        
+        <div class="pto-row">
+          <span class="pto-status">Analyzing thread...</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function setupStructuredPanel(panel) {
+    panel
+      .querySelector(".pto-start-btn")
       .addEventListener("click", startProcess);
-    document
-      .getElementById("pto-stop-btn")
-      .addEventListener("click", stopProcess);
-    document
-      .getElementById("pto-debug-toggle")
-      .addEventListener("click", () => {
-        const logEl = document.getElementById("pto-debug-log");
-        logEl.style.display = logEl.style.display === "none" ? "block" : "none";
-      });
-    document
-      .getElementById("pto-limit-toggle")
-      .addEventListener("change", (e) => {
-        useTargetLimit = e.target.checked;
-        const targetRow = document.getElementById("pto-target-row");
-        targetRow.style.display = useTargetLimit ? "flex" : "none";
-        updateAvailableCount();
-        savePanelState();
-      });
-    document
-      .getElementById("pto-autoclose-toggle")
+    panel.querySelector(".pto-stop-btn").addEventListener("click", stopProcess);
+    panel.querySelector(".pto-debug-toggle").addEventListener("click", () => {
+      const logEl = panel.querySelector(".pto-debug-log");
+      logEl.style.display = logEl.style.display === "none" ? "block" : "none";
+    });
+    panel.querySelector(".pto-limit-toggle").addEventListener("change", (e) => {
+      useTargetLimit = e.target.checked;
+      const targetRow = panel.querySelector(".pto-target-row");
+      targetRow.style.display = useTargetLimit ? "flex" : "none";
+      updateAvailableCount();
+      savePanelState();
+    });
+    panel
+      .querySelector(".pto-autoclose-toggle")
       .addEventListener("change", async (e) => {
         autoCloseIfReacted = e.target.checked;
         log(
@@ -313,28 +380,307 @@
         );
         await saveAutoCloseSetting(autoCloseIfReacted);
       });
-    document.getElementById("pto-target").addEventListener("change", (e) => {
+    panel.querySelector(".pto-target-input").addEventListener("change", (e) => {
       targetCount = parseInt(e.target.value, 10);
       savePanelState();
     });
+
     setTimeout(() => {
       currentStrategy = StrategyRegistry.detect();
       updateStructureDisplay();
       updateAvailableCount();
     }, 500);
   }
+
+  function setupThreadsPanel(panel) {
+    // Analyze the current thread page
+    analyzeThreadContent(panel);
+  }
+
+  // ============================================================
+  // THREADS PANEL FUNCTIONALITY
+  // ============================================================
+  function analyzeThreadContent(panel) {
+    // We don't need to pass bbCodeBlocks anymore if updateBbCodeBlocks does its own scoped query
+    const reactionInfo = getReactionInfo();
+
+    // Pass null or let it handle internally
+    updateBbCodeBlocks(panel, null);
+    updateReactionInfo(panel, reactionInfo);
+
+    if (!reactionInfo.hasReaction) {
+      // Use requiredReactions from our analysis for the buttons
+      showReactionButtons(panel, reactionInfo.requiredReactions);
+    }
+  }
+
+  function getReactionInfo() {
+    // --- Get main post (for "hasReaction"/current user reaction) ---
+    const mainPost =
+      document.querySelector(".js-post:first-of-type") ||
+      document.querySelector(".message:first-of-type");
+
+    // Initialize all return variables at the top
+    let hasReaction = false;
+    let currentReaction = null;
+    let availableReactions = [];
+    let requiredReactions = [];
+
+    log(`🔍 [THREAD-ANALYSIS] Main post element found: ${!!mainPost}`);
+
+    if (!mainPost) {
+      logWarn(`⚠️ [THREAD-ANALYSIS] No main post container found on page`);
+      return {
+        hasReaction,
+        currentReaction,
+        availableReactions,
+        requiredReactions,
+      };
+    }
+
+    // --- Check Existing Reaction ---
+    const reactedButton = mainPost.querySelector("a.reaction.has-reaction");
+    if (reactedButton) {
+      hasReaction = true;
+      currentReaction = {
+        id: reactedButton.dataset.reactionId,
+        title: reactedButton.querySelector("img")?.alt || "Unknown",
+      };
+      log(
+        `✅ [THREAD-ANALYSIS] Existing reaction detected: ID=${currentReaction.id}, Title="${currentReaction.title}"`,
+      );
+    } else {
+      log(`ℹ️ [THREAD-ANALYSIS] No existing reaction found in main post`);
+    }
+
+    // --- Get Available Reactions from Tooltip ---
+    const reactTooltip = document.querySelector(".reactTooltip");
+    if (reactTooltip) {
+      const reactionLinks = reactTooltip.querySelectorAll("a.reaction");
+      reactionLinks.forEach((link) => {
+        const img = link.querySelector("img");
+        if (img) {
+          availableReactions.push({
+            id: link.dataset.reactionId,
+            title: img.alt,
+            href: link.href,
+            element: link,
+          });
+        }
+      });
+      log(
+        `ℹ️ [THREAD-ANALYSIS] Found ${availableReactions.length} available reactions in tooltip`,
+      );
+    } else {
+      log(`⚠️ [THREAD-ANALYSIS] No .reactTooltip found on page`);
+    }
+
+    // --- Get Hidden Content Requirements ---
+    // ✅ CHANGE: Select bbCodeBlocks ONLY inside .message--article
+    const mainArticle = document.querySelector(".message--article");
+    if (mainArticle) {
+      // Look for hidden blocks specifically within the article container
+      const hiddenBlocks = mainArticle.querySelectorAll(
+        ".bbCodeBlock--hide.hideBlock--hidden",
+      );
+      if (hiddenBlocks.length > 0) {
+        log(
+          `🔍 [THREAD-ANALYSIS] Found ${hiddenBlocks.length} hidden block(s) within .message--article`,
+        );
+        hiddenBlocks.forEach((block) => {
+          const reactions = block.querySelectorAll(
+            ".reaction[data-reaction-id]",
+          );
+          reactions.forEach((reaction) => {
+            const id = reaction.dataset.reactionId;
+            // Avoid duplicates if multiple blocks require same reaction
+            if (!requiredReactions.some((r) => r.id === id)) {
+              requiredReactions.push({
+                id: id,
+                title: reaction.querySelector("img")?.alt || "Unknown",
+              });
+            }
+          });
+        });
+        log(
+          `🔒 [THREAD-ANALYSIS] Hidden content requires reactions: [${requiredReactions.map((r) => r.title).join(", ")}]`,
+        );
+      } else {
+        log(
+          `ℹ️ [THREAD-ANALYSIS] No hidden BBCode blocks found within .message--article`,
+        );
+      }
+    } else {
+      logWarn(`⚠️ [THREAD-ANALYSIS] .message--article container not found`);
+    }
+
+    // If no specific requirements found, assume all available reactions are valid
+    if (requiredReactions.length === 0 && availableReactions.length > 0) {
+      requiredReactions = [...availableReactions];
+    }
+
+    log(
+      `📊 [THREAD-ANALYSIS] Summary: hasReaction=${hasReaction}, requiredReactions=${requiredReactions.length}, availableReactions=${availableReactions.length}`,
+    );
+
+    return {
+      hasReaction,
+      currentReaction,
+      availableReactions,
+      requiredReactions,
+    };
+  }
+
+  function updateBbCodeBlocks(panel, bbCodeBlocks) {
+    const container = panel.querySelector(".pto-bbcode-list");
+    if (!container) return;
+
+    // ✅ FIX: Re-query specifically for hidden blocks within .message--article
+    // This ensures we only show what the analysis found, not every block on the page
+    const mainArticle = document.querySelector(".message--article");
+    let targetBlocks = [];
+
+    if (mainArticle) {
+      // Select only the hidden blocks that are actually requiring a reaction
+      targetBlocks = Array.from(
+        mainArticle.querySelectorAll(".bbCodeBlock--hide.hideBlock--hidden"),
+      );
+    }
+
+    if (targetBlocks.length === 0) {
+      container.innerHTML =
+        '<p style="color:#aaa;font-size:12px;">No hidden BBCode blocks requiring reaction</p>';
+      return;
+    }
+
+    let html = "";
+    targetBlocks.forEach((block, index) => {
+      // Get the text content to show a preview
+      const content = block.textContent.substring(0, 150);
+
+      // Extract required reactions for this specific block
+      const reactions = block.querySelectorAll(".reaction[data-reaction-id]");
+      const reqTitles = Array.from(reactions)
+        .map((r) => r.querySelector("img")?.alt || "Unknown")
+        .join(", ");
+
+      html += `
+            <div class="pto-bbcode-item" style="margin-bottom:8px;padding:8px;background:#16213e;border-radius:4px;border-left: 3px solid #e94560;">
+                <div style="font-size:11px;color:#e94560;margin-bottom:4px;font-weight:bold;">
+                    Hidden Block #${index + 1}
+                </div>
+                <div style="font-size:10px;color:#ffd700;margin-bottom:4px;">
+                    🔒 Requires: ${reqTitles}
+                </div>
+                <div style="font-size:10px;color:#aaa;word-break:break-word;line-height:1.4;">
+                    ${escapeHtml(content)}...
+                </div>
+            </div>
+        `;
+    });
+
+    container.innerHTML = html;
+  }
+
+  function updateReactionInfo(panel, reactionInfo) {
+    const container = panel.querySelector(".pto-reaction-info");
+    if (!container) return;
+
+    if (reactionInfo.hasReaction) {
+      container.innerHTML = `
+        <div style="padding:8px;background:#16213e;border-radius:4px;">
+          <div style="font-size:12px;color:#4caf50;">✓ Already reacted with: ${reactionInfo.currentReaction.title}</div>
+        </div>
+      `;
+    } else {
+      container.innerHTML = `
+        <div style="padding:8px;background:#16213e;border-radius:4px;">
+          <div style="font-size:12px;color:#ffa500;">⚠ No reaction yet</div>
+          <div style="font-size:10px;color:#aaa;margin-top:4px;">Required: ${reactionInfo.requiredReactions.map((r) => r.title).join(", ")}</div>
+        </div>
+      `;
+    }
+  }
+
+  function showReactionButtons(panel, availableReactions) {
+    const container = panel.querySelector(".pto-reaction-actions");
+    if (!container) return;
+
+    if (availableReactions.length === 0) {
+      container.innerHTML =
+        '<p style="color:#aaa;font-size:12px;">No reactions available</p>';
+      return;
+    }
+
+    let html =
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">';
+    availableReactions.forEach((reaction) => {
+      html += `
+        <button class="pto-reaction-btn" data-reaction-id="${reaction.id}" data-href="${reaction.href}" 
+                style="padding:6px 12px;background:#0f3460;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">
+          ${reaction.title}
+        </button>
+      `;
+    });
+    html += "</div>";
+
+    container.innerHTML = html;
+
+    // Add click handlers
+    container.querySelectorAll(".pto-reaction-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const reactionId = btn.dataset.reactionId;
+        const href = btn.dataset.href;
+        await triggerReaction(href, reactionId);
+      });
+    });
+  }
+
+  async function triggerReaction(href, reactionId) {
+    log(`🎯 Triggering reaction: ${reactionId} via ${href}`);
+    updateStatus("Triggering reaction...");
+
+    try {
+      // Find the actual reaction button in the page and click it
+      const reactionButton = document.querySelector(
+        `a.reaction[data-reaction-id="${reactionId}"]:not(.has-reaction)`,
+      );
+
+      if (reactionButton) {
+        reactionButton.click();
+        log("✅ Reaction button clicked");
+        updateStatus("Reaction triggered! Refreshing...");
+
+        // Wait a bit then refresh to see the result
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } else {
+        // Fallback: try to navigate to the reaction URL
+        log("⚠️ Button not found, trying direct navigation");
+        window.location.href = href;
+      }
+    } catch (error) {
+      logError("❌ Failed to trigger reaction:", error);
+      updateStatus("Failed to trigger reaction");
+    }
+  }
+
+  // ============================================================
+  // STRUCTURED PANEL FUNCTIONS (existing logic)
+  // ============================================================
   function updateStructureDisplay() {
-    const el = document.getElementById("pto-structure-name");
+    const el = document.querySelector(".pto-structure-name");
     if (el && currentStrategy) {
       el.textContent = currentStrategy.name;
     }
   }
+
   function countAvailableRows() {
     if (!currentStrategy) {
       currentStrategy = StrategyRegistry.detect();
     }
 
-    // Count data list rows separately if they exist
     const dataListRows = Array.from(DataListStrategy.getRows());
     const dataListAvailable = dataListRows.filter(
       (row) =>
@@ -342,10 +688,10 @@
         !DataListStrategy.getForumName(row).includes(EXCLUDED_FORUM_TEXT),
     ).length;
 
-    // Count main strategy rows
     const rows = currentStrategy.getRows();
     let available = 0;
     let excluded = 0;
+
     rows.forEach((row) => {
       const forumName = currentStrategy.getForumName(row);
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
@@ -366,9 +712,11 @@
       mainStrategyAvailable: available,
     };
   }
+
   function updateAvailableCount() {
-    const countEl = document.getElementById("pto-available-count");
+    const countEl = document.querySelector(".pto-available-count");
     if (!countEl) return;
+
     const counts = countAvailableRows();
     if (useTargetLimit) {
       countEl.textContent = `${counts.available} (excl: ${counts.excluded})`;
@@ -376,10 +724,12 @@
       countEl.textContent = `${counts.available} / ${counts.total}`;
     }
   }
+
   function appendDebugLog(msg) {
     if (!DEBUG) return;
-    const logEl = document.getElementById("pto-debug-log");
+    const logEl = document.querySelector(".pto-debug-log");
     if (!logEl) return;
+
     const time = new Date().toLocaleTimeString("en-US", {
       hour12: false,
       fractionalSecondDigits: 3,
@@ -387,20 +737,24 @@
     logEl.textContent += `[${time}] ${msg}\n`;
     logEl.scrollTop = logEl.scrollHeight;
   }
+
   function highlightRow(rowElement) {
     const prev = document.querySelector(".pto-active-row");
     if (prev) prev.classList.remove("pto-active-row");
+
     if (rowElement) {
       rowElement.classList.add("pto-active-row");
       rowElement.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }
+
   function clearHighlight() {
     const active = document.querySelector(".pto-active-row");
     if (active) active.classList.remove("pto-active-row");
   }
+
   // ============================================================
-  // CORE LOGIC
+  // CORE LOGIC (existing)
   // ============================================================
   async function startProcess() {
     currentStrategy = StrategyRegistry.detect();
@@ -408,7 +762,7 @@
     hasProcessedDataList = false;
 
     if (useTargetLimit) {
-      const input = document.getElementById("pto-target");
+      const input = document.querySelector(".pto-target-input");
       targetCount = parseInt(input.value, 10);
       if (!targetCount || targetCount <= 0) {
         alert("Please enter a valid target count.");
@@ -422,13 +776,17 @@
         return;
       }
     }
+
     isRunning = true;
     openedCount = 0;
     skippedDuplicates = 0;
     skippedExcluded = 0;
+
     toggleButtons(true);
-    const logEl = document.getElementById("pto-debug-log");
+
+    const logEl = document.querySelector(".pto-debug-log");
     if (logEl) logEl.textContent = "";
+
     const stats = await getStats();
     log("▶️ Starting process", {
       targetCount,
@@ -437,6 +795,7 @@
       strategy: currentStrategy.name,
       backgroundStats: stats,
     });
+
     appendDebugLog(
       `START | target=${targetCount} | limit=${useTargetLimit} | autoclose=${autoCloseIfReacted} | strategy=${currentStrategy.name} | bg_opened=${stats.openedCount} | bg_pending=${stats.pendingCount}`,
     );
@@ -456,14 +815,16 @@
       hasProcessedDataList = true;
     }
 
-    // Then process main strategy rows (articles or blocks)
+    // Then process main strategy rows
     if (isRunning && (!useTargetLimit || openedCount < targetCount)) {
       await processCurrentPage();
     }
   }
+
   function stopProcess() {
     isRunning = false;
     clearHighlight();
+
     const summary = `Stopped. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
     log("⏹️ Process stopped:", summary);
     appendDebugLog(`STOP | ${summary}`);
@@ -471,9 +832,6 @@
     toggleButtons(false);
   }
 
-  /**
-   * Process data list rows (quick search results)
-   */
   async function processDataListRows() {
     if (!isRunning) return;
 
@@ -508,6 +866,7 @@
         appendDebugLog(`WARN-DL[${i}] | empty href`);
         continue;
       }
+
       if (href.startsWith("/")) {
         href = window.location.origin + href;
       }
@@ -520,6 +879,7 @@
       );
 
       const result = await checkAndOpenTab(href);
+
       if (result.opened) {
         openedCount++;
         log(
@@ -593,6 +953,7 @@
         appendDebugLog(`WARN[${i}] | empty href`);
         continue;
       }
+
       if (href.startsWith("/")) {
         href = window.location.origin + href;
       }
@@ -605,6 +966,7 @@
       );
 
       const result = await checkAndOpenTab(href);
+
       if (result.opened) {
         openedCount++;
         log(`✅ [OPENED] ${openedCount}/${targetCount}: tabId=${result.tabId}`);
@@ -634,14 +996,18 @@
           `NEXT | moving to next page | ${openedCount}/${targetCount}`,
         );
         updateStatus(`Next page... (${openedCount}/${targetCount})`);
+
         await sleep(500);
         nextBtn.click();
         await waitForPageLoad();
+
         log("📃 New page loaded");
         appendDebugLog(`LOADED | new page ready`);
+
         currentStrategy = StrategyRegistry.detect();
         updateStructureDisplay();
         updateAvailableCount();
+
         await processCurrentPage();
       } else {
         const summary = `⚠️ No more pages. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
@@ -652,12 +1018,14 @@
       }
     }
   }
+
   // ============================================================
   // UTILITIES
   // ============================================================
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+
   function waitForPageLoad() {
     return new Promise((resolve) => {
       let checks = 0;
@@ -669,12 +1037,14 @@
         const rows2 = document.querySelectorAll(
           "article.message--articlePreview.js-inlineModContainer",
         );
+
         if (rows1.length > 0 || rows2.length > 0) {
           log(`📃 Page load confirmed after ${checks} checks`);
           clearInterval(checkInterval);
           resolve();
         }
       }, 500);
+
       setTimeout(() => {
         clearInterval(checkInterval);
         logWarn(`📃 Page load timeout after ${checks} checks`);
@@ -682,18 +1052,26 @@
       }, DELAY_FOR_PAGE_LOAD_MS * 2);
     });
   }
+
   function updateStatus(msg) {
-    const el = document.getElementById("pto-status");
+    const el = document.querySelector(".pto-status");
     if (el) el.textContent = msg;
   }
+
   function toggleButtons(running) {
-    document.getElementById("pto-start-btn").style.display = running
-      ? "none"
-      : "inline-block";
-    document.getElementById("pto-stop-btn").style.display = running
-      ? "inline-block"
-      : "none";
+    const startBtn = document.querySelector(".pto-start-btn");
+    const stopBtn = document.querySelector(".pto-stop-btn");
+
+    if (startBtn) startBtn.style.display = running ? "none" : "inline-block";
+    if (stopBtn) stopBtn.style.display = running ? "inline-block" : "none";
   }
+
+  function escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
   // Initialize
   createPanel();
 })();
