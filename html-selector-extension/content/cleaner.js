@@ -353,6 +353,7 @@ const RAGCleaner = (() => {
       "summary",
       "div",
       "span",
+      "video",
     ];
   }
 

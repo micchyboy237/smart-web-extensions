@@ -51,7 +51,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleCheckAndOpen(url) {
   const normalized = normalizeUrl(url);
   log("🔍 [DUPE-CHECK] Normalizing URL:", { original: url, normalized });
-
   // --- Check 1: Pending opens (race condition guard) ---
   if (pendingOpens.has(normalized)) {
     log(
@@ -60,24 +59,19 @@ async function handleCheckAndOpen(url) {
     log("   -> URL:", normalized);
     return { opened: false, duplicate: true, reason: "pending" };
   }
-
   try {
     // --- Check 2: Already open in any tab ---
     log("🔎 [DUPE-CHECK] Querying all open tabs...");
     const tabs = await chrome.tabs.query({});
     log(`   -> Found ${tabs.length} total tabs.`);
-
     let matchedTabId = null;
     let matchReason = "";
-
     const isDuplicate = tabs.some((tab) => {
       if (!tab.url) {
         // log("   -> Skipping tab", tab.id, "(no URL yet)");
         return false;
       }
-
       const tabNormalized = normalizeUrl(tab.url);
-
       // Exact Match
       if (tabNormalized === normalized) {
         matchedTabId = tab.id;
@@ -85,7 +79,6 @@ async function handleCheckAndOpen(url) {
         log("   -> ✅ MATCH FOUND! Tab ID:", tab.id, "| URL:", tab.url);
         return true;
       }
-
       // Partial/Hash Match (for debugging near-misses)
       if (DEBUG && tabNormalized.includes(normalized.split("/").pop())) {
         log(
@@ -94,10 +87,8 @@ async function handleCheckAndOpen(url) {
           tabNormalized,
         );
       }
-
       return false;
     });
-
     if (isDuplicate) {
       log("🚫 [DUPE-DETECTED] Reason: OPEN_TAB (" + matchReason + ")");
       log("   -> Conflicting Tab ID:", matchedTabId);
@@ -110,12 +101,10 @@ async function handleCheckAndOpen(url) {
     } else {
       log("✅ [DUPE-CHECK] No duplicates found. Proceeding to open.");
     }
-
     // --- Open new tab ---
     log("🆕 [ACTION] Opening new tab:", normalized);
     pendingOpens.add(normalized);
     log("   -> Added to pendingOpens. Current size:", pendingOpens.size);
-
     // Open in background (active: false)
     const newTab = await chrome.tabs.create({ url, active: false });
     openedCount++;
@@ -125,17 +114,14 @@ async function handleCheckAndOpen(url) {
       "| Total Opened:",
       openedCount,
     );
-
     // --- Setup Auto-Close Listener ---
     const onUpdatedListener = async (tabId, changeInfo, tab) => {
       if (tabId === newTab.id && changeInfo.status === "complete") {
         log("🔄 [LOAD] Tab", tabId, "finished loading. Checking auto-close...");
-
         // Remove listener once handled
         chrome.tabs.onUpdated.removeListener(onUpdatedListener);
         pendingOpens.delete(normalized);
         log("   -> Removed from pendingOpens. Remaining:", pendingOpens.size);
-
         // Check if auto-close is enabled in storage
         const settings = await chrome.storage.local.get(
           "pto_autoCloseIfReacted",
@@ -148,9 +134,7 @@ async function handleCheckAndOpen(url) {
         }
       }
     };
-
     chrome.tabs.onUpdated.addListener(onUpdatedListener);
-
     // Safety net: remove from pending after 15s regardless
     setTimeout(() => {
       if (pendingOpens.has(normalized)) {
@@ -162,7 +146,6 @@ async function handleCheckAndOpen(url) {
         );
       }
     }, 15000);
-
     return { opened: true, duplicate: false, tabId: newTab.id };
   } catch (err) {
     pendingOpens.delete(normalized);
@@ -173,9 +156,14 @@ async function handleCheckAndOpen(url) {
     throw new Error(`Failed to open tab: ${err.message}`);
   }
 }
-
 /**
- * Injects a lightweight script to check for reactions and closes the tab if found.
+ * Injects a lightweight script to check for reactions and closes the tab if appropriate.
+ *
+ * Decision Logic:
+ * 1. Has reaction → Close tab (already interacted)
+ * 2. No reaction + Has video → Keep tab open (video content worth keeping)
+ * 3. No reaction + No video + Has .bbCodeBlock → Keep tab open (hidden content requiring reaction)
+ * 4. No reaction + No video + No .bbCodeBlock → Close tab (empty/useless page)
  */
 async function checkAndCloseIfReacted(tabId, url) {
   try {
@@ -184,39 +172,81 @@ async function checkAndCloseIfReacted(tabId, url) {
       log("ℹ️ [AUTO-CLOSE] Skipping reaction check: Not a thread/post URL");
       return;
     }
-
     log(`🔍 [AUTO-CLOSE] Injecting reaction check into tab ${tabId}...`);
-
     const results = await chrome.scripting.executeScript({
       target: { tabId: tabId },
       func: () => {
         // This code runs inside the page context
+
+        // Check for video elements
+        const videoElements = document.querySelectorAll("video");
+        const hasVideoElement = videoElements.length > 0;
+
+        // Check for bbCodeBlock (hidden content blocks)
+        const bbCodeBlocks = document.querySelectorAll(".bbCodeBlock");
+        const hasBbCodeBlock = bbCodeBlocks.length > 0;
+
         // Scope to main post to avoid sidebar widgets
         const mainPost =
           document.querySelector(".js-post:first-of-type") ||
           document.querySelector(".message:first-of-type");
 
+        let hasReaction = false;
+
         if (mainPost) {
           // Method 1: has-reaction class
           if (mainPost.querySelector("a.reaction.has-reaction")) {
-            return true;
+            hasReaction = true;
           }
-
           // Method 2: Missing imageHidden class
-          const btn = mainPost.querySelector(
-            'a.reaction[data-xf-init="reaction"]',
-          );
-          if (btn && !btn.classList.contains("reaction--imageHidden")) {
-            return true;
+          if (!hasReaction) {
+            const btn = mainPost.querySelector(
+              'a.reaction[data-xf-init="reaction"]',
+            );
+            if (btn && !btn.classList.contains("reaction--imageHidden")) {
+              hasReaction = true;
+            }
           }
         }
-        return false;
+
+        return {
+          hasReaction: hasReaction,
+          hasVideo: hasVideoElement,
+          videoCount: videoElements.length,
+          hasBbCodeBlock: hasBbCodeBlock,
+          bbCodeBlockCount: bbCodeBlocks.length,
+        };
       },
     });
 
-    if (results && results[0] && results[0].result === true) {
-      log(`🚫 [AUTO-CLOSE] Reaction detected in tab ${tabId}. Closing tab.`);
-      chrome.tabs.remove(tabId);
+    if (results && results[0] && results[0].result) {
+      const checkResult = results[0].result;
+
+      // Decision logic:
+      // 1. If has reaction: ALWAYS close (whether video or not)
+      if (checkResult.hasReaction) {
+        log(`🚫 [AUTO-CLOSE] Reaction detected in tab ${tabId}. Closing tab.`);
+        chrome.tabs.remove(tabId);
+      }
+      // 2. If NO reaction AND has video: Keep open (exception for video pages)
+      else if (checkResult.hasVideo) {
+        log(
+          `✅ [AUTO-CLOSE] No reaction but video element detected (${checkResult.videoCount} videos) in tab ${tabId}. Keeping tab open.`,
+        );
+      }
+      // 3. If NO reaction AND no video BUT has bbCodeBlock: Keep open (hidden content)
+      else if (checkResult.hasBbCodeBlock) {
+        log(
+          `✅ [AUTO-CLOSE] No reaction, no video, but bbCodeBlock detected (${checkResult.bbCodeBlockCount} blocks) in tab ${tabId}. Keeping tab open (hidden content).`,
+        );
+      }
+      // 4. If NO reaction AND no video AND no bbCodeBlock: Close (empty/useless page)
+      else {
+        log(
+          `🚫 [AUTO-CLOSE] No reaction, no video, no bbCodeBlock in tab ${tabId}. Closing empty/useless tab.`,
+        );
+        chrome.tabs.remove(tabId);
+      }
     } else {
       log(
         `✅ [AUTO-CLOSE] No reaction detected in tab ${tabId}. Keeping open.`,
@@ -226,7 +256,6 @@ async function checkAndCloseIfReacted(tabId, url) {
     logWarn("Failed to check reaction in background:", e);
   }
 }
-
 // ============================================================
 // URL NORMALIZATION
 // ============================================================
