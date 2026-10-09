@@ -404,16 +404,30 @@
   // THREADS PANEL FUNCTIONALITY
   // ============================================================
   async function analyzeThreadContent(panel) {
+    // 1. Set initial status
     updateStatus("Analyzing thread content...");
 
-    // ✅ ADD: await here
-    const reactionInfo = await getReactionInfo();
+    try {
+      // 2. Perform the heavy lifting (includes the 3s tooltip wait)
+      const reactionInfo = await getReactionInfo();
 
-    updateBbCodeBlocks(panel, null);
-    updateReactionInfo(panel, reactionInfo);
+      // 3. Render the UI components
+      updateBbCodeBlocks(panel, null);
+      updateReactionInfo(panel, reactionInfo);
 
-    if (!reactionInfo.hasReaction) {
-      showReactionButtons(panel, reactionInfo.requiredReactions);
+      if (!reactionInfo.hasReaction) {
+        showReactionButtons(panel, reactionInfo.requiredReactions);
+      }
+
+      // ✅ FIX: Update status to 'Ready' or specific state after finishing
+      if (reactionInfo.hasReaction) {
+        updateStatus(`Ready (Reacted: ${reactionInfo.currentReaction.title})`);
+      } else {
+        updateStatus("Ready (Select a reaction above)");
+      }
+    } catch (error) {
+      logError("❌ [UI] Error during thread analysis:", error);
+      updateStatus("Error analyzing thread");
     }
   }
 
@@ -1133,8 +1147,22 @@
   }
 
   function updateStatus(msg) {
-    const el = document.querySelector(".pto-status");
-    if (el) el.textContent = msg;
+    // Try to find the status element within the pto-panel specifically
+    const panel = document.getElementById("pto-panel");
+    if (panel) {
+      const el = panel.querySelector(".pto-status");
+      if (el) {
+        el.textContent = msg;
+        // Optional: Change color based on status
+        if (msg.includes("Error")) {
+          el.style.color = "#ff4d4d";
+        } else if (msg.includes("Ready")) {
+          el.style.color = "#4caf50"; // Green for ready
+        } else {
+          el.style.color = "#aaa"; // Default gray
+        }
+      }
+    }
   }
 
   function toggleButtons(running) {
