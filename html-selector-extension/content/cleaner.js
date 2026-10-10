@@ -29,6 +29,7 @@ const RAGCleaner = (() => {
     "colspan",
     "rowspan",
     "headers",
+    "datetime",
   ]);
 
   // Tags that are inherently meaningful even without text content
@@ -354,6 +355,7 @@ const RAGCleaner = (() => {
       "div",
       "span",
       "video",
+      "time",
     ];
   }
 
