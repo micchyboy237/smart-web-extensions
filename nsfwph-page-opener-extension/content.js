@@ -1,6 +1,5 @@
 (function () {
   if (document.getElementById("pto-panel")) return;
-
   // ============================================================
   // DEBUG CONFIGURATION
   // ============================================================
@@ -11,14 +10,12 @@
   function logWarn(...args) {
     if (DEBUG) console.warn("[PTO-CS]", ...args);
   }
-
   // ============================================================
   // CONFIGURATION
   // ============================================================
   const DELAY_BETWEEN_TABS_MS = 800;
   const DELAY_FOR_PAGE_LOAD_MS = 2000;
   const EXCLUDED_FORUM_TEXT = "Non-Pinay Videos";
-
   // ============================================================
   // PAGE STRUCTURE STRATEGIES
   // ============================================================
@@ -45,8 +42,14 @@
       const titleLink = this.getTitleLink(row);
       return titleLink && titleLink.getAttribute("href");
     },
+    getTimestamp(row) {
+      const timeEl = row.querySelector("time.u-dt");
+      if (timeEl && timeEl.dataset.timestamp) {
+        return parseInt(timeEl.dataset.timestamp, 10);
+      }
+      return null;
+    },
   };
-
   const Structure2Strategy = {
     name: "Structure2 (Article Previews)",
     getRows() {
@@ -72,8 +75,14 @@
       const titleLink = this.getTitleLink(row);
       return titleLink && titleLink.getAttribute("href");
     },
+    getTimestamp(row) {
+      const timeEl = row.querySelector("time.u-dt");
+      if (timeEl && timeEl.dataset.timestamp) {
+        return parseInt(timeEl.dataset.timestamp, 10);
+      }
+      return null;
+    },
   };
-
   const DataListStrategy = {
     name: "DataList (Quick Search Results)",
     getRows() {
@@ -102,8 +111,14 @@
       const titleLink = this.getTitleLink(row);
       return titleLink && titleLink.getAttribute("href");
     },
+    getTimestamp(row) {
+      const timeEl = row.querySelector("time.u-dt");
+      if (timeEl && timeEl.dataset.timestamp) {
+        return parseInt(timeEl.dataset.timestamp, 10);
+      }
+      return null;
+    },
   };
-
   const StrategyRegistry = {
     strategies: [Structure1Strategy, Structure2Strategy, DataListStrategy],
     detect() {
@@ -114,19 +129,16 @@
         );
         return DataListStrategy;
       }
-
       const blockRows = Structure1Strategy.getRows();
       if (blockRows.length > 0) {
         log(`📋 Detected page structure: ${Structure1Strategy.name}`);
         return Structure1Strategy;
       }
-
       const articleRows = Structure2Strategy.getRows();
       if (articleRows.length > 0) {
         log(`📋 Detected page structure: ${Structure2Strategy.name}`);
         return Structure2Strategy;
       }
-
       log("⚠️ No rows detected, defaulting to Structure1");
       return Structure1Strategy;
     },
@@ -141,7 +153,6 @@
       return this.detect();
     },
   };
-
   // ============================================================
   // STATE
   // ============================================================
@@ -149,18 +160,18 @@
   let openedCount = 0;
   let skippedDuplicates = 0;
   let skippedExcluded = 0;
+  let skippedByDate = 0;
   let targetCount = null;
   let useTargetLimit = false;
   let autoCloseIfReacted = false;
   let currentStrategy = null;
   let hasProcessedDataList = false;
   let currentPanelType = "structured"; // 'structured' or 'threads'
-
+  let daysBackFilter = 0; // 0 = no filter, 1 = 1 day, 7 = 7 days, etc.
   // ============================================================
   // STORAGE HELPERS
   // ============================================================
   const SESSION_KEY_PREFIX = "pto_session_";
-
   function saveToSession(key, value) {
     try {
       sessionStorage.setItem(SESSION_KEY_PREFIX + key, JSON.stringify(value));
@@ -168,7 +179,6 @@
       logWarn("Failed to save to session:", e);
     }
   }
-
   function loadFromSession(key, defaultValue = null) {
     try {
       const value = sessionStorage.getItem(SESSION_KEY_PREFIX + key);
@@ -178,7 +188,6 @@
       return defaultValue;
     }
   }
-
   async function saveAutoCloseSetting(enabled) {
     try {
       await chrome.storage.local.set({ pto_autoCloseIfReacted: enabled });
@@ -187,7 +196,6 @@
       logWarn("Failed to save auto-close setting:", e);
     }
   }
-
   async function loadAutoCloseSetting() {
     try {
       const result = await chrome.storage.local.get("pto_autoCloseIfReacted");
@@ -199,19 +207,29 @@
       return false;
     }
   }
-
   function loadPanelState() {
     return {
       useTargetLimit: loadFromSession("useTargetLimit", false),
       targetCount: loadFromSession("targetCount", 10),
+      daysBackFilter: loadFromSession("daysBackFilter", 0),
     };
   }
-
   function savePanelState() {
     saveToSession("useTargetLimit", useTargetLimit);
     saveToSession("targetCount", targetCount);
+    saveToSession("daysBackFilter", daysBackFilter);
   }
-
+  // ============================================================
+  // DATE FILTERING HELPER
+  // ============================================================
+  function isWithinDaysBack(timestamp, daysBack) {
+    if (!timestamp || daysBack === 0) {
+      return true; // No filter or no timestamp
+    }
+    const now = Date.now() / 1000; // Convert to seconds
+    const cutoffTime = now - daysBack * 24 * 60 * 60; // daysBack days in seconds
+    return timestamp >= cutoffTime;
+  }
   // ============================================================
   // COMMUNICATION WITH BACKGROUND WORKER
   // ============================================================
@@ -237,7 +255,6 @@
       );
     });
   }
-
   async function getStats() {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "GET_STATS" }, (response) => {
@@ -245,7 +262,6 @@
       });
     });
   }
-
   // ============================================================
   // PANEL DETECTION & CREATION
   // ============================================================
@@ -255,16 +271,14 @@
       /\/posts\/\d+/.test(window.location.href)
     );
   }
-
   async function createPanel() {
     const savedState = loadPanelState();
     useTargetLimit = savedState.useTargetLimit;
     targetCount = savedState.targetCount || 10;
+    daysBackFilter = savedState.daysBackFilter || 0;
     autoCloseIfReacted = await loadAutoCloseSetting();
-
     const panel = document.createElement("div");
     panel.id = "pto-panel";
-
     if (isThreadsPage()) {
       currentPanelType = "threads";
       panel.innerHTML = await loadThreadsPanelHTML();
@@ -274,27 +288,22 @@
       panel.innerHTML = await loadStructuredPanelHTML();
       setupStructuredPanel(panel);
     }
-
     document.body.appendChild(panel);
   }
-
   async function loadStructuredPanelHTML() {
     // In production, this would fetch from panel-structured.html
     // For now, we'll use inline HTML
     return `
       <div class="pto-panel-content">
         <h4>🔗 Thread Opener <span class="pto-debug-toggle" style="cursor:pointer;font-size:11px;color:#666;margin-left:6px;">[debug]</span></h4>
-        
         <div class="pto-row">
           <label>Page Structure:</label>
           <span class="pto-structure-name" style="color:#0f3460;font-weight:bold;font-size:11px;">Detecting...</span>
         </div>
-        
         <div class="pto-row">
           <label>Current Page Available:</label>
           <span class="pto-available-count" style="color:#e94560;font-weight:bold;">-</span>
         </div>
-        
         <div class="pto-row">
           <label>Use Target Limit:</label>
           <label class="switch">
@@ -302,12 +311,21 @@
             <span class="slider"></span>
           </label>
         </div>
-        
         <div class="pto-row pto-target-row" style="display:${useTargetLimit ? "flex" : "none"};">
           <label>Target Tabs:</label>
           <input type="number" class="pto-target-input" value="${targetCount}" min="1" max="100" />
         </div>
-        
+        <div class="pto-row">
+          <label>Days Back Filter:</label>
+          <select class="pto-days-back-select" style="width:80px;padding:6px;border-radius:5px;border:1px solid #444;background:#16213e;color:#fff;font-size:13px;">
+            <option value="0" ${daysBackFilter === 0 ? "selected" : ""}>All</option>
+            <option value="1" ${daysBackFilter === 1 ? "selected" : ""}>1 Day</option>
+            <option value="3" ${daysBackFilter === 3 ? "selected" : ""}>3 Days</option>
+            <option value="7" ${daysBackFilter === 7 ? "selected" : ""}>7 Days</option>
+            <option value="14" ${daysBackFilter === 14 ? "selected" : ""}>14 Days</option>
+            <option value="30" ${daysBackFilter === 30 ? "selected" : ""}>30 Days</option>
+          </select>
+        </div>
         <div class="pto-row">
           <label>Auto-Close If Reacted:</label>
           <label class="switch">
@@ -315,46 +333,38 @@
             <span class="slider"></span>
           </label>
         </div>
-        
         <div class="pto-row">
           <span class="pto-status">Ready</span>
         </div>
-        
         <pre class="pto-debug-log" style="display:none;"></pre>
-        
         <button class="pto-start-btn">Start Opening</button>
         <button class="pto-stop-btn" style="display:none; background:#d9534f;">Stop</button>
       </div>
     `;
   }
-
   async function loadThreadsPanelHTML() {
     // In production, this would fetch from panel-threads.html
     // For now, we'll use inline HTML
     return `
       <div class="pto-panel-content">
         <h4>📖 Opened Thread</h4>
-        
         <div class="pto-thread-info">
           <div class="pto-section">
             <h5>BBCode Blocks</h5>
             <div class="pto-bbcode-list"></div>
           </div>
-          
           <div class="pto-section">
             <h5>Reactions</h5>
             <div class="pto-reaction-info"></div>
             <div class="pto-reaction-actions"></div>
           </div>
         </div>
-        
         <div class="pto-row">
           <span class="pto-status">Analyzing thread...</span>
         </div>
       </div>
     `;
   }
-
   function setupStructuredPanel(panel) {
     panel
       .querySelector(".pto-start-btn")
@@ -372,6 +382,14 @@
       savePanelState();
     });
     panel
+      .querySelector(".pto-days-back-select")
+      .addEventListener("change", (e) => {
+        daysBackFilter = parseInt(e.target.value, 10);
+        log(`📅 Days back filter set to: ${daysBackFilter} days`);
+        updateAvailableCount();
+        savePanelState();
+      });
+    panel
       .querySelector(".pto-autoclose-toggle")
       .addEventListener("change", async (e) => {
         autoCloseIfReacted = e.target.checked;
@@ -384,14 +402,12 @@
       targetCount = parseInt(e.target.value, 10);
       savePanelState();
     });
-
     setTimeout(() => {
       currentStrategy = StrategyRegistry.detect();
       updateStructureDisplay();
       updateAvailableCount();
     }, 500);
   }
-
   function setupThreadsPanel(panel) {
     // Fire and forget, or handle promise if needed
     analyzeThreadContent(panel).catch((err) => {
@@ -399,7 +415,6 @@
       updateStatus("Error analyzing thread");
     });
   }
-
   // ============================================================
   // THREADS PANEL FUNCTIONALITY
   // ============================================================
@@ -409,11 +424,9 @@
     try {
       // 2. Perform the heavy lifting (includes the 3s tooltip wait)
       const reactionInfo = await getReactionInfo();
-
       // 3. Render the UI components
       updateBbCodeBlocks(panel, null); // ✅ This is already correct - no changes needed
       updateReactionInfo(panel, reactionInfo);
-
       // ✅ FIX: Only show reactions that are required by remaining hidden blocks
       // Changed from reactionInfo.availableReactions to reactionInfo.requiredReactions
       const reactionsToShow = reactionInfo.hasReaction
@@ -421,9 +434,7 @@
             (r) => r.id !== reactionInfo.currentReaction.id,
           )
         : reactionInfo.requiredReactions;
-
       showReactionButtons(panel, reactionsToShow, reactionInfo.currentReaction);
-
       // Update status
       if (reactionInfo.hasReaction) {
         updateStatus(`Ready (Reacted: ${reactionInfo.currentReaction.title})`);
@@ -435,7 +446,6 @@
       updateStatus("Error analyzing thread");
     }
   }
-
   /**
    * Dynamically waits for the .reactTooltip to appear using MutationObserver.
    * This is significantly faster and more reliable than a static setTimeout.
@@ -445,7 +455,6 @@
       logWarn(`⚠️ [TOOLTIP-DYNAMIC] No trigger button provided.`);
       return null;
     }
-
     return new Promise((resolve) => {
       // 1. Check if it already exists (edge case)
       const existingTooltip = document.querySelector(".reactTooltip");
@@ -454,7 +463,6 @@
         resolve(existingTooltip);
         return;
       }
-
       // 2. Setup MutationObserver to watch for DOM changes
       const observer = new MutationObserver((mutations, obs) => {
         const tooltip = document.querySelector(".reactTooltip");
@@ -465,18 +473,15 @@
           resolve(tooltip);
         }
       });
-
       // Start observing the entire document body for child list changes
       observer.observe(document.body, {
         childList: true,
         subtree: true,
       });
-
       // 3. Trigger the hover events (same sequence as before)
       const rect = triggerBtn.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
       const y = rect.top + rect.height / 2;
-
       const eventTypes = [
         "mouseenter",
         "mouseover",
@@ -497,7 +502,6 @@
       log(
         `⚡ [TOOLTIP-DYNAMIC] Hover events dispatched. Watching for DOM mutation...`,
       );
-
       // 4. Safety Net: If tooltip doesn't appear within maxWaitMs, give up
       const timeoutId = setTimeout(() => {
         observer.disconnect();
@@ -508,7 +512,6 @@
       }, maxWaitMs);
     });
   }
-
   async function getReactionInfo() {
     // Find the main post element
     const mainPost =
@@ -527,7 +530,6 @@
         requiredReactions,
       };
     }
-
     // --- Check if user has already reacted ---
     const reactedButton = mainPost.querySelector("a.reaction.has-reaction");
     if (reactedButton) {
@@ -540,7 +542,6 @@
         `✅ [THREAD-ANALYSIS] Existing reaction detected: ID=${currentReaction.id}`,
       );
     }
-
     // ✅ FIX: Try to find ANY reaction button (reacted or not) to trigger tooltip
     // First try non-reacted buttons, then fall back to reacted button
     let triggerBtn = mainPost.querySelector("a.reaction:not(.has-reaction)");
@@ -549,7 +550,6 @@
       triggerBtn = reactedButton;
       log(`ℹ️ [THREAD-ANALYSIS] Using reacted button to trigger tooltip`);
     }
-
     // --- Find Tooltip with Dynamic Logic ---
     const reactTooltip = await findReactTooltipDynamic(triggerBtn, 5000);
     if (reactTooltip) {
@@ -573,7 +573,6 @@
       logWarn(
         `⚠️ [THREAD-ANALYSIS] Tooltip failed. Falling back to action bar scraping.`,
       );
-
       // ✅ FIX: Get ALL reaction buttons (both reacted and non-reacted)
       const actionBarBtns = mainPost.querySelectorAll(
         ".actionBar-action--reaction.reaction",
@@ -596,7 +595,6 @@
         `ℹ️ [THREAD-ANALYSIS] Fallback scraped ${availableReactions.length} reactions from action bar`,
       );
     }
-
     // --- Get Hidden Content Requirements ---
     const mainArticle = document.querySelector(".message--article");
     if (mainArticle) {
@@ -626,11 +624,9 @@
         );
       }
     }
-
     if (requiredReactions.length === 0 && availableReactions.length > 0) {
       requiredReactions = [...availableReactions];
     }
-
     log(
       `📊 [THREAD-ANALYSIS] Summary: hasReaction=${hasReaction}, required=${requiredReactions.length}, available=${availableReactions.length}`,
     );
@@ -641,40 +637,33 @@
       requiredReactions,
     };
   }
-
   function updateBbCodeBlocks(panel, bbCodeBlocks) {
     const container = panel.querySelector(".pto-bbcode-list");
     if (!container) return;
-
     // ✅ FIX: Re-query specifically for hidden blocks within .message--article
     // This ensures we only show what the analysis found, not every block on the page
     const mainArticle = document.querySelector(".message--article");
     let targetBlocks = [];
-
     if (mainArticle) {
       // Select only the hidden blocks that are actually requiring a reaction
       targetBlocks = Array.from(
         mainArticle.querySelectorAll(".bbCodeBlock--hide.hideBlock--hidden"),
       );
     }
-
     if (targetBlocks.length === 0) {
       container.innerHTML =
         '<p style="color:#aaa;font-size:12px;">No hidden BBCode blocks requiring reaction</p>';
       return;
     }
-
     let html = "";
     targetBlocks.forEach((block, index) => {
       // Get the text content to show a preview
       const content = block.textContent.substring(0, 150);
-
       // Extract required reactions for this specific block
       const reactions = block.querySelectorAll(".reaction[data-reaction-id]");
       const reqTitles = Array.from(reactions)
         .map((r) => r.querySelector("img")?.alt || "Unknown")
         .join(", ");
-
       html += `
             <div class="pto-bbcode-item" style="margin-bottom:8px;padding:8px;background:#16213e;border-radius:4px;border-left: 3px solid #e94560;">
                 <div style="font-size:11px;color:#e94560;margin-bottom:4px;font-weight:bold;">
@@ -689,14 +678,11 @@
             </div>
         `;
     });
-
     container.innerHTML = html;
   }
-
   function updateReactionInfo(panel, reactionInfo) {
     const container = panel.querySelector(".pto-reaction-info");
     if (!container) return;
-
     if (reactionInfo.hasReaction) {
       container.innerHTML = `
         <div style="padding:8px;background:#16213e;border-radius:4px;">
@@ -712,7 +698,6 @@
       `;
     }
   }
-
   function showReactionButtons(
     panel,
     availableReactions,
@@ -720,7 +705,6 @@
   ) {
     const container = panel.querySelector(".pto-reaction-actions");
     if (!container) return;
-
     if (availableReactions.length === 0) {
       const message = currentReaction
         ? '<p style="color:#aaa;font-size:12px;">No other reactions available</p>'
@@ -728,7 +712,6 @@
       container.innerHTML = message;
       return;
     }
-
     let html =
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">';
     availableReactions.forEach((reaction) => {
@@ -741,7 +724,6 @@
     });
     html += "</div>";
     container.innerHTML = html;
-
     // Add click handlers
     container.querySelectorAll(".pto-reaction-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -751,22 +733,18 @@
       });
     });
   }
-
   async function triggerReaction(href, reactionId) {
     log(`🎯 Triggering reaction: ${reactionId} via ${href}`);
     updateStatus("Triggering reaction...");
-
     try {
       // Find the actual reaction button in the page and click it
       const reactionButton = document.querySelector(
         `a.reaction[data-reaction-id="${reactionId}"]:not(.has-reaction)`,
       );
-
       if (reactionButton) {
         reactionButton.click();
         log("✅ Reaction button clicked");
         updateStatus("Reaction triggered! Refreshing...");
-
         // Wait a bit then refresh to see the result
         setTimeout(() => {
           window.location.reload();
@@ -781,7 +759,6 @@
       updateStatus("Failed to trigger reaction");
     }
   }
-
   // ============================================================
   // STRUCTURED PANEL FUNCTIONS (existing logic)
   // ============================================================
@@ -791,61 +768,65 @@
       el.textContent = currentStrategy.name;
     }
   }
-
   function countAvailableRows() {
     if (!currentStrategy) {
       currentStrategy = StrategyRegistry.detect();
     }
-
     const dataListRows = Array.from(DataListStrategy.getRows());
     const dataListAvailable = dataListRows.filter(
       (row) =>
         DataListStrategy.isValidRow(row) &&
-        !DataListStrategy.getForumName(row).includes(EXCLUDED_FORUM_TEXT),
+        !DataListStrategy.getForumName(row).includes(EXCLUDED_FORUM_TEXT) &&
+        isWithinDaysBack(DataListStrategy.getTimestamp(row), daysBackFilter),
     ).length;
-
     const rows = currentStrategy.getRows();
     let available = 0;
     let excluded = 0;
-
+    let filteredByDate = 0;
     rows.forEach((row) => {
       const forumName = currentStrategy.getForumName(row);
+      const timestamp = currentStrategy.getTimestamp(row);
+
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
         excluded++;
+      } else if (!isWithinDaysBack(timestamp, daysBackFilter)) {
+        filteredByDate++;
       } else if (currentStrategy.isValidRow(row)) {
         available++;
       }
     });
-
     const totalAvailable = dataListAvailable + available;
     const totalExcluded = excluded;
-
+    const totalFilteredByDate = filteredByDate;
     return {
       total: rows.length + dataListRows.length,
       available: totalAvailable,
       excluded: totalExcluded,
+      filteredByDate: totalFilteredByDate,
       dataListAvailable: dataListAvailable,
       mainStrategyAvailable: available,
     };
   }
-
   function updateAvailableCount() {
     const countEl = document.querySelector(".pto-available-count");
     if (!countEl) return;
-
     const counts = countAvailableRows();
-    if (useTargetLimit) {
-      countEl.textContent = `${counts.available} (excl: ${counts.excluded})`;
-    } else {
-      countEl.textContent = `${counts.available} / ${counts.total}`;
-    }
-  }
+    let displayText = `${counts.available}`;
 
+    if (counts.excluded > 0) {
+      displayText += ` (excl: ${counts.excluded})`;
+    }
+
+    if (daysBackFilter > 0 && counts.filteredByDate > 0) {
+      displayText += ` | 📅 ${counts.filteredByDate} older`;
+    }
+
+    countEl.textContent = displayText;
+  }
   function appendDebugLog(msg) {
     if (!DEBUG) return;
     const logEl = document.querySelector(".pto-debug-log");
     if (!logEl) return;
-
     const time = new Date().toLocaleTimeString("en-US", {
       hour12: false,
       fractionalSecondDigits: 3,
@@ -853,22 +834,18 @@
     logEl.textContent += `[${time}] ${msg}\n`;
     logEl.scrollTop = logEl.scrollHeight;
   }
-
   function highlightRow(rowElement) {
     const prev = document.querySelector(".pto-active-row");
     if (prev) prev.classList.remove("pto-active-row");
-
     if (rowElement) {
       rowElement.classList.add("pto-active-row");
       rowElement.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }
-
   function clearHighlight() {
     const active = document.querySelector(".pto-active-row");
     if (active) active.classList.remove("pto-active-row");
   }
-
   // ============================================================
   // CORE LOGIC (existing)
   // ============================================================
@@ -876,7 +853,6 @@
     currentStrategy = StrategyRegistry.detect();
     updateStructureDisplay();
     hasProcessedDataList = false;
-
     if (useTargetLimit) {
       const input = document.querySelector(".pto-target-input");
       targetCount = parseInt(input.value, 10);
@@ -892,33 +868,29 @@
         return;
       }
     }
-
     isRunning = true;
     openedCount = 0;
     skippedDuplicates = 0;
     skippedExcluded = 0;
-
+    skippedByDate = 0;
     toggleButtons(true);
-
     const logEl = document.querySelector(".pto-debug-log");
     if (logEl) logEl.textContent = "";
-
     const stats = await getStats();
     log("▶️ Starting process", {
       targetCount,
       useTargetLimit,
       autoCloseIfReacted,
+      daysBackFilter,
       strategy: currentStrategy.name,
       backgroundStats: stats,
     });
-
     appendDebugLog(
-      `START | target=${targetCount} | limit=${useTargetLimit} | autoclose=${autoCloseIfReacted} | strategy=${currentStrategy.name} | bg_opened=${stats.openedCount} | bg_pending=${stats.pendingCount}`,
+      `START | target=${targetCount} | limit=${useTargetLimit} | autoclose=${autoCloseIfReacted} | daysBack=${daysBackFilter} | strategy=${currentStrategy.name} | bg_opened=${stats.openedCount} | bg_pending=${stats.pendingCount}`,
     );
     updateStatus(
-      `Starting... Target: ${targetCount}${useTargetLimit ? " (limited)" : " (all available)"}${autoCloseIfReacted ? " [Auto-Close ON]" : ""}`,
+      `Starting... Target: ${targetCount}${useTargetLimit ? " (limited)" : " (all available)"}${autoCloseIfReacted ? " [Auto-Close ON]" : ""}${daysBackFilter > 0 ? ` [Last ${daysBackFilter}d]` : ""}`,
     );
-
     // First, process data list rows if they exist
     const dataListRows = DataListStrategy.getRows();
     if (dataListRows.length > 0) {
@@ -930,37 +902,29 @@
       await processDataListRows();
       hasProcessedDataList = true;
     }
-
     // Then process main strategy rows
     if (isRunning && (!useTargetLimit || openedCount < targetCount)) {
       await processCurrentPage();
     }
   }
-
   function stopProcess() {
     isRunning = false;
     clearHighlight();
-
-    const summary = `Stopped. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
+    const summary = `Stopped. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded} | By Date: ${skippedByDate}`;
     log("⏹️ Process stopped:", summary);
     appendDebugLog(`STOP | ${summary}`);
     updateStatus(summary);
     toggleButtons(false);
   }
-
   async function processDataListRows() {
     if (!isRunning) return;
-
     const rows = DataListStrategy.getRows();
     log(`📄 Processing data list: ${rows.length} rows found`);
     appendDebugLog(`DATALIST | ${rows.length} rows`);
-
     for (let i = 0; i < rows.length; i++) {
       if (!isRunning || (useTargetLimit && openedCount >= targetCount)) break;
-
       const row = rows[i];
       highlightRow(row);
-
       const forumName = DataListStrategy.getForumName(row);
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
         skippedExcluded++;
@@ -968,34 +932,38 @@
         appendDebugLog(`SKIP-DL[${i}] | excluded: ${forumName}`);
         continue;
       }
-
+      // Check date filter
+      const timestamp = DataListStrategy.getTimestamp(row);
+      if (!isWithinDaysBack(timestamp, daysBackFilter)) {
+        skippedByDate++;
+        log(
+          `📅 DataList Row ${i}: Filtered by date (older than ${daysBackFilter} days)`,
+        );
+        appendDebugLog(`DATE-DL[${i}] | filtered by date`);
+        continue;
+      }
       const titleLink = DataListStrategy.getTitleLink(row);
       if (!titleLink) {
         logWarn(`⚠️ DataList Row ${i}: No title link found`);
         appendDebugLog(`WARN-DL[${i}] | no title link`);
         continue;
       }
-
       let href = titleLink.getAttribute("href");
       if (!href) {
         logWarn(`⚠️ DataList Row ${i}: Empty href`);
         appendDebugLog(`WARN-DL[${i}] | empty href`);
         continue;
       }
-
       if (href.startsWith("/")) {
         href = window.location.origin + href;
       }
-
       const titleText = titleLink.textContent.substring(0, 35);
       log(`🔗 DataList Row ${i}: Checking "${titleText}..." → ${href}`);
       appendDebugLog(`CHECK-DL[${i}] | ${titleText}`);
       updateStatus(
-        `Checking DL ${openedCount + skippedDuplicates + skippedExcluded + 1}: ${titleText}...`,
+        `Checking DL ${openedCount + skippedDuplicates + skippedExcluded + skippedByDate + 1}: ${titleText}...`,
       );
-
       const result = await checkAndOpenTab(href);
-
       if (result.opened) {
         openedCount++;
         log(
@@ -1015,19 +983,16 @@
         appendDebugLog(`ERR-DL[${i}] | ${result.error}`);
         updateStatus(`❌ Error: ${result.error || "Unknown"}`);
       }
-
       await sleep(DELAY_BETWEEN_TABS_MS);
     }
-
     log(`✅ Data list processing complete. Opened: ${openedCount}`);
     appendDebugLog(`DATALIST | Complete | opened=${openedCount}`);
   }
-
   async function processCurrentPage() {
     if (!isRunning || (useTargetLimit && openedCount >= targetCount)) {
       if (useTargetLimit && openedCount >= targetCount) {
         clearHighlight();
-        const summary = `✅ Done! Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
+        const summary = `✅ Done! Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded} | By Date: ${skippedByDate}`;
         log("✅ Target reached:", summary);
         appendDebugLog(`DONE | ${summary}`);
         updateStatus(summary);
@@ -1035,19 +1000,15 @@
       }
       return;
     }
-
     const rows = currentStrategy.getRows();
     log(
       `📄 Processing page: ${rows.length} rows found (${currentStrategy.name})`,
     );
     appendDebugLog(`PAGE | ${rows.length} rows | ${currentStrategy.name}`);
-
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       if (!isRunning || (useTargetLimit && openedCount >= targetCount)) break;
-
       highlightRow(row);
-
       const forumName = currentStrategy.getForumName(row);
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
         skippedExcluded++;
@@ -1055,34 +1016,38 @@
         appendDebugLog(`SKIP[${i}] | excluded: ${forumName}`);
         continue;
       }
-
+      // Check date filter
+      const timestamp = currentStrategy.getTimestamp(row);
+      if (!isWithinDaysBack(timestamp, daysBackFilter)) {
+        skippedByDate++;
+        log(
+          `📅 Row ${i}: Filtered by date (older than ${daysBackFilter} days)`,
+        );
+        appendDebugLog(`DATE[${i}] | filtered by date`);
+        continue;
+      }
       const titleLink = currentStrategy.getTitleLink(row);
       if (!titleLink) {
         logWarn(`⚠️ Row ${i}: No title link found`);
         appendDebugLog(`WARN[${i}] | no title link`);
         continue;
       }
-
       let href = titleLink.getAttribute("href");
       if (!href) {
         logWarn(`⚠️ Row ${i}: Empty href`);
         appendDebugLog(`WARN[${i}] | empty href`);
         continue;
       }
-
       if (href.startsWith("/")) {
         href = window.location.origin + href;
       }
-
       const titleText = titleLink.textContent.substring(0, 35);
       log(`🔗 Row ${i}: Checking "${titleText}..." → ${href}`);
       appendDebugLog(`CHECK[${i}] | ${titleText}`);
       updateStatus(
-        `Checking ${openedCount + skippedDuplicates + skippedExcluded + 1}: ${titleText}...`,
+        `Checking ${openedCount + skippedDuplicates + skippedExcluded + skippedByDate + 1}: ${titleText}...`,
       );
-
       const result = await checkAndOpenTab(href);
-
       if (result.opened) {
         openedCount++;
         log(`✅ [OPENED] ${openedCount}/${targetCount}: tabId=${result.tabId}`);
@@ -1100,10 +1065,8 @@
         appendDebugLog(`ERR[${i}] | ${result.error}`);
         updateStatus(`❌ Error: ${result.error || "Unknown"}`);
       }
-
       await sleep(DELAY_BETWEEN_TABS_MS);
     }
-
     if (isRunning && (!useTargetLimit || openedCount < targetCount)) {
       const nextBtn = currentStrategy.getNextButton();
       if (nextBtn) {
@@ -1112,21 +1075,17 @@
           `NEXT | moving to next page | ${openedCount}/${targetCount}`,
         );
         updateStatus(`Next page... (${openedCount}/${targetCount})`);
-
         await sleep(500);
         nextBtn.click();
         await waitForPageLoad();
-
         log("📃 New page loaded");
         appendDebugLog(`LOADED | new page ready`);
-
         currentStrategy = StrategyRegistry.detect();
         updateStructureDisplay();
         updateAvailableCount();
-
         await processCurrentPage();
       } else {
-        const summary = `⚠️ No more pages. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded}`;
+        const summary = `⚠️ No more pages. Opened: ${openedCount} | Dupes: ${skippedDuplicates} | Excluded: ${skippedExcluded} | By Date: ${skippedByDate}`;
         log("⚠️ Pagination ended:", summary);
         appendDebugLog(`END | ${summary}`);
         updateStatus(summary);
@@ -1134,14 +1093,12 @@
       }
     }
   }
-
   // ============================================================
   // UTILITIES
   // ============================================================
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
-
   function waitForPageLoad() {
     return new Promise((resolve) => {
       let checks = 0;
@@ -1153,14 +1110,12 @@
         const rows2 = document.querySelectorAll(
           "article.message--articlePreview.js-inlineModContainer",
         );
-
         if (rows1.length > 0 || rows2.length > 0) {
           log(`📃 Page load confirmed after ${checks} checks`);
           clearInterval(checkInterval);
           resolve();
         }
       }, 500);
-
       setTimeout(() => {
         clearInterval(checkInterval);
         logWarn(`📃 Page load timeout after ${checks} checks`);
@@ -1168,7 +1123,6 @@
       }, DELAY_FOR_PAGE_LOAD_MS * 2);
     });
   }
-
   function updateStatus(msg) {
     // Try to find the status element within the pto-panel specifically
     const panel = document.getElementById("pto-panel");
@@ -1187,21 +1141,17 @@
       }
     }
   }
-
   function toggleButtons(running) {
     const startBtn = document.querySelector(".pto-start-btn");
     const stopBtn = document.querySelector(".pto-stop-btn");
-
     if (startBtn) startBtn.style.display = running ? "none" : "inline-block";
     if (stopBtn) stopBtn.style.display = running ? "inline-block" : "none";
   }
-
   function escapeHtml(text) {
     const div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
   }
-
   // Initialize
   createPanel();
 })();
