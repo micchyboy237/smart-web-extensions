@@ -406,20 +406,25 @@
   async function analyzeThreadContent(panel) {
     // 1. Set initial status
     updateStatus("Analyzing thread content...");
-
     try {
       // 2. Perform the heavy lifting (includes the 3s tooltip wait)
       const reactionInfo = await getReactionInfo();
 
       // 3. Render the UI components
-      updateBbCodeBlocks(panel, null);
+      updateBbCodeBlocks(panel, null); // ✅ This is already correct - no changes needed
       updateReactionInfo(panel, reactionInfo);
 
-      if (!reactionInfo.hasReaction) {
-        showReactionButtons(panel, reactionInfo.requiredReactions);
-      }
+      // ✅ FIX: Only show reactions that are required by remaining hidden blocks
+      // Changed from reactionInfo.availableReactions to reactionInfo.requiredReactions
+      const reactionsToShow = reactionInfo.hasReaction
+        ? reactionInfo.requiredReactions.filter(
+            (r) => r.id !== reactionInfo.currentReaction.id,
+          )
+        : reactionInfo.requiredReactions;
 
-      // ✅ FIX: Update status to 'Ready' or specific state after finishing
+      showReactionButtons(panel, reactionsToShow, reactionInfo.currentReaction);
+
+      // Update status
       if (reactionInfo.hasReaction) {
         updateStatus(`Ready (Reacted: ${reactionInfo.currentReaction.title})`);
       } else {
@@ -509,14 +514,11 @@
     const mainPost =
       document.querySelector(".js-post:first-of-type") ||
       document.querySelector(".message:first-of-type");
-
     let hasReaction = false;
     let currentReaction = null;
     let availableReactions = [];
     let requiredReactions = [];
-
     log(`🔍 [THREAD-ANALYSIS] Main post element found: ${!!mainPost}`);
-
     if (!mainPost) {
       return {
         hasReaction,
@@ -539,11 +541,17 @@
       );
     }
 
-    // --- Find Tooltip with Dynamic Logic ---
-    const triggerBtn = mainPost.querySelector("a.reaction:not(.has-reaction)");
-    // Use the new dynamic function instead of findReactTooltipWithRetry
-    const reactTooltip = await findReactTooltipDynamic(triggerBtn, 5000);
+    // ✅ FIX: Try to find ANY reaction button (reacted or not) to trigger tooltip
+    // First try non-reacted buttons, then fall back to reacted button
+    let triggerBtn = mainPost.querySelector("a.reaction:not(.has-reaction)");
+    if (!triggerBtn && reactedButton) {
+      // If user has reacted, use the reacted button to trigger tooltip
+      triggerBtn = reactedButton;
+      log(`ℹ️ [THREAD-ANALYSIS] Using reacted button to trigger tooltip`);
+    }
 
+    // --- Find Tooltip with Dynamic Logic ---
+    const reactTooltip = await findReactTooltipDynamic(triggerBtn, 5000);
     if (reactTooltip) {
       const reactionLinks = reactTooltip.querySelectorAll("a.reaction");
       reactionLinks.forEach((link) => {
@@ -565,8 +573,10 @@
       logWarn(
         `⚠️ [THREAD-ANALYSIS] Tooltip failed. Falling back to action bar scraping.`,
       );
+
+      // ✅ FIX: Get ALL reaction buttons (both reacted and non-reacted)
       const actionBarBtns = mainPost.querySelectorAll(
-        ".actionBar-action--reaction.reaction:not(.has-reaction)",
+        ".actionBar-action--reaction.reaction",
       );
       actionBarBtns.forEach((btn) => {
         const img = btn.querySelector("img");
@@ -582,6 +592,9 @@
           });
         }
       });
+      log(
+        `ℹ️ [THREAD-ANALYSIS] Fallback scraped ${availableReactions.length} reactions from action bar`,
+      );
     }
 
     // --- Get Hidden Content Requirements ---
@@ -590,7 +603,6 @@
       const hiddenBlocks = mainArticle.querySelectorAll(
         ".bbCodeBlock--hide.hideBlock--hidden",
       );
-
       if (hiddenBlocks.length > 0) {
         hiddenBlocks.forEach((block) => {
           const reactions = block.querySelectorAll(
@@ -599,7 +611,6 @@
           reactions.forEach((reaction) => {
             const id = reaction.dataset.reactionId;
             const title = reaction.querySelector("img")?.alt || "Unknown";
-
             if (!requiredReactions.some((r) => r.id === id)) {
               const match = availableReactions.find((a) => a.id === id);
               requiredReactions.push({
@@ -623,7 +634,6 @@
     log(
       `📊 [THREAD-ANALYSIS] Summary: hasReaction=${hasReaction}, required=${requiredReactions.length}, available=${availableReactions.length}`,
     );
-
     return {
       hasReaction,
       currentReaction,
@@ -703,13 +713,19 @@
     }
   }
 
-  function showReactionButtons(panel, availableReactions) {
+  function showReactionButtons(
+    panel,
+    availableReactions,
+    currentReaction = null,
+  ) {
     const container = panel.querySelector(".pto-reaction-actions");
     if (!container) return;
 
     if (availableReactions.length === 0) {
-      container.innerHTML =
-        '<p style="color:#aaa;font-size:12px;">No reactions available</p>';
+      const message = currentReaction
+        ? '<p style="color:#aaa;font-size:12px;">No other reactions available</p>'
+        : '<p style="color:#aaa;font-size:12px;">No reactions available</p>';
+      container.innerHTML = message;
       return;
     }
 
@@ -724,7 +740,6 @@
       `;
     });
     html += "</div>";
-
     container.innerHTML = html;
 
     // Add click handlers
