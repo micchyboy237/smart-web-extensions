@@ -1,0 +1,32 @@
+<div class="panel-header">
+  <span>📺 VidMon Live</span>
+  <button id="panel-close-btn" aria-label="Close panel">&times;</button>
+</div>
+<div class="panel-content">
+  <!-- Section 1: Live Downloads -->
+  <div>
+    <h4 class="section-title">Live Downloads</h4>
+    <div id="panel-video-list">
+      <div class="empty-state">Scanning for videos...</div>
+    </div>
+  </div>
+
+  <!-- Section 2: Actions -->
+  <div class="action-buttons">
+    <button id="btn-save-active" class="action-btn">Save Active</button>
+    <button id="btn-play-offline" class="action-btn">Play Offline</button>
+  </div>
+
+  <div id="panel-status"></div>
+
+  <!-- Section 3: Cache Info -->
+  <div class="cache-info">
+    <div class="cache-row">
+      <span class="cache-label">Cache Used:</span>
+      <strong id="panel-cache-used" class="cache-value">0 Bytes</strong>
+    </div>
+    <div class="cache-row">
+      <button id="btn-clear-cache">Clear Cache</button>
+    </div>
+  </div>
+</div>

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Video Download Monitor & Cache Manager",
-  "version": "1.0",
-  "description": "Monitor video downloads, cancel fetches, manage cache, and enable offline playback.",
+  "version": "2.0.4",
+  "description": "Floating panel for video monitoring, caching, and offline playback.",
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "background": {
@@ -12,10 +12,12 @@
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "css": ["panel.css"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "action": {
-    "default_popup": "popup.html"
+    "default_title": "Toggle Video Monitor Panel"
   }
 }

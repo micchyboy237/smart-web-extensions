@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Offline Player</title>
+    <style>
+      body {
+        background: #222;
+        color: #fff;
+        font-family: sans-serif;
+        padding: 20px;
+        text-align: center;
+      }
+      video {
+        max-width: 100%;
+        max-height: 70vh;
+        margin-top: 20px;
+        border: 1px solid #444;
+      }
+      .list {
+        margin-top: 20px;
+        text-align: left;
+        max-width: 600px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+      .item {
+        background: #333;
+        padding: 10px;
+        margin-bottom: 5px;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      .item:hover {
+        background: #444;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>📂 Offline Library</h2>
+    <video id="player" controls></video>
+    <div class="list" id="video-list">Loading...</div>
+
+    <script>
+      async function loadVideos() {
+        const cache = await caches.open("offline-videos");
+        const keys = await cache.keys();
+        const listEl = document.getElementById("video-list");
+
+        if (keys.length === 0) {
+          listEl.innerHTML =
+            '<div style="text-align:center; color:#777;">No videos saved yet.</div>';
+          return;
+        }
+
+        listEl.innerHTML = "";
+        keys.forEach((request) => {
+          const div = document.createElement("div");
+          div.className = "item";
+          const filename = request.url.split("/").pop().split("?")[0];
+          div.textContent = filename || request.url;
+
+          div.addEventListener("click", async () => {
+            const response = await cache.match(request);
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const player = document.getElementById("player");
+            player.src = url;
+            player.play();
+          });
+
+          listEl.appendChild(div);
+        });
+      }
+
+      loadVideos();
+    </script>
+  </body>
+</html>
