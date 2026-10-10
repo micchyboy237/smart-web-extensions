@@ -432,33 +432,46 @@
   }
 
   /**
-   * Triggers hover on a reaction button and waits for the .reactTooltip to appear in DOM.
-   * Uses the exact event sequence proven to work via console diagnostics.
+   * Dynamically waits for the .reactTooltip to appear using MutationObserver.
+   * This is significantly faster and more reliable than a static setTimeout.
    */
-  async function findReactTooltipWithRetry(
-    triggerBtn,
-    maxRetries = 3,
-    waitMs = 3000,
-  ) {
+  async function findReactTooltipDynamic(triggerBtn, maxWaitMs = 5000) {
     if (!triggerBtn) {
-      logWarn(`⚠️ [TOOLTIP-SEARCH] No trigger button provided.`);
+      logWarn(`⚠️ [TOOLTIP-DYNAMIC] No trigger button provided.`);
       return null;
     }
 
-    const rect = triggerBtn.getBoundingClientRect();
-    const x = rect.left + rect.width / 2;
-    const y = rect.top + rect.height / 2;
+    return new Promise((resolve) => {
+      // 1. Check if it already exists (edge case)
+      const existingTooltip = document.querySelector(".reactTooltip");
+      if (existingTooltip) {
+        log(`✅ [TOOLTIP-DYNAMIC] Tooltip already present in DOM.`);
+        resolve(existingTooltip);
+        return;
+      }
 
-    log(
-      `🖱️ [TOOLTIP-SEARCH] Starting hover simulation at (${x.toFixed(0)}, ${y.toFixed(0)})...`,
-    );
+      // 2. Setup MutationObserver to watch for DOM changes
+      const observer = new MutationObserver((mutations, obs) => {
+        const tooltip = document.querySelector(".reactTooltip");
+        if (tooltip) {
+          log(`✅ [TOOLTIP-DYNAMIC] Tooltip detected via MutationObserver!`);
+          obs.disconnect(); // Stop watching
+          clearTimeout(timeoutId); // Clear safety net
+          resolve(tooltip);
+        }
+      });
 
-    for (let i = 1; i <= maxRetries; i++) {
-      log(
-        `⏳ [TOOLTIP-SEARCH] Attempt ${i}/${maxRetries}: Dispatching full event sequence...`,
-      );
+      // Start observing the entire document body for child list changes
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
 
-      // ✅ EXACT sequence from successful diagnoseHoverEvents()
+      // 3. Trigger the hover events (same sequence as before)
+      const rect = triggerBtn.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+
       const eventTypes = [
         "mouseenter",
         "mouseover",
@@ -466,7 +479,6 @@
         "pointerenter",
         "pointerover",
       ];
-
       eventTypes.forEach((type) => {
         const evt = new MouseEvent(type, {
           bubbles: true,
@@ -477,28 +489,23 @@
         });
         triggerBtn.dispatchEvent(evt);
       });
-
       log(
-        `⚡ [TOOLTIP-SEARCH] All 5 events dispatched. Waiting ${waitMs}ms...`,
+        `⚡ [TOOLTIP-DYNAMIC] Hover events dispatched. Watching for DOM mutation...`,
       );
 
-      // Wait the FULL duration before checking
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-
-      const tooltip = document.querySelector(".reactTooltip");
-      if (tooltip) {
-        log(`✅ [TOOLTIP-SEARCH] Success! Found .reactTooltip on attempt ${i}`);
-        return tooltip;
-      }
-
-      log(`⚠️ [TOOLTIP-SEARCH] Attempt ${i} failed. Tooltip not found yet.`);
-    }
-
-    logError(`❌ [TOOLTIP-SEARCH] Failed after ${maxRetries} attempts.`);
-    return null;
+      // 4. Safety Net: If tooltip doesn't appear within maxWaitMs, give up
+      const timeoutId = setTimeout(() => {
+        observer.disconnect();
+        logWarn(
+          `⚠️ [TOOLTIP-DYNAMIC] Timeout after ${maxWaitMs}ms. Tooltip did not appear.`,
+        );
+        resolve(null);
+      }, maxWaitMs);
+    });
   }
 
   async function getReactionInfo() {
+    // Find the main post element
     const mainPost =
       document.querySelector(".js-post:first-of-type") ||
       document.querySelector(".message:first-of-type");
@@ -519,7 +526,7 @@
       };
     }
 
-    // --- Check Existing Reaction ---
+    // --- Check if user has already reacted ---
     const reactedButton = mainPost.querySelector("a.reaction.has-reaction");
     if (reactedButton) {
       hasReaction = true;
@@ -532,9 +539,10 @@
       );
     }
 
-    // --- Find Tooltip with Retry Logic ---
+    // --- Find Tooltip with Dynamic Logic ---
     const triggerBtn = mainPost.querySelector("a.reaction:not(.has-reaction)");
-    const reactTooltip = await findReactTooltipWithRetry(triggerBtn);
+    // Use the new dynamic function instead of findReactTooltipWithRetry
+    const reactTooltip = await findReactTooltipDynamic(triggerBtn, 5000);
 
     if (reactTooltip) {
       const reactionLinks = reactTooltip.querySelectorAll("a.reaction");
