@@ -5,15 +5,16 @@
   let _mainVideo = null;
   let _thumbnails = [];
   let _timeUpdateHandler = null;
+
   function formatMMSS(totalSeconds) {
     if (!isFinite(totalSeconds) || totalSeconds < 0) return "0:00";
     const mins = Math.floor(totalSeconds / 60);
     const secs = Math.floor(totalSeconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   }
+
   function calcFrameCount(duration, maxFrames = 16) {
     if (!duration || !isFinite(duration) || duration < 1) return 3;
-    // Logarithmic scaling with configurable ceiling
     const count = Math.min(
       maxFrames,
       Math.max(3, Math.round(Math.log2(duration / 30 + 1) * 6)),
@@ -23,6 +24,7 @@
     );
     return count;
   }
+
   function createContainer() {
     if (_container && document.body.contains(_container)) return _container;
     _container = document.createElement("div");
@@ -46,47 +48,52 @@
     }
     return _container;
   }
+
   function createThumbnail(videoSrc, time) {
     const wrapper = document.createElement("div");
     wrapper.className = "vo-preview-thumb-wrapper";
     wrapper.dataset.time = time;
+
     const video = document.createElement("video");
-    video.src = videoSrc;
+    // 🔧 CHANGED: Start with no source/preload to save bandwidth immediately
     video.muted = true;
-    video.preload = "none"; // 🔧 CHANGED: From "metadata" to "none" to save bandwidth
+    video.preload = "none";
     video.className = "vo-preview-thumb-video";
     video.playsInline = true;
     video.controls = false;
-    // 🛡️ FIX: Mark as already-attached. This container lives inside
-    // #vo-overlay so VIDEO_SELECTOR already excludes it, but tagging it
-    // too is cheap insurance if the overlay markup ever moves/changes.
     video.dataset.videoObserverAttached = "true";
+
+    // Store src in dataset so we can set it later during staggered load
+    video.dataset.lazySrc = videoSrc;
+
     const seekToFrame = () => {
       try {
         video.currentTime = time;
       } catch (e) {}
     };
-    if (video.readyState >= 1) seekToFrame();
-    else video.addEventListener("loadedmetadata", seekToFrame, { once: true });
-    video.addEventListener(
-      "seeked",
-      () => {
-        video
-          .play()
-          .then(() => {
-            setTimeout(() => {
-              if (!video.paused) video.pause();
-            }, 150);
-          })
-          .catch(() => {});
-      },
-      { once: true },
-    );
+
+    // We won't seek immediately. We'll do it when the staggered loader activates this video.
+
+    const onLoaded = () => {
+      seekToFrame();
+      video.removeEventListener("loadedmetadata", onLoaded);
+      // Play briefly to render frame
+      video
+        .play()
+        .then(() => {
+          setTimeout(() => {
+            if (!video.paused) video.pause();
+          }, 150);
+        })
+        .catch(() => {});
+    };
+
     wrapper.appendChild(video);
     const timeLabel = document.createElement("span");
     timeLabel.className = "vo-preview-time-label";
     timeLabel.textContent = formatMMSS(time);
     wrapper.appendChild(timeLabel);
+
     wrapper.addEventListener("click", () => {
       if (_mainVideo) {
         const wasPlaying = !_mainVideo.paused;
@@ -100,7 +107,13 @@
     });
     return wrapper;
   }
-  function generatePreviews(videoEl, entry) {
+
+  // 🔧 NEW: Helper for delay
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function generatePreviews(videoEl, entry) {
     clearPreviews();
     _mainVideo = videoEl;
     const src = videoEl.currentSrc || videoEl.src;
@@ -109,31 +122,65 @@
     if (!duration || isNaN(duration) || duration < 1) return;
     const container = createContainer();
     if (!container) return;
+
     const MAX = calcFrameCount(duration);
     const times = Array.from({ length: MAX }, (_, i) => (i / MAX) * duration);
     console.log(
       `[OverlayPreviews] 🎬 Generating ${MAX} previews | Times: ${times.map((t) => formatMMSS(t)).join(", ")}`,
     );
+
     const previewVideos = [];
-    (async () => {
-      for (const t of times) {
-        const wrapper = createThumbnail(src, t);
-        container.appendChild(wrapper);
-        previewVideos.push(wrapper.querySelector("video"));
-        _thumbnails.push(wrapper);
+
+    // 🔧 STAGGERED LAZY-LOAD IMPLEMENTATION
+    for (let i = 0; i < times.length; i++) {
+      const t = times[i];
+      const wrapper = createThumbnail(src, t);
+      container.appendChild(wrapper);
+
+      const video = wrapper.querySelector("video");
+      previewVideos.push(video);
+      _thumbnails.push(wrapper);
+
+      // Activate this thumbnail's loading
+      if (video.dataset.lazySrc) {
+        video.src = video.dataset.lazySrc;
+        video.preload = "metadata"; // Trigger the fetch
+        delete video.dataset.lazySrc;
+
+        // Wait for metadata to ensure we don't stack too many active connections
+        await new Promise((resolve) => {
+          const onMeta = () => {
+            video.removeEventListener("loadedmetadata", onMeta);
+            resolve();
+          };
+          if (video.readyState >= 1) resolve();
+          else video.addEventListener("loadedmetadata", onMeta, { once: true });
+
+          // Safety timeout so we don't wait forever if a thumbnail fails
+          setTimeout(resolve, 2000);
+        });
       }
-      if (window.BoostEngine?.PriorityManager) {
-        window.BoostEngine.PriorityManager.setOverlayPreviewsPriority(
-          previewVideos,
-        );
+
+      // 🔧 THE DELAY: Wait 500ms before starting the next thumbnail
+      if (i < times.length - 1) {
+        await delay(500);
       }
-      if (_mainVideo) {
-        _timeUpdateHandler = () => updateActivePreview(_mainVideo.currentTime);
-        _mainVideo.addEventListener("timeupdate", _timeUpdateHandler);
-        updateActivePreview(_mainVideo.currentTime);
-      }
-    })();
+    }
+
+    // Register with PriorityManager after loading is mostly done
+    if (window.BoostEngine?.PriorityManager) {
+      window.BoostEngine.PriorityManager.setOverlayPreviewsPriority(
+        previewVideos,
+      );
+    }
+
+    if (_mainVideo) {
+      _timeUpdateHandler = () => updateActivePreview(_mainVideo.currentTime);
+      _mainVideo.addEventListener("timeupdate", _timeUpdateHandler);
+      updateActivePreview(_mainVideo.currentTime);
+    }
   }
+
   function updateActivePreview(currentTime) {
     if (!_container || _thumbnails.length === 0) return;
     let closestIndex = 0;
@@ -150,6 +197,7 @@
       el.classList.toggle("active", i === closestIndex);
     });
   }
+
   function clearPreviews() {
     if (_mainVideo && _timeUpdateHandler) {
       _mainVideo.removeEventListener("timeupdate", _timeUpdateHandler);
@@ -169,6 +217,7 @@
     _mainVideo = null;
     console.log("[OverlayPreviews] 🧹 Cleared previews and restored bandwidth");
   }
+
   window.OverlayPreviews = {
     show: generatePreviews,
     hide: clearPreviews,
