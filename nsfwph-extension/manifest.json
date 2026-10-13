@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "nsfwPH Extension",
   "description": "Universal video enhancement tool with floating panel, buffering controls, and gallery features for video elements across all websites",
-  "version": "2.4",
+  "version": "2.5",
   "action": {
     "default_title": "Video Enhancement Panel"
   },

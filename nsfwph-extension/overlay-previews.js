@@ -66,29 +66,43 @@
     // Store src in dataset so we can set it later during staggered load
     video.dataset.lazySrc = videoSrc;
 
-    const seekToFrame = () => {
+    // We won't seek immediately. We'll do it when the staggered loader activates this video.
+    const onLoaded = () => {
+      video.removeEventListener("loadedmetadata", onLoaded);
+
+      // 1. Seek to the specific time
       try {
         video.currentTime = time;
-      } catch (e) {}
+      } catch (e) {
+        console.warn("[OverlayPreviews] Seek failed:", e);
+        return;
+      }
+
+      // 2. Wait for the 'seeked' event to ensure the frame is ready
+      const onSeeked = () => {
+        video.removeEventListener("seeked", onSeeked);
+
+        // 3. Play briefly to force the decoder to render the frame
+        video
+          .play()
+          .then(() => {
+            setTimeout(() => {
+              if (!video.paused) video.pause();
+            }, 150);
+          })
+          .catch(() => {
+            // Autoplay might be blocked, which is fine for a thumbnail
+          });
+      };
+
+      video.addEventListener("seeked", onSeeked, { once: true });
     };
 
-    // We won't seek immediately. We'll do it when the staggered loader activates this video.
-
-    const onLoaded = () => {
-      seekToFrame();
-      video.removeEventListener("loadedmetadata", onLoaded);
-      // Play briefly to render frame
-      video
-        .play()
-        .then(() => {
-          setTimeout(() => {
-            if (!video.paused) video.pause();
-          }, 150);
-        })
-        .catch(() => {});
-    };
+    // Attach listener for when we eventually set the src
+    video.addEventListener("loadedmetadata", onLoaded, { once: true });
 
     wrapper.appendChild(video);
+
     const timeLabel = document.createElement("span");
     timeLabel.className = "vo-preview-time-label";
     timeLabel.textContent = formatMMSS(time);
@@ -105,6 +119,7 @@
         wrapper.classList.add("active");
       }
     });
+
     return wrapper;
   }
 
@@ -118,13 +133,16 @@
     _mainVideo = videoEl;
     const src = videoEl.currentSrc || videoEl.src;
     if (!src) return;
+
     const duration = videoEl.duration;
     if (!duration || isNaN(duration) || duration < 1) return;
+
     const container = createContainer();
     if (!container) return;
 
     const MAX = calcFrameCount(duration);
     const times = Array.from({ length: MAX }, (_, i) => (i / MAX) * duration);
+
     console.log(
       `[OverlayPreviews] 🎬 Generating ${MAX} previews | Times: ${times.map((t) => formatMMSS(t)).join(", ")}`,
     );
@@ -136,7 +154,6 @@
       const t = times[i];
       const wrapper = createThumbnail(src, t);
       container.appendChild(wrapper);
-
       const video = wrapper.querySelector("video");
       previewVideos.push(video);
       _thumbnails.push(wrapper);
@@ -144,7 +161,8 @@
       // Activate this thumbnail's loading
       if (video.dataset.lazySrc) {
         video.src = video.dataset.lazySrc;
-        video.preload = "metadata"; // Trigger the fetch
+        // 🔧 CHANGED: Use "auto" to allow buffering of the specific frame needed for seeking
+        video.preload = "auto";
         delete video.dataset.lazySrc;
 
         // Wait for metadata to ensure we don't stack too many active connections
@@ -153,8 +171,13 @@
             video.removeEventListener("loadedmetadata", onMeta);
             resolve();
           };
-          if (video.readyState >= 1) resolve();
-          else video.addEventListener("loadedmetadata", onMeta, { once: true });
+
+          // If already loaded (cached), resolve immediately
+          if (video.readyState >= 1) {
+            resolve();
+          } else {
+            video.addEventListener("loadedmetadata", onMeta, { once: true });
+          }
 
           // Safety timeout so we don't wait forever if a thumbnail fails
           setTimeout(resolve, 2000);

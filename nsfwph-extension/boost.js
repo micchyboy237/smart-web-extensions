@@ -465,11 +465,15 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         `[Priority] 🖼️ Setting ${label} priority for ${videos.length} videos`,
       );
 
-      // Deprioritize the main active video if it exists
-      if (this._activeVideo) {
+      // 🔧 FIX: Do NOT suspend the main active video for Overlay Previews
+      if (label !== "OverlayPreviews" && this._activeVideo) {
         this._deprioritizeVideoForElement(this._activeVideo);
         console.log(
           `[Priority] ⏸️ Temporarily suspended main active video for ${label}`,
+        );
+      } else if (label === "OverlayPreviews") {
+        console.log(
+          `[Priority] ℹ️ Keeping main video prioritized during Overlay Previews load`,
         );
       }
 
