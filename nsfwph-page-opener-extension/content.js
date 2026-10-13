@@ -10,12 +10,17 @@
   function logWarn(...args) {
     if (DEBUG) console.warn("[PTO-CS]", ...args);
   }
+  function logError(...args) {
+    console.error("[PTO-CS]", ...args);
+  }
+
   // ============================================================
   // CONFIGURATION
   // ============================================================
   const DELAY_BETWEEN_TABS_MS = 800;
   const DELAY_FOR_PAGE_LOAD_MS = 2000;
   const EXCLUDED_FORUM_TEXT = "Non-Pinay Videos";
+
   // ============================================================
   // PAGE STRUCTURE STRATEGIES
   // ============================================================
@@ -153,6 +158,7 @@
       return this.detect();
     },
   };
+
   // ============================================================
   // STATE
   // ============================================================
@@ -161,64 +167,60 @@
   let skippedDuplicates = 0;
   let skippedExcluded = 0;
   let skippedByDate = 0;
-  let targetCount = null;
-  let useTargetLimit = false;
-  let autoCloseIfReacted = false;
+  let targetCount = 10; // Default
+  let useTargetLimit = false; // Default
+  let autoCloseIfReacted = false; // Default
   let currentStrategy = null;
   let hasProcessedDataList = false;
-  let currentPanelType = "structured"; // 'structured' or 'threads'
-  let daysBackFilter = 0; // 0 = no filter, 1 = 1 day, 7 = 7 days, etc.
+  let currentPanelType = "structured";
+  let daysBackFilter = 0; // Default
+
   // ============================================================
-  // STORAGE HELPERS
+  // STORAGE HELPERS (Consolidated to chrome.storage.local)
   // ============================================================
-  const SESSION_KEY_PREFIX = "pto_session_";
-  function saveToSession(key, value) {
+
+  /**
+   * Loads all panel settings from chrome.storage.local
+   */
+  async function loadPanelSettings() {
     try {
-      sessionStorage.setItem(SESSION_KEY_PREFIX + key, JSON.stringify(value));
+      const result = await chrome.storage.local.get([
+        "pto_useTargetLimit",
+        "pto_targetCount",
+        "pto_daysBackFilter",
+        "pto_autoCloseIfReacted",
+      ]);
+
+      useTargetLimit = result.pto_useTargetLimit ?? false;
+      targetCount = result.pto_targetCount ?? 10;
+      daysBackFilter = result.pto_daysBackFilter ?? 0;
+      autoCloseIfReacted = result.pto_autoCloseIfReacted ?? false;
+
+      log(
+        `📂 Loaded settings: limit=${useTargetLimit}, count=${targetCount}, days=${daysBackFilter}, autoclose=${autoCloseIfReacted}`,
+      );
     } catch (e) {
-      logWarn("Failed to save to session:", e);
+      logWarn("Failed to load settings:", e);
     }
   }
-  function loadFromSession(key, defaultValue = null) {
+
+  /**
+   * Saves current panel settings to chrome.storage.local
+   */
+  async function savePanelSettings() {
     try {
-      const value = sessionStorage.getItem(SESSION_KEY_PREFIX + key);
-      return value !== null ? JSON.parse(value) : defaultValue;
+      await chrome.storage.local.set({
+        pto_useTargetLimit: useTargetLimit,
+        pto_targetCount: targetCount,
+        pto_daysBackFilter: daysBackFilter,
+        pto_autoCloseIfReacted: autoCloseIfReacted,
+      });
+      log(`💾 Saved settings to chrome.storage.local`);
     } catch (e) {
-      logWarn("Failed to load from session:", e);
-      return defaultValue;
+      logWarn("Failed to save settings:", e);
     }
   }
-  async function saveAutoCloseSetting(enabled) {
-    try {
-      await chrome.storage.local.set({ pto_autoCloseIfReacted: enabled });
-      log(`💾 Saved autoCloseIfReacted=${enabled} to chrome.storage.local`);
-    } catch (e) {
-      logWarn("Failed to save auto-close setting:", e);
-    }
-  }
-  async function loadAutoCloseSetting() {
-    try {
-      const result = await chrome.storage.local.get("pto_autoCloseIfReacted");
-      const value = result.pto_autoCloseIfReacted ?? false;
-      log(`📂 Loaded autoCloseIfReacted=${value} from chrome.storage.local`);
-      return value;
-    } catch (e) {
-      logWarn("Failed to load auto-close setting:", e);
-      return false;
-    }
-  }
-  function loadPanelState() {
-    return {
-      useTargetLimit: loadFromSession("useTargetLimit", false),
-      targetCount: loadFromSession("targetCount", 10),
-      daysBackFilter: loadFromSession("daysBackFilter", 0),
-    };
-  }
-  function savePanelState() {
-    saveToSession("useTargetLimit", useTargetLimit);
-    saveToSession("targetCount", targetCount);
-    saveToSession("daysBackFilter", daysBackFilter);
-  }
+
   // ============================================================
   // DATE FILTERING HELPER
   // ============================================================
@@ -230,14 +232,30 @@
     const cutoffTime = now - daysBack * 24 * 60 * 60; // daysBack days in seconds
     return timestamp >= cutoffTime;
   }
+
   // ============================================================
   // COMMUNICATION WITH BACKGROUND WORKER
   // ============================================================
   async function checkAndOpenTab(url) {
     log("📡 [REQ] Sending CHECK_AND_OPEN to background:", url);
+
+    // ✅ NEW: Extract thread start date if on a thread page
+    let threadTimestamp = null;
+    if (isThreadsPage()) {
+      const timeEl = document.querySelector(".p-body-header time.u-dt");
+      if (timeEl && timeEl.dataset.timestamp) {
+        threadTimestamp = parseInt(timeEl.dataset.timestamp, 10);
+        log(`📅 Found thread timestamp in header: ${threadTimestamp}`);
+      }
+    }
+
     return new Promise((resolve) => {
       chrome.runtime.sendMessage(
-        { type: "CHECK_AND_OPEN", url },
+        {
+          type: "CHECK_AND_OPEN",
+          url,
+          threadTimestamp, // ✅ NEW: Pass timestamp to background
+        },
         (response) => {
           if (chrome.runtime.lastError) {
             logWarn("📡 Message error:", chrome.runtime.lastError.message);
@@ -255,6 +273,7 @@
       );
     });
   }
+
   async function getStats() {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "GET_STATS" }, (response) => {
@@ -262,6 +281,7 @@
       });
     });
   }
+
   // ============================================================
   // PANEL DETECTION & CREATION
   // ============================================================
@@ -271,14 +291,14 @@
       /\/posts\/\d+/.test(window.location.href)
     );
   }
+
   async function createPanel() {
-    const savedState = loadPanelState();
-    useTargetLimit = savedState.useTargetLimit;
-    targetCount = savedState.targetCount || 10;
-    daysBackFilter = savedState.daysBackFilter || 0;
-    autoCloseIfReacted = await loadAutoCloseSetting();
+    // ✅ Load settings first
+    await loadPanelSettings();
+
     const panel = document.createElement("div");
     panel.id = "pto-panel";
+
     if (isThreadsPage()) {
       currentPanelType = "threads";
       panel.innerHTML = await loadThreadsPanelHTML();
@@ -288,8 +308,10 @@
       panel.innerHTML = await loadStructuredPanelHTML();
       setupStructuredPanel(panel);
     }
+
     document.body.appendChild(panel);
   }
+
   async function loadStructuredPanelHTML() {
     // In production, this would fetch from panel-structured.html
     // For now, we'll use inline HTML
@@ -342,6 +364,7 @@
       </div>
     `;
   }
+
   async function loadThreadsPanelHTML() {
     // In production, this would fetch from panel-threads.html
     // For now, we'll use inline HTML
@@ -365,6 +388,7 @@
       </div>
     `;
   }
+
   function setupStructuredPanel(panel) {
     panel
       .querySelector(".pto-start-btn")
@@ -374,20 +398,22 @@
       const logEl = panel.querySelector(".pto-debug-log");
       logEl.style.display = logEl.style.display === "none" ? "block" : "none";
     });
-    panel.querySelector(".pto-limit-toggle").addEventListener("change", (e) => {
-      useTargetLimit = e.target.checked;
-      const targetRow = panel.querySelector(".pto-target-row");
-      targetRow.style.display = useTargetLimit ? "flex" : "none";
-      updateAvailableCount();
-      savePanelState();
-    });
+    panel
+      .querySelector(".pto-limit-toggle")
+      .addEventListener("change", async (e) => {
+        useTargetLimit = e.target.checked;
+        const targetRow = panel.querySelector(".pto-target-row");
+        targetRow.style.display = useTargetLimit ? "flex" : "none";
+        updateAvailableCount();
+        await savePanelSettings(); // ✅ Save immediately
+      });
     panel
       .querySelector(".pto-days-back-select")
-      .addEventListener("change", (e) => {
+      .addEventListener("change", async (e) => {
         daysBackFilter = parseInt(e.target.value, 10);
         log(`📅 Days back filter set to: ${daysBackFilter} days`);
         updateAvailableCount();
-        savePanelState();
+        await savePanelSettings(); // ✅ Save immediately
       });
     panel
       .querySelector(".pto-autoclose-toggle")
@@ -396,18 +422,21 @@
         log(
           `🔄 Auto-close if reacted: ${autoCloseIfReacted ? "ENABLED" : "DISABLED"}`,
         );
-        await saveAutoCloseSetting(autoCloseIfReacted);
+        await savePanelSettings(); // ✅ Save immediately
       });
-    panel.querySelector(".pto-target-input").addEventListener("change", (e) => {
-      targetCount = parseInt(e.target.value, 10);
-      savePanelState();
-    });
+    panel
+      .querySelector(".pto-target-input")
+      .addEventListener("change", async (e) => {
+        targetCount = parseInt(e.target.value, 10);
+        await savePanelSettings(); // ✅ Save immediately
+      });
     setTimeout(() => {
       currentStrategy = StrategyRegistry.detect();
       updateStructureDisplay();
       updateAvailableCount();
     }, 500);
   }
+
   function setupThreadsPanel(panel) {
     // Fire and forget, or handle promise if needed
     analyzeThreadContent(panel).catch((err) => {
@@ -415,6 +444,7 @@
       updateStatus("Error analyzing thread");
     });
   }
+
   // ============================================================
   // THREADS PANEL FUNCTIONALITY
   // ============================================================
@@ -446,6 +476,7 @@
       updateStatus("Error analyzing thread");
     }
   }
+
   /**
    * Dynamically waits for the .reactTooltip to appear using MutationObserver.
    * This is significantly faster and more reliable than a static setTimeout.
@@ -512,6 +543,7 @@
       }, maxWaitMs);
     });
   }
+
   async function getReactionInfo() {
     // Find the main post element
     const mainPost =
@@ -637,6 +669,7 @@
       requiredReactions,
     };
   }
+
   function updateBbCodeBlocks(panel, bbCodeBlocks) {
     const container = panel.querySelector(".pto-bbcode-list");
     if (!container) return;
@@ -680,6 +713,7 @@
     });
     container.innerHTML = html;
   }
+
   function updateReactionInfo(panel, reactionInfo) {
     const container = panel.querySelector(".pto-reaction-info");
     if (!container) return;
@@ -698,6 +732,7 @@
       `;
     }
   }
+
   function showReactionButtons(
     panel,
     availableReactions,
@@ -733,6 +768,7 @@
       });
     });
   }
+
   async function triggerReaction(href, reactionId) {
     log(`🎯 Triggering reaction: ${reactionId} via ${href}`);
     updateStatus("Triggering reaction...");
@@ -759,6 +795,7 @@
       updateStatus("Failed to trigger reaction");
     }
   }
+
   // ============================================================
   // STRUCTURED PANEL FUNCTIONS (existing logic)
   // ============================================================
@@ -768,6 +805,7 @@
       el.textContent = currentStrategy.name;
     }
   }
+
   function countAvailableRows() {
     if (!currentStrategy) {
       currentStrategy = StrategyRegistry.detect();
@@ -786,7 +824,6 @@
     rows.forEach((row) => {
       const forumName = currentStrategy.getForumName(row);
       const timestamp = currentStrategy.getTimestamp(row);
-
       if (forumName.includes(EXCLUDED_FORUM_TEXT)) {
         excluded++;
       } else if (!isWithinDaysBack(timestamp, daysBackFilter)) {
@@ -807,22 +844,21 @@
       mainStrategyAvailable: available,
     };
   }
+
   function updateAvailableCount() {
     const countEl = document.querySelector(".pto-available-count");
     if (!countEl) return;
     const counts = countAvailableRows();
     let displayText = `${counts.available}`;
-
     if (counts.excluded > 0) {
       displayText += ` (excl: ${counts.excluded})`;
     }
-
     if (daysBackFilter > 0 && counts.filteredByDate > 0) {
       displayText += ` | 📅 ${counts.filteredByDate} older`;
     }
-
     countEl.textContent = displayText;
   }
+
   function appendDebugLog(msg) {
     if (!DEBUG) return;
     const logEl = document.querySelector(".pto-debug-log");
@@ -834,6 +870,7 @@
     logEl.textContent += `[${time}] ${msg}\n`;
     logEl.scrollTop = logEl.scrollHeight;
   }
+
   function highlightRow(rowElement) {
     const prev = document.querySelector(".pto-active-row");
     if (prev) prev.classList.remove("pto-active-row");
@@ -842,10 +879,12 @@
       rowElement.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }
+
   function clearHighlight() {
     const active = document.querySelector(".pto-active-row");
     if (active) active.classList.remove("pto-active-row");
   }
+
   // ============================================================
   // CORE LOGIC (existing)
   // ============================================================
@@ -907,6 +946,7 @@
       await processCurrentPage();
     }
   }
+
   function stopProcess() {
     isRunning = false;
     clearHighlight();
@@ -916,6 +956,7 @@
     updateStatus(summary);
     toggleButtons(false);
   }
+
   async function processDataListRows() {
     if (!isRunning) return;
     const rows = DataListStrategy.getRows();
@@ -988,6 +1029,7 @@
     log(`✅ Data list processing complete. Opened: ${openedCount}`);
     appendDebugLog(`DATALIST | Complete | opened=${openedCount}`);
   }
+
   async function processCurrentPage() {
     if (!isRunning || (useTargetLimit && openedCount >= targetCount)) {
       if (useTargetLimit && openedCount >= targetCount) {
@@ -1093,6 +1135,7 @@
       }
     }
   }
+
   // ============================================================
   // UTILITIES
   // ============================================================
@@ -1152,6 +1195,7 @@
     div.textContent = text;
     return div.innerHTML;
   }
+
   // Initialize
   createPanel();
 })();

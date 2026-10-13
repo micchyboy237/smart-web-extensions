@@ -11,18 +11,21 @@ function logWarn(...args) {
 function logError(...args) {
   console.error("[PTO-BG]", ...args);
 }
+
 // ============================================================
 // STATE
 // ============================================================
 let openedCount = 0;
 const pendingOpens = new Set();
+
 // ============================================================
 // MESSAGE HANDLER
 // ============================================================
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "CHECK_AND_OPEN") {
     log("📨 Received CHECK_AND_OPEN:", message.url);
-    handleCheckAndOpen(message.url)
+    // ✅ UPDATED: Pass the entire message object to handle additional data like timestamp
+    handleCheckAndOpen(message)
       .then((result) => {
         log("📤 Sending response:", result);
         sendResponse(result);
@@ -45,12 +48,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   return false;
 });
+
 // ============================================================
 // CORE LOGIC
 // ============================================================
-async function handleCheckAndOpen(url) {
+// ✅ UPDATED: Accept message object instead of just URL
+async function handleCheckAndOpen(message) {
+  const url = message.url;
+  const threadTimestamp = message.threadTimestamp; // ✅ NEW: Get timestamp from message
+
   const normalized = normalizeUrl(url);
   log("🔍 [DUPE-CHECK] Normalizing URL:", { original: url, normalized });
+
   // --- Check 1: Pending opens (race condition guard) ---
   if (pendingOpens.has(normalized)) {
     log(
@@ -68,24 +77,14 @@ async function handleCheckAndOpen(url) {
     let matchReason = "";
     const isDuplicate = tabs.some((tab) => {
       if (!tab.url) {
-        // log("   -> Skipping tab", tab.id, "(no URL yet)");
         return false;
       }
       const tabNormalized = normalizeUrl(tab.url);
-      // Exact Match
       if (tabNormalized === normalized) {
         matchedTabId = tab.id;
         matchReason = "EXACT_MATCH";
         log("   -> ✅ MATCH FOUND! Tab ID:", tab.id, "| URL:", tab.url);
         return true;
-      }
-      // Partial/Hash Match (for debugging near-misses)
-      if (DEBUG && tabNormalized.includes(normalized.split("/").pop())) {
-        log(
-          "   -> ⚠️ Near-match detected (ignoring): Tab",
-          tab.id,
-          tabNormalized,
-        );
       }
       return false;
     });
@@ -101,10 +100,35 @@ async function handleCheckAndOpen(url) {
     } else {
       log("✅ [DUPE-CHECK] No duplicates found. Proceeding to open.");
     }
+
+    // ✅ NEW: Check Date Filter BEFORE opening tab if timestamp is available
+    if (threadTimestamp) {
+      const settings = await chrome.storage.local.get(["pto_daysBackFilter"]);
+      const daysBack = settings.pto_daysBackFilter || 0;
+
+      if (daysBack > 0) {
+        const now = Date.now() / 1000;
+        const cutoffTime = now - daysBack * 24 * 60 * 60;
+
+        if (threadTimestamp < cutoffTime) {
+          log(
+            `🚫 [DATE-FILTER] Thread is too old. Timestamp: ${threadTimestamp}, Cutoff: ${cutoffTime}`,
+          );
+          return {
+            opened: false,
+            duplicate: false,
+            reason: "filtered_by_date",
+            message: `Thread is older than ${daysBack} days`,
+          };
+        }
+      }
+    }
+
     // --- Open new tab ---
     log("🆕 [ACTION] Opening new tab:", normalized);
     pendingOpens.add(normalized);
     log("   -> Added to pendingOpens. Current size:", pendingOpens.size);
+
     // Open in background (active: false)
     const newTab = await chrome.tabs.create({ url, active: false });
     openedCount++;
@@ -114,6 +138,7 @@ async function handleCheckAndOpen(url) {
       "| Total Opened:",
       openedCount,
     );
+
     // --- Setup Auto-Close Listener ---
     const onUpdatedListener = async (tabId, changeInfo, tab) => {
       if (tabId === newTab.id && changeInfo.status === "complete") {
@@ -122,14 +147,10 @@ async function handleCheckAndOpen(url) {
         chrome.tabs.onUpdated.removeListener(onUpdatedListener);
         pendingOpens.delete(normalized);
         log("   -> Removed from pendingOpens. Remaining:", pendingOpens.size);
+
         // Check if auto-close is enabled in storage
         const settings = await chrome.storage.local.get(
           "pto_autoCloseIfReacted",
-        );
-
-        // ✅ ADD: Log the setting value before proceeding
-        log(
-          `⚙️ [AUTO-CLOSE] Setting pto_autoCloseIfReacted = ${settings.pto_autoCloseIfReacted} for tab ${newTab.id}`,
         );
 
         if (settings.pto_autoCloseIfReacted) {
@@ -143,6 +164,7 @@ async function handleCheckAndOpen(url) {
       }
     };
     chrome.tabs.onUpdated.addListener(onUpdatedListener);
+
     // Safety net: remove from pending after 15s regardless
     setTimeout(() => {
       if (pendingOpens.has(normalized)) {
@@ -154,6 +176,7 @@ async function handleCheckAndOpen(url) {
         );
       }
     }, 15000);
+
     return { opened: true, duplicate: false, tabId: newTab.id };
   } catch (err) {
     pendingOpens.delete(normalized);
@@ -164,6 +187,7 @@ async function handleCheckAndOpen(url) {
     throw new Error(`Failed to open tab: ${err.message}`);
   }
 }
+
 /**
  * Injects a lightweight script to check for reactions and closes the tab if appropriate.
  *
@@ -179,33 +203,27 @@ async function checkAndCloseIfReacted(tabId, url) {
       log("ℹ️ [AUTO-CLOSE] Skipping reaction check: Not a thread/post URL");
       return;
     }
-
     log(`🔍 [AUTO-CLOSE] Injecting reaction check into tab ${tabId}...`);
-
     const results = await chrome.scripting.executeScript({
       target: { tabId: tabId },
       func: () => {
         // Check for video elements (global is usually fine for videos)
         const videoElements = document.querySelectorAll("video");
         const hasVideoElement = videoElements.length > 0;
-
         // Scope bbCodeBlock check to .message--article
         const mainArticle = document.querySelector(".message--article");
         let hasBbCodeBlock = false;
         let bbCodeBlockCount = 0;
-
         if (mainArticle) {
           const blocks = mainArticle.querySelectorAll(".bbCodeBlock");
           bbCodeBlockCount = blocks.length;
           hasBbCodeBlock = bbCodeBlockCount > 0;
         }
-
         // Scope to main post for reaction check (keep existing logic or refine similarly)
         const mainPost =
           document.querySelector(".js-post:first-of-type") ||
           document.querySelector(".message:first-of-type");
         let hasReaction = false;
-
         if (mainPost) {
           if (mainPost.querySelector("a.reaction.has-reaction")) {
             hasReaction = true;
@@ -219,7 +237,6 @@ async function checkAndCloseIfReacted(tabId, url) {
             }
           }
         }
-
         return {
           hasReaction: hasReaction,
           hasVideo: hasVideoElement,
@@ -230,10 +247,8 @@ async function checkAndCloseIfReacted(tabId, url) {
         };
       },
     });
-
     if (results && results[0] && results[0].result) {
       const checkResult = results[0].result;
-
       // ✅ ADD: Log all detection results before decision
       log(`📋 [AUTO-CLOSE] Detection results for tab ${tabId}:`, {
         hasReaction: checkResult.hasReaction,
@@ -241,14 +256,9 @@ async function checkAndCloseIfReacted(tabId, url) {
         videoCount: checkResult.videoCount,
         hasBbCodeBlock: checkResult.hasBbCodeBlock,
         bbCodeBlockCount: checkResult.bbCodeBlockCount,
-        mainPostFound: checkResult.mainPostFound,
-        reactionButtonCount: checkResult.reactionButtonCount,
-        hiddenBlockCount: checkResult.hiddenBlockCount,
         pageTitle: checkResult.pageTitle,
       });
-
       // Decision logic with explicit branch logging:
-
       // 1. If has reaction: ALWAYS close
       if (checkResult.hasReaction) {
         log(
@@ -288,6 +298,7 @@ async function checkAndCloseIfReacted(tabId, url) {
     );
   }
 }
+
 // ============================================================
 // URL NORMALIZATION
 // ============================================================
