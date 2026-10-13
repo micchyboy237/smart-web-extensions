@@ -27,7 +27,7 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
     PRELOAD_MIN_INTERVAL: 3000,
     PRELOAD_MIN_ADVANCE: 5,
     PRELOAD_GRACE_PERIOD_MS: 3000,
-    PRELOAD_FIRST_BUFFER_GRACE: 8,
+    PRELOAD_FIRST_BUFFER_GRACE: 3, // 🔧 CHANGED: Reduced from 8s to 3s for faster seek activation
     // 🔧 NEW: Active Video Priority
     PRIORITY_ENABLED: true,
     PRIORITY_CHECK_INTERVAL: 1000, // Check active video status every 1s
@@ -437,6 +437,27 @@ if (window.__BOOST_ENGINE_INITIALIZED__) {
         console.log(
           `[Priority] ⚠️ Priority disabled, skipping ${label} priority`,
         );
+        return;
+      }
+
+      // 🔧 NEW: Check network speed. If slow, don't preload batch items at all.
+      const connection =
+        navigator.connection ||
+        navigator.mozConnection ||
+        navigator.webkitConnection;
+      const isSlowConnection =
+        connection && connection.downlink && connection.downlink < 5;
+
+      if (isSlowConnection) {
+        console.log(
+          `[Priority] 🐢 Slow connection detected (${connection.downlink}Mbps). Skipping ${label} preloading.`,
+        );
+        // Still track them in the set so we can clean them up later, but don't set preload="auto"
+        targetSet.clear();
+        videos.forEach((video) => {
+          targetSet.add(video);
+          video.preload = "none";
+        });
         return;
       }
 

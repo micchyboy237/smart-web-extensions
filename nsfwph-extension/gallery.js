@@ -86,7 +86,7 @@ function createGalleryVideoItem(videoSrc, time) {
   const video = document.createElement("video");
   video.src = videoSrc;
   video.muted = true;
-  video.preload = "metadata"; // Will be upgraded to "auto" by PriorityManager
+  video.preload = "none"; // 🔧 CHANGED: From "metadata" to "none" to save bandwidth
   video.className = "gallery-media";
   video.playsInline = true;
   video.controls = false;

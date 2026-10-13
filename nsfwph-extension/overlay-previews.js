@@ -53,7 +53,7 @@
     const video = document.createElement("video");
     video.src = videoSrc;
     video.muted = true;
-    video.preload = "metadata";
+    video.preload = "none"; // 🔧 CHANGED: From "metadata" to "none" to save bandwidth
     video.className = "vo-preview-thumb-video";
     video.playsInline = true;
     video.controls = false;
