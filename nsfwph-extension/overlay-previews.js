@@ -1,6 +1,9 @@
 // overlay-previews.js
 (function () {
   "use strict";
+
+  const DELAY_NEXT_THUMBNAIL = 100;
+
   let _container = null;
   let _mainVideo = null;
   let _thumbnails = [];
@@ -186,7 +189,7 @@
 
       // 🔧 THE DELAY: Wait 500ms before starting the next thumbnail
       if (i < times.length - 1) {
-        await delay(500);
+        await delay(DELAY_NEXT_THUMBNAIL);
       }
     }
 
