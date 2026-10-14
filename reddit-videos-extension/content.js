@@ -90,12 +90,39 @@
     return idx > 0 ? posts[idx - 1] : null;
   }
 
-  function smoothScrollToPost(post) {
+  function smoothScrollToPost(post, isPlaying = false) {
     if (!post) return;
+
     const target = post.querySelector("shreddit-player") || post;
     const rect = target.getBoundingClientRect();
-    const targetY =
-      window.scrollY + rect.top - Math.max(120, window.innerHeight * 0.18);
+
+    // Calculate scroll position
+    let targetY;
+
+    if (isPlaying) {
+      // When playing, account for scaled video and center it better
+      const scale = CONFIG.VIDEO_SCALE;
+      const extraHeight = rect.height * (scale - 1);
+
+      // Center the ORIGINAL video bounds (not the scaled version)
+      // This ensures the content area is centered, not the visual overflow
+      const viewportCenter = window.innerHeight / 2;
+      const videoCenter = rect.top + rect.height / 2;
+      const offset = videoCenter - viewportCenter;
+
+      // Adjust for the scale extension (half goes above, half below)
+      targetY = window.scrollY + offset - extraHeight * 0.3;
+
+      log(
+        `📍 Centered scroll for scaled video (offset: ${Math.round(extraHeight * 0.3)}px)`,
+        "info",
+      );
+    } else {
+      // Normal scrolling behavior
+      targetY =
+        window.scrollY + rect.top - Math.max(120, window.innerHeight * 0.18);
+    }
+
     window.scrollTo({ top: targetY, behavior: "smooth" });
   }
 
@@ -252,7 +279,6 @@
       // Inject styles into Shadow DOM for actual video scaling
       const shadowInjected = injectShadowDOMStyles(shredditPlayer);
       if (!shadowInjected) {
-        // Retry after delay if Shadow DOM not ready
         setTimeout(() => injectShadowDOMStyles(shredditPlayer), 500);
       }
       log(`🔓 Container constraints managed via CSS`, "info");
@@ -263,10 +289,8 @@
     if (!bgContainer) {
       bgContainer = document.createElement("div");
       bgContainer.className = "reddit-video-bg";
-
       const player = post.querySelector("shreddit-player");
       if (player && player.parentElement) {
-        // Add wrapper class for CSS targeting
         player.parentElement.classList.add("reddit-video-wrapper");
         player.parentElement.insertBefore(bgContainer, player);
         log("🖼️ Dark background added", "success");
@@ -278,13 +302,15 @@
     if (player) {
       let parent = player.parentElement;
       while (parent && parent !== post) {
-        // Ensure the container has enough height for the scaled video
         parent.style.minHeight = "auto";
         parent.style.flexShrink = "0";
         parent = parent.parentElement;
       }
       log(`📏 Parent containers adjusted for scaled video`, "info");
     }
+
+    // NEW: Apply dynamic spacing based on actual video size
+    applyDynamicSpacing(post, video);
 
     log(
       `✨ Video enhanced with ${CONFIG.VIDEO_SCALE}x scale and anti-overlap protection`,
@@ -309,7 +335,55 @@
       injectedShadowRoots.delete(shredditPlayer.shadowRoot);
     }
 
+    // NEW: Remove dynamic spacing
+    removeDynamicSpacing(post);
+
     log(`🧹 Removed video styling`, "info");
+  }
+
+  // ==================== DYNAMIC SPACING ====================
+  function applyDynamicSpacing(post, video) {
+    if (!post || !video) return;
+
+    // Get actual video dimensions
+    const rect = video.getBoundingClientRect();
+    const scale = CONFIG.VIDEO_SCALE;
+
+    // Calculate extra space needed (scale extends beyond original bounds)
+    const extraHeight = rect.height * (scale - 1);
+
+    // Apply spacing with buffer for shadows
+    const BUFFER = 25;
+    const marginBottom = Math.ceil(extraHeight + BUFFER * 2);
+    const marginTopNext = Math.ceil(extraHeight / 2 + BUFFER);
+
+    post.style.marginBottom = `${marginBottom}px`;
+
+    // Find and adjust next sibling post
+    const nextPost = post.nextElementSibling;
+    if (nextPost && nextPost.matches("shreddit-post")) {
+      nextPost.style.marginTop = `${marginTopNext}px`;
+    }
+
+    log(
+      `📏 Dynamic spacing: margin-bottom=${marginBottom}px, next margin-top=${marginTopNext}px`,
+      "info",
+    );
+  }
+
+  function removeDynamicSpacing(post) {
+    if (!post) return;
+
+    // Reset inline styles
+    post.style.marginBottom = "";
+
+    // Reset next sibling
+    const nextPost = post.nextElementSibling;
+    if (nextPost && nextPost.matches("shreddit-post")) {
+      nextPost.style.marginTop = "";
+    }
+
+    log("🧹 Removed dynamic spacing", "info");
   }
 
   // ==================== PAUSE/RESUME HANDLING ====================
@@ -587,31 +661,44 @@
       log("❌ No post provided", "error");
       return;
     }
+
     const player = post.querySelector("shreddit-player");
     const video = player ? getVideoFromPlayer(player) : null;
+
     if (!video) {
       log("❌ No video found in post", "error");
       return;
     }
+
     // Respect manual pause unless it's auto-next or arrow navigation
     if (video._redditUserPaused && !isAutoNext) {
       log("⏸️ Skipping auto-play - user manually paused this video", "warning");
       return;
     }
+
     cleanupPreviousPlayer();
+
     // Pause all other videos
     document.querySelectorAll("video").forEach((v) => {
       if (v !== video) v.pause();
     });
+
     // CRITICAL: Apply styling BEFORE marking as current
     applyVideoStyling(post, video);
+
     // Mark as current playing
     currentPlayingPost = post;
     currentPlayingVideo = video;
     post.setAttribute("data-currently-playing", "true");
     setActionBarVisibility(post, false);
+
     const postId = post.getAttribute("post-id") || "unknown";
     log(`▶️ Now playing: Post ${postId}`, "success");
+
+    // NEW: Scroll to center the video after applying styles
+    setTimeout(() => {
+      smoothScrollToPost(post, true); // Pass isPlaying=true
+    }, 100);
 
     // ===== REFACTORED: Single call to setup all video events =====
     setupVideoEvents(post, video, false);
@@ -741,7 +828,12 @@
 
       if (targetPost) {
         e.preventDefault(); // Prevent page scroll
-        smoothScrollToPost(targetPost);
+
+        // Determine if this is a playing action
+        const isPlayingAction = e.key === "ArrowRight" || e.key === "ArrowLeft";
+
+        smoothScrollToPost(targetPost, isPlayingAction);
+
         const video = await waitForVideoInPost(targetPost);
         if (video) {
           setTimeout(() => {
@@ -840,8 +932,8 @@
 
   function startAutoPlay() {
     log("=== Starting Auto-Play Sequence ===", "info");
-
     const posts = getVideoPosts();
+
     if (posts.length === 0) {
       log("No video posts found", "warning");
       return;
@@ -862,10 +954,12 @@
       "info",
     );
 
-    smoothScrollToPost(startPost);
+    // Use enhanced scroll for initial video
+    smoothScrollToPost(startPost, false); // Initial scroll doesn't need centering
+
     setTimeout(() => {
       if (isEnabled) {
-        playVideoInPost(startPost);
+        playVideoInPost(startPost); // This will trigger centered scroll
       }
     }, 800);
   }
