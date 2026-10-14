@@ -38,19 +38,19 @@
   flex-shrink: 0;
   background: #13131f;
   border-left: 1px solid #333;
-
   /* 🔧 NEW: Grid Layout Configuration */
   display: grid;
   grid-template-columns: repeat(2, 1fr); /* Exactly 2 equal columns */
-  grid-auto-rows: 120px; /* Fixed height for each row */
+
+  /* 👇 CHANGE THIS VALUE TO INCREASE HEIGHT 👇 */
+  grid-auto-rows: 160px; /* Changed from 120px to 160px */
+
   gap: 4px; /* Space between grid items */
   padding: 4px; /* Inner padding so items don't touch edges */
   box-sizing: border-box; /* Ensures padding is included in the 240px width */
-
   overflow-y: auto;
   overflow-x: hidden;
   max-height: 100%;
-
   /* Custom scrollbar for Webkit */
   scrollbar-width: thin;
   scrollbar-color: #444 #13131f;
