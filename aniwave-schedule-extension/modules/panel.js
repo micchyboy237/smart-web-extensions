@@ -2,7 +2,11 @@
 
 console.log("[AWS] Panel module loaded");
 
-window.AWSPanel = {
+if (!window.AWSPanel) {
+  window.AWSPanel = {};
+}
+
+Object.assign(window.AWSPanel, {
   /**
    * Format date for input field (YYYY-MM-DD)
    */
@@ -422,4 +426,6 @@ window.AWSPanel = {
       });
     }
   },
-};
+});
+
+console.log("[AWS] Panel module initialized on window");

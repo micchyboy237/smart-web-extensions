@@ -2,10 +2,14 @@
 
 console.log("[AWS] Storage module loaded");
 
-/**
- * Get data from chrome storage
- */
-window.AWSStorage = {
+if (!window.AWSStorage) {
+  window.AWSStorage = {};
+}
+
+Object.assign(window.AWSStorage, {
+  /**
+   * Get data from chrome storage
+   */
   getData() {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "GET_DATA" }, (response) => {
@@ -90,4 +94,6 @@ window.AWSStorage = {
       });
     });
   },
-};
+});
+
+console.log("[AWS] Storage module initialized on window");
