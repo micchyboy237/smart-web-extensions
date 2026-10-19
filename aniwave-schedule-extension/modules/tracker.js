@@ -6,21 +6,31 @@ if (!window.AWSTracker) {
 
 Object.assign(window.AWSTracker, {
   /**
-   * Toggle favorite status for an anime
+   * Normalize title for consistent matching
    */
-  async toggleFavorite(href, isFavorite) {
-    console.log(`[AWS] Toggling favorite for ${href}: ${isFavorite}`);
+  normalizeTitle(title) {
+    return title ? title.trim().toLowerCase() : "";
+  },
+
+  /**
+   * Toggle favorite status for an anime by Title
+   */
+  async toggleFavorite(title, isFavorite) {
+    const normalizedTitle = this.normalizeTitle(title);
+    if (!normalizedTitle) return;
+
+    console.log(`[AWS] Toggling favorite for "${title}": ${isFavorite}`);
     const data = await window.AWSStorage.getData();
     let favorites = data.favorites || [];
 
     if (isFavorite) {
-      if (!favorites.includes(href)) {
-        favorites.push(href);
+      if (!favorites.includes(normalizedTitle)) {
+        favorites.push(normalizedTitle);
       }
     } else {
-      favorites = favorites.filter((h) => h !== href);
+      favorites = favorites.filter((t) => t !== normalizedTitle);
       // Also clear watch status if removed from favorites
-      await this.clearWatchStatus(href);
+      await this.clearWatchStatus(normalizedTitle);
     }
 
     await chrome.runtime.sendMessage({
@@ -32,24 +42,27 @@ Object.assign(window.AWSTracker, {
   },
 
   /**
-   * Update watch status for a specific episode
+   * Update watch status for a specific episode of an anime
    */
-  async updateWatchStatus(href, episodeNumber, isWatched) {
+  async updateWatchStatus(title, episodeNumber, isWatched) {
+    const normalizedTitle = this.normalizeTitle(title);
+    if (!normalizedTitle) return;
+
     console.log(
-      `[AWS] Updating watch status for ${href} Ep ${episodeNumber}: ${isWatched}`,
+      `[AWS] Updating watch status for "${title}" Ep ${episodeNumber}: ${isWatched}`,
     );
 
     const data = await window.AWSStorage.getData();
     let watchHistory = data.watchHistory || {};
 
-    if (!watchHistory[href]) {
-      watchHistory[href] = {};
+    if (!watchHistory[normalizedTitle]) {
+      watchHistory[normalizedTitle] = {};
     }
 
     if (isWatched) {
-      watchHistory[href][episodeNumber] = new Date().toISOString();
+      watchHistory[normalizedTitle][episodeNumber] = new Date().toISOString();
     } else {
-      delete watchHistory[href][episodeNumber];
+      delete watchHistory[normalizedTitle][episodeNumber];
     }
 
     await chrome.runtime.sendMessage({
@@ -63,10 +76,10 @@ Object.assign(window.AWSTracker, {
   /**
    * Clear watch history for an anime
    */
-  async clearWatchStatus(href) {
+  async clearWatchStatus(normalizedTitle) {
     const data = await window.AWSStorage.getData();
     let watchHistory = data.watchHistory || {};
-    delete watchHistory[href];
+    delete watchHistory[normalizedTitle];
 
     await chrome.runtime.sendMessage({
       type: "UPDATE_WATCH_HISTORY",
@@ -75,26 +88,45 @@ Object.assign(window.AWSTracker, {
   },
 
   /**
-   * Get progress for a specific anime
+   * Get progress for a specific anime title
    */
-  getProgress(href, allItems, watchHistory) {
-    const animeItems = allItems.filter((item) => item.href === href);
+  getProgress(normalizedTitle, allItems, watchHistory) {
+    // Find all items matching this title
+    const animeItems = allItems.filter(
+      (item) => this.normalizeTitle(item.title) === normalizedTitle,
+    );
+
     if (animeItems.length === 0) return { total: 0, watched: 0, nextEp: null };
 
-    const history = watchHistory[href] || {};
+    const history = watchHistory[normalizedTitle] || {};
     const watchedCount = Object.keys(history).length;
-    const totalCount = animeItems.length;
 
-    // Find next unwatched episode
-    const sortedItems = [...animeItems].sort(
-      (a, b) => a.episodeNumber - b.episodeNumber,
-    );
-    const nextEp = sortedItems.find((item) => !history[item.episodeNumber]);
+    // Get unique episode numbers to avoid counting duplicates if same ep appears twice
+    const uniqueEpisodes = [
+      ...new Set(animeItems.map((item) => item.episodeNumber)),
+    ].filter((n) => n > 0);
+    const totalCount = uniqueEpisodes.length;
+
+    // Calculate watched unique episodes
+    const watchedUniqueCount = uniqueEpisodes.filter(
+      (ep) => history[ep],
+    ).length;
+
+    // Find next unwatched episode number
+    const sortedUniqueEps = uniqueEpisodes.sort((a, b) => a - b);
+    const nextEpNum = sortedUniqueEps.find((ep) => !history[ep]);
+
+    // Find the display string for the next episode
+    let nextEpDisplay = null;
+    if (nextEpNum) {
+      const epItem = animeItems.find((i) => i.episodeNumber === nextEpNum);
+      nextEpDisplay = epItem ? epItem.episode : `Ep ${nextEpNum}`;
+    }
 
     return {
       total: totalCount,
-      watched: watchedCount,
-      nextEp: nextEp ? nextEp.episode : null,
+      watched: watchedUniqueCount,
+      nextEp: nextEpDisplay,
     };
   },
 });

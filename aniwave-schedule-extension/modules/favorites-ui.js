@@ -14,27 +14,43 @@ Object.assign(window.AWSFavoritesUI, {
 
     if (!container || !countEl) return;
 
-    // Filter items that are favorites
-    const favoriteItems = items.filter((item) => favorites.includes(item.href));
-
-    // Group by title
+    // Group items by normalized title
     const grouped = {};
-    favoriteItems.forEach((item) => {
-      if (!grouped[item.title]) {
-        grouped[item.title] = {
-          title: item.title,
-          href: item.href,
+    items.forEach((item) => {
+      const normTitle = window.AWSTracker.normalizeTitle(item.title);
+      if (!normTitle) return;
+
+      if (!grouped[normTitle]) {
+        grouped[normTitle] = {
+          title: item.title, // Keep original casing for display
+          normalizedTitle: normTitle,
           episodes: [],
           latestDate: item.date,
         };
       }
-      grouped[item.title].episodes.push(item);
-      if (item.date > grouped[item.title].latestDate) {
-        grouped[item.title].latestDate = item.date;
+
+      // Avoid duplicate episodes in the group
+      const exists = grouped[normTitle].episodes.some(
+        (e) => e.episodeNumber === item.episodeNumber && e.date === item.date,
+      );
+      if (!exists) {
+        grouped[normTitle].episodes.push(item);
+      }
+
+      if (item.date > grouped[normTitle].latestDate) {
+        grouped[normTitle].latestDate = item.date;
       }
     });
 
-    const animeList = Object.values(grouped);
+    // Filter to only show favorites
+    const favoriteKeys = Object.keys(grouped).filter((key) =>
+      favorites.includes(key),
+    );
+    const animeList = favoriteKeys.map((key) => grouped[key]);
+
+    // Sort by latest date
+    animeList.sort((a, b) => new Date(b.latestDate) - new Date(a.latestDate));
+
     countEl.textContent = animeList.length;
 
     if (animeList.length === 0) {
@@ -46,7 +62,7 @@ Object.assign(window.AWSFavoritesUI, {
     container.innerHTML = animeList
       .map((anime) => {
         const progress = window.AWSTracker.getProgress(
-          anime.href,
+          anime.normalizedTitle,
           items,
           watchHistory,
         );
@@ -59,14 +75,14 @@ Object.assign(window.AWSFavoritesUI, {
         <div class="aws-favorite-item">
           <div class="aws-favorite-header">
             <div class="aws-favorite-title">${this.escapeHtml(anime.title)}</div>
-            <button class="aws-remove-fav-btn" data-href="${anime.href}" title="Remove from favorites">❌</button>
+            <button class="aws-remove-fav-btn" data-title="${anime.normalizedTitle}" title="Remove from favorites">❌</button>
           </div>
           <div class="aws-progress-bar">
             <div class="aws-progress-fill" style="width: ${percent}%"></div>
           </div>
           <div class="aws-favorite-meta">
             <span>${progress.watched}/${progress.total} Episodes</span>
-            ${progress.nextEp ? `<span class="aws-next-ep">Next: Ep ${progress.nextEp}</span>` : '<span class="aws-completed">✅ Completed</span>'}
+            ${progress.nextEp ? `<span class="aws-next-ep">Next: ${progress.nextEp}</span>` : '<span class="aws-completed">✅ Completed</span>'}
           </div>
         </div>
       `;
@@ -76,8 +92,14 @@ Object.assign(window.AWSFavoritesUI, {
     // Add event listeners for remove buttons
     container.querySelectorAll(".aws-remove-fav-btn").forEach((btn) => {
       btn.addEventListener("click", async (e) => {
-        const href = e.target.dataset.href;
-        await window.AWSTracker.toggleFavorite(href, false);
+        const normTitle = e.target.dataset.title;
+        // Find original title for logging
+        const originalTitle =
+          items.find(
+            (i) => window.AWSTracker.normalizeTitle(i.title) === normTitle,
+          )?.title || normTitle;
+
+        await window.AWSTracker.toggleFavorite(originalTitle, false);
         window.AWSPanel.loadAndDisplayData();
       });
     });

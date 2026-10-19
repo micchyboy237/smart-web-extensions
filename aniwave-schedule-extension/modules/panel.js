@@ -195,16 +195,17 @@ Object.assign(window.AWSPanel, {
 
     container.innerHTML = sortedItems
       .map((item) => {
-        const isFav = favorites.includes(item.href);
+        const normTitle = window.AWSTracker.normalizeTitle(item.title);
+        const isFav = favorites.includes(normTitle);
         const starClass = isFav ? "aws-star-active" : "";
         const starIcon = isFav ? "⭐" : "☆";
 
         // Show checkbox only if it's a favorite
-        const history = watchHistory[item.href] || {};
+        const history = watchHistory[normTitle] || {};
         const isWatched = !!history[item.episodeNumber];
         const checked = isWatched ? "checked" : "";
         const checkboxHtml = isFav
-          ? `<input type="checkbox" class="aws-watch-checkbox" ${checked} data-href="${item.href}" data-ep="${item.episodeNumber}" title="Mark as watched" />`
+          ? `<input type="checkbox" class="aws-watch-checkbox" ${checked} data-title="${normTitle}" data-ep="${item.episodeNumber}" title="Mark as watched" />`
           : "";
 
         const dateObj = new Date(item.date);
@@ -214,10 +215,10 @@ Object.assign(window.AWSPanel, {
         });
 
         return `
-          <div class="aws-anime-item" data-href="${item.href}">
+          <div class="aws-anime-item" data-title="${normTitle}">
             <div class="aws-anime-header">
               ${checkboxHtml}
-              <button class="aws-fav-btn ${starClass}" data-href="${item.href}">${starIcon}</button>
+              <button class="aws-fav-btn ${starClass}" data-title="${normTitle}">${starIcon}</button>
               <span class="aws-anime-time">${this.escapeHtml(item.time)}</span>
               <span class="aws-anime-episode">${this.escapeHtml(item.episode)}</span>
             </div>
@@ -236,19 +237,34 @@ Object.assign(window.AWSPanel, {
     // Add event listeners
     container.querySelectorAll(".aws-fav-btn").forEach((btn) => {
       btn.addEventListener("click", async (e) => {
-        const href = e.target.dataset.href;
+        const normTitle = e.target.dataset.title;
+        // Find original title from the item in the list
+        const itemDiv = e.target.closest(".aws-anime-item");
+        const titleEl = itemDiv.querySelector(".aws-anime-title");
+        const originalTitle = titleEl ? titleEl.textContent : normTitle;
+
         const isCurrentlyFav = e.target.classList.contains("aws-star-active");
-        await window.AWSTracker.toggleFavorite(href, !isCurrentlyFav);
+        await window.AWSTracker.toggleFavorite(originalTitle, !isCurrentlyFav);
         window.AWSPanel.loadAndDisplayData();
       });
     });
 
     container.querySelectorAll(".aws-watch-checkbox").forEach((checkbox) => {
       checkbox.addEventListener("change", async (e) => {
-        const href = e.target.dataset.href;
+        const normTitle = e.target.dataset.title;
         const epNum = parseInt(e.target.dataset.ep);
         const isWatched = e.target.checked;
-        await window.AWSTracker.updateWatchStatus(href, epNum, isWatched);
+
+        // Find original title for logging
+        const itemDiv = e.target.closest(".aws-anime-item");
+        const titleEl = itemDiv.querySelector(".aws-anime-title");
+        const originalTitle = titleEl ? titleEl.textContent : normTitle;
+
+        await window.AWSTracker.updateWatchStatus(
+          originalTitle,
+          epNum,
+          isWatched,
+        );
         window.AWSPanel.loadAndDisplayData();
       });
     });
