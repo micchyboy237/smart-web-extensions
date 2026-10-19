@@ -1,11 +1,8 @@
 // Panel module - handles UI injection and display
-
 console.log("[AWS] Panel module loaded");
-
 if (!window.AWSPanel) {
   window.AWSPanel = {};
 }
-
 Object.assign(window.AWSPanel, {
   /**
    * Format date for input field (YYYY-MM-DD)
@@ -16,7 +13,6 @@ Object.assign(window.AWSPanel, {
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   },
-
   /**
    * Escape HTML to prevent XSS
    */
@@ -26,24 +22,19 @@ Object.assign(window.AWSPanel, {
     div.textContent = text;
     return div.innerHTML;
   },
-
   /**
    * Inject the control panel into the page
    */
   inject() {
     console.log("[AWS] Injecting panel into page");
-
-    // Check if panel already exists
     if (document.getElementById("aws-panel")) {
       console.log("[AWS] Panel already exists, skipping injection");
       return;
     }
 
-    // Create panel container
     const panel = document.createElement("div");
     panel.id = "aws-panel";
     panel.className = "aws-panel aws-panel-collapsed";
-
     panel.innerHTML = `
       <div class="aws-panel-header">
         <div class="aws-panel-title">
@@ -83,6 +74,17 @@ Object.assign(window.AWSPanel, {
           </div>
           <div id="aws-status" class="aws-status"></div>
         </div>
+        
+        <!-- NEW: Favorites Dashboard -->
+        <div class="aws-section">
+          <h3 class="aws-section-title">
+            My Favorites (<span id="aws-favorites-count">0</span>)
+          </h3>
+          <div id="aws-favorites-list" class="aws-list">
+            <p class="aws-empty">No favorites added yet</p>
+          </div>
+        </div>
+        
         <!-- Processed Days Section -->
         <div class="aws-section">
           <h3 class="aws-section-title">
@@ -92,6 +94,7 @@ Object.assign(window.AWSPanel, {
             <p class="aws-empty">No days processed yet</p>
           </div>
         </div>
+        
         <!-- Saved Items Section -->
         <div class="aws-section">
           <h3 class="aws-section-title">
@@ -101,6 +104,7 @@ Object.assign(window.AWSPanel, {
             <p class="aws-empty">No items saved yet</p>
           </div>
         </div>
+        
         <!-- Actions -->
         <div class="aws-section">
           <button id="aws-clear-btn" class="aws-btn aws-btn-secondary aws-btn-full">Clear Cache</button>
@@ -113,7 +117,6 @@ Object.assign(window.AWSPanel, {
     document.body.appendChild(panel);
     console.log("[AWS] Panel injected successfully");
   },
-
   /**
    * Update status message in panel
    */
@@ -125,7 +128,6 @@ Object.assign(window.AWSPanel, {
     }
     console.log(`[AWS] Status (${type}):`, message);
   },
-
   /**
    * Update button states
    */
@@ -133,31 +135,21 @@ Object.assign(window.AWSPanel, {
     const startBtn = document.getElementById("aws-start-btn");
     const stopBtn = document.getElementById("aws-stop-btn");
     const extractBtn = document.getElementById("aws-extract-btn");
-
     if (startBtn) startBtn.disabled = running;
     if (stopBtn) stopBtn.disabled = !running;
     if (extractBtn) extractBtn.disabled = running;
   },
-
   /**
    * Display processed days in panel
    */
   displayProcessedDays(days) {
     const container = document.getElementById("aws-processed-days");
     const countEl = document.getElementById("aws-processed-count");
-
-    if (!container || !countEl) {
-      console.warn(
-        "[AWS] Panel elements not found for displaying processed days",
-      );
-      return;
-    }
+    if (!container || !countEl) return;
 
     countEl.textContent = days.length;
-
     if (!days || days.length === 0) {
       container.innerHTML = '<p class="aws-empty">No days processed yet</p>';
-      console.log("[AWS] Displayed empty processed days list");
       return;
     }
 
@@ -172,7 +164,6 @@ Object.assign(window.AWSPanel, {
         const weekday = dateObj.toLocaleDateString("en-US", {
           weekday: "short",
         });
-
         return `
           <div class="aws-day-item">
             <span class="aws-day-date">${displayDate}</span>
@@ -181,40 +172,41 @@ Object.assign(window.AWSPanel, {
         `;
       })
       .join("");
-
-    console.log("[AWS] Displayed", days.length, "processed days");
   },
-
   /**
    * Display saved anime items in panel
    */
-  displaySavedItems(items) {
+  displaySavedItems(items, favorites, watchHistory) {
     const container = document.getElementById("aws-saved-items");
     const countEl = document.getElementById("aws-items-count");
-
-    if (!container || !countEl) {
-      console.warn("[AWS] Panel elements not found for displaying saved items");
-      return;
-    }
+    if (!container || !countEl) return;
 
     countEl.textContent = items ? items.length : 0;
-
     if (!items || items.length === 0) {
       container.innerHTML = '<p class="aws-empty">No items saved yet</p>';
-      console.log("[AWS] Displayed empty saved items list");
       return;
     }
 
     // Sort by date and time
     const sortedItems = [...items].sort((a, b) => {
-      if (a.date !== b.date) {
-        return a.date.localeCompare(b.date);
-      }
+      if (a.date !== b.date) return a.date.localeCompare(b.date);
       return a.time.localeCompare(b.time);
     });
 
     container.innerHTML = sortedItems
       .map((item) => {
+        const isFav = favorites.includes(item.href);
+        const starClass = isFav ? "aws-star-active" : "";
+        const starIcon = isFav ? "⭐" : "☆";
+
+        // Show checkbox only if it's a favorite
+        const history = watchHistory[item.href] || {};
+        const isWatched = !!history[item.episodeNumber];
+        const checked = isWatched ? "checked" : "";
+        const checkboxHtml = isFav
+          ? `<input type="checkbox" class="aws-watch-checkbox" ${checked} data-href="${item.href}" data-ep="${item.episodeNumber}" title="Mark as watched" />`
+          : "";
+
         const dateObj = new Date(item.date);
         const displayDate = dateObj.toLocaleDateString("en-US", {
           month: "short",
@@ -222,8 +214,10 @@ Object.assign(window.AWSPanel, {
         });
 
         return `
-          <div class="aws-anime-item">
+          <div class="aws-anime-item" data-href="${item.href}">
             <div class="aws-anime-header">
+              ${checkboxHtml}
+              <button class="aws-fav-btn ${starClass}" data-href="${item.href}">${starIcon}</button>
               <span class="aws-anime-time">${this.escapeHtml(item.time)}</span>
               <span class="aws-anime-episode">${this.escapeHtml(item.episode)}</span>
             </div>
@@ -239,60 +233,80 @@ Object.assign(window.AWSPanel, {
       })
       .join("");
 
-    console.log("[AWS] Displayed", items.length, "saved items");
-  },
+    // Add event listeners
+    container.querySelectorAll(".aws-fav-btn").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        const href = e.target.dataset.href;
+        const isCurrentlyFav = e.target.classList.contains("aws-star-active");
+        await window.AWSTracker.toggleFavorite(href, !isCurrentlyFav);
+        window.AWSPanel.loadAndDisplayData();
+      });
+    });
 
+    container.querySelectorAll(".aws-watch-checkbox").forEach((checkbox) => {
+      checkbox.addEventListener("change", async (e) => {
+        const href = e.target.dataset.href;
+        const epNum = parseInt(e.target.dataset.ep);
+        const isWatched = e.target.checked;
+        await window.AWSTracker.updateWatchStatus(href, epNum, isWatched);
+        window.AWSPanel.loadAndDisplayData();
+      });
+    });
+  },
   /**
    * Set default dates based on available days
    */
   async setDefaultDates() {
     try {
       const days = window.AWSExtractor.getAvailableDays();
-
       if (days.length > 0) {
-        // Sort days by date
         const sortedDays = [...days].sort(
           (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
         );
-
         const firstDay = sortedDays[0];
         const lastDay = sortedDays[sortedDays.length - 1];
 
         const startDateInput = document.getElementById("aws-start-date");
         const endDateInput = document.getElementById("aws-end-date");
 
-        if (startDateInput) {
-          startDateInput.value = firstDay.date;
-          console.log("[AWS] Set start date to:", firstDay.date);
-        }
-
-        if (endDateInput) {
-          endDateInput.value = lastDay.date;
-          console.log("[AWS] Set end date to:", lastDay.date);
-        }
+        if (startDateInput) startDateInput.value = firstDay.date;
+        if (endDateInput) endDateInput.value = lastDay.date;
       }
     } catch (error) {
       console.error("[AWS] Error setting default dates:", error);
     }
   },
-
   /**
    * Load and display data from storage
    */
   async loadAndDisplayData() {
     console.log("[AWS] Loading and displaying data");
-
     try {
       const data = await window.AWSStorage.getData();
-
       if (data && data.success) {
         console.log("[AWS] Loaded data:", {
           items: data.extractedData?.length || 0,
           processedDays: data.processedDays?.length || 0,
+          favorites: data.favorites?.length || 0,
         });
 
         this.displayProcessedDays(data.processedDays || []);
-        this.displaySavedItems(data.extractedData || []);
+
+        // NEW: Render Favorites Dashboard
+        if (window.AWSFavoritesUI) {
+          window.AWSFavoritesUI.renderFavoritesDashboard(
+            data.extractedData || [],
+            data.favorites || [],
+            data.watchHistory || {},
+          );
+        }
+
+        // NEW: Pass favorites and history to saved items display
+        this.displaySavedItems(
+          data.extractedData || [],
+          data.favorites || [],
+          data.watchHistory || {},
+        );
 
         if (data.lastUpdated) {
           console.log("[AWS] Last updated:", data.lastUpdated);
@@ -300,15 +314,17 @@ Object.assign(window.AWSPanel, {
       } else {
         console.warn("[AWS] Failed to load data or no data available");
         this.displayProcessedDays([]);
-        this.displaySavedItems([]);
+        this.displaySavedItems([], [], {});
+        if (window.AWSFavoritesUI) {
+          window.AWSFavoritesUI.renderFavoritesDashboard([], [], {});
+        }
       }
     } catch (error) {
       console.error("[AWS] Error loading data:", error);
       this.displayProcessedDays([]);
-      this.displaySavedItems([]);
+      this.displaySavedItems([], [], {});
     }
   },
-
   /**
    * Setup event listeners for panel elements
    */
@@ -318,7 +334,6 @@ Object.assign(window.AWSPanel, {
     // Toggle panel
     const toggleBtn = document.querySelector(".aws-toggle-btn");
     const panel = document.getElementById("aws-panel");
-
     if (toggleBtn && panel) {
       toggleBtn.addEventListener("click", () => {
         panel.classList.toggle("aws-panel-collapsed");
@@ -338,7 +353,6 @@ Object.assign(window.AWSPanel, {
           typeFilter: document.getElementById("aws-type-filter").value,
           delay: parseInt(document.getElementById("aws-delay").value) || 3000,
         };
-
         window.AWSContent.startAutomation(config);
       });
     }
@@ -367,7 +381,10 @@ Object.assign(window.AWSPanel, {
           const response = await window.AWSStorage.clearData();
           if (response && response.success) {
             this.displayProcessedDays([]);
-            this.displaySavedItems([]);
+            this.displaySavedItems([], [], {});
+            if (window.AWSFavoritesUI) {
+              window.AWSFavoritesUI.renderFavoritesDashboard([], [], {});
+            }
             this.updateStatus("Cache cleared", "success");
           } else {
             this.updateStatus("Failed to clear cache", "error");
@@ -389,8 +406,6 @@ Object.assign(window.AWSPanel, {
     if (testBtn) {
       testBtn.addEventListener("click", () => {
         console.log("[AWS] === Running selector tests ===");
-
-        // Test selectors
         const scheduleBlock = document.querySelector("#schedule-block");
         console.log(
           "[AWS] #schedule-block:",
@@ -416,16 +431,10 @@ Object.assign(window.AWSPanel, {
         const allItems = document.querySelectorAll("#schedule-block a.item");
         console.log("[AWS] Total items:", allItems.length);
 
-        const nextBtn = document.querySelector("#schedule-block .days .next");
-        const prevBtn = document.querySelector("#schedule-block .days .prev");
-        console.log("[AWS] Next button:", nextBtn ? "FOUND" : "NOT FOUND");
-        console.log("[AWS] Prev button:", prevBtn ? "FOUND" : "NOT FOUND");
-
         console.log("[AWS] === Selector tests complete ===");
         this.updateStatus("Check console for test results", "info");
       });
     }
   },
 });
-
 console.log("[AWS] Panel module initialized on window");

@@ -52,7 +52,7 @@ Object.assign(window.AWSExtractor, {
       const currentDate = activeDay.getAttribute("data-time");
       console.log("[AWS] Current date:", currentDate);
 
-      // Find items container - try multiple selectors
+      // Find items container
       let itemsContainer = document.querySelector(
         "#schedule-block .body .items",
       );
@@ -60,16 +60,9 @@ Object.assign(window.AWSExtractor, {
         itemsContainer = document.querySelector("#schedule-block .items");
       }
       if (!itemsContainer) {
-        itemsContainer = document.querySelector(
-          "#schedule-block .swiper-wrapper",
-        );
-      }
-      if (!itemsContainer) {
         console.error("[AWS] No items container found");
         return null;
       }
-
-      console.log("[AWS] Items container found:", itemsContainer.className);
 
       // Get all anime items
       const items = itemsContainer.querySelectorAll("a.item");
@@ -77,21 +70,6 @@ Object.assign(window.AWSExtractor, {
 
       if (items.length === 0) {
         console.warn("[AWS] No anime items found to extract");
-        // Debug: show what's in the container
-        const allChildren = itemsContainer.querySelectorAll("*");
-        console.log(
-          "[AWS] Container has",
-          allChildren.length,
-          "child elements",
-        );
-        if (allChildren.length > 0) {
-          console.log("[AWS] First few children:");
-          Array.from(allChildren)
-            .slice(0, 5)
-            .forEach((child, idx) => {
-              console.log(`  ${idx}: ${child.tagName}.${child.className}`);
-            });
-        }
         return null;
       }
 
@@ -99,10 +77,16 @@ Object.assign(window.AWSExtractor, {
         const timeEl = item.querySelector(".time");
         const epEl = item.querySelector(".ep span");
         const titleEl = item.querySelector(".title.d-title");
+
+        // Parse episode number
+        const episodeText = epEl ? epEl.textContent.trim() : "";
+        const episodeNumber = parseInt(episodeText.match(/\d+/)?.[0]) || 0;
+
         return {
           date: currentDate,
           time: timeEl ? timeEl.textContent.trim() : "",
-          episode: epEl ? epEl.textContent.trim() : "",
+          episode: episodeText,
+          episodeNumber: episodeNumber, // NEW: Numeric for sorting
           title: titleEl ? titleEl.textContent.trim() : "",
           japaneseTitle: titleEl ? titleEl.getAttribute("data-jp") || "" : "",
           href: item.getAttribute("href") || "",
@@ -112,6 +96,7 @@ Object.assign(window.AWSExtractor, {
           extractedAt: new Date().toISOString(),
         };
       });
+
       console.log("[AWS] Extracted", extractedData.length, "items");
       return extractedData;
     } catch (error) {
@@ -128,10 +113,12 @@ Object.assign(window.AWSExtractor, {
       console.warn("[AWS] No data to save");
       return false;
     }
+
     // Save to storage
     const saveResponse = await window.AWSStorage.saveData(extractedData);
     if (saveResponse && saveResponse.success) {
       console.log("[AWS] Data saved successfully");
+
       // Get current date and mark as processed
       const activeDay = document.querySelector(
         "#schedule-block .day.active .inner[data-time]",
@@ -141,6 +128,7 @@ Object.assign(window.AWSExtractor, {
         await window.AWSStorage.markDayProcessed(currentDate);
         console.log("[AWS] Day marked as processed:", currentDate);
       }
+
       return true;
     } else {
       console.error("[AWS] Failed to save data");

@@ -1,11 +1,8 @@
 // Storage module - handles all chrome.storage operations
-
 console.log("[AWS] Storage module loaded");
-
 if (!window.AWSStorage) {
   window.AWSStorage = {};
 }
-
 Object.assign(window.AWSStorage, {
   /**
    * Get data from chrome storage
@@ -25,7 +22,6 @@ Object.assign(window.AWSStorage, {
       });
     });
   },
-
   /**
    * Save extracted data
    */
@@ -50,7 +46,6 @@ Object.assign(window.AWSStorage, {
       );
     });
   },
-
   /**
    * Mark day as processed
    */
@@ -75,7 +70,6 @@ Object.assign(window.AWSStorage, {
       );
     });
   },
-
   /**
    * Clear all cached data
    */
@@ -95,5 +89,4 @@ Object.assign(window.AWSStorage, {
     });
   },
 });
-
 console.log("[AWS] Storage module initialized on window");

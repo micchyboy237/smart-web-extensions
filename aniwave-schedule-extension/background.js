@@ -8,6 +8,8 @@ chrome.runtime.onInstalled.addListener(() => {
     extractedData: [],
     processedDays: [],
     lastUpdated: null,
+    favorites: [], // NEW: List of favorite hrefs
+    watchHistory: {}, // NEW: { href: { episodeNumber: timestamp } }
   });
 });
 
@@ -17,7 +19,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case "SAVE_DATA":
       handleSaveData(message.data, sendResponse);
-      return true; // Keep channel open for async response
+      return true;
     case "GET_DATA":
       handleGetData(sendResponse);
       return true;
@@ -26,6 +28,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     case "CLEAR_DATA":
       handleClearData(sendResponse);
+      return true;
+    // NEW: Handle tracker updates
+    case "UPDATE_FAVORITES":
+      handleUpdateFavorites(message.favorites, sendResponse);
+      return true;
+    case "UPDATE_WATCH_HISTORY":
+      handleUpdateWatchHistory(message.watchHistory, sendResponse);
       return true;
     default:
       console.warn("[AWS] Background unknown message type:", message.type);
@@ -41,14 +50,17 @@ async function handleSaveData(data, sendResponse) {
     );
     const existing = await chrome.storage.local.get("extractedData");
     const currentData = existing.extractedData || [];
+
     // Merge new data, avoiding duplicates by href
     const existingHrefs = new Set(currentData.map((item) => item.href));
     const newData = data.filter((item) => !existingHrefs.has(item.href));
     const updatedData = [...currentData, ...newData];
+
     await chrome.storage.local.set({
       extractedData: updatedData,
       lastUpdated: new Date().toISOString(),
     });
+
     console.log(
       "[AWS] Background data saved successfully. Total items:",
       updatedData.length,
@@ -66,16 +78,23 @@ async function handleGetData(sendResponse) {
       "extractedData",
       "processedDays",
       "lastUpdated",
+      "favorites", // NEW
+      "watchHistory", // NEW
     ]);
+
     console.log("[AWS] Background retrieved data:", {
       items: data.extractedData?.length || 0,
       processedDays: data.processedDays?.length || 0,
+      favorites: data.favorites?.length || 0,
     });
+
     sendResponse({
       success: true,
       extractedData: data.extractedData || [],
       processedDays: data.processedDays || [],
       lastUpdated: data.lastUpdated,
+      favorites: data.favorites || [], // NEW
+      watchHistory: data.watchHistory || {}, // NEW
     });
   } catch (error) {
     console.error("[AWS] Background error getting data:", error);
@@ -88,11 +107,13 @@ async function handleMarkDayProcessed(day, sendResponse) {
     console.log("[AWS] Background marking day as processed:", day);
     const existing = await chrome.storage.local.get("processedDays");
     const processedDays = existing.processedDays || [];
+
     if (!processedDays.includes(day)) {
       processedDays.push(day);
       await chrome.storage.local.set({ processedDays });
       console.log("[AWS] Background day marked as processed:", day);
     }
+
     sendResponse({ success: true, processedDays });
   } catch (error) {
     console.error("[AWS] Background error marking day processed:", error);
@@ -107,11 +128,37 @@ async function handleClearData(sendResponse) {
       extractedData: [],
       processedDays: [],
       lastUpdated: null,
+      favorites: [], // NEW
+      watchHistory: {}, // NEW
     });
     console.log("[AWS] Background data cleared successfully");
     sendResponse({ success: true });
   } catch (error) {
     console.error("[AWS] Background error clearing data:", error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// NEW: Handle favorites update
+async function handleUpdateFavorites(favorites, sendResponse) {
+  try {
+    console.log("[AWS] Background updating favorites:", favorites.length);
+    await chrome.storage.local.set({ favorites });
+    sendResponse({ success: true });
+  } catch (error) {
+    console.error("[AWS] Background error updating favorites:", error);
+    sendResponse({ success: false, error: error.message });
+  }
+}
+
+// NEW: Handle watch history update
+async function handleUpdateWatchHistory(watchHistory, sendResponse) {
+  try {
+    console.log("[AWS] Background updating watch history");
+    await chrome.storage.local.set({ watchHistory });
+    sendResponse({ success: true });
+  } catch (error) {
+    console.error("[AWS] Background error updating watch history:", error);
     sendResponse({ success: false, error: error.message });
   }
 }

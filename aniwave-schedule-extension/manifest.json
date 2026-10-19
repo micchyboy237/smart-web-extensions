@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AniWave Schedule Extractor",
-  "version": "1.0.0",
-  "description": "Extract and cache anime schedules from AniWave with in-page panel",
+  "version": "2.0",
+  "description": "Extract and cache anime schedules with favorites tracking",
   "permissions": ["storage"],
   "host_permissions": ["https://aniwaves.ru/*"],
   "content_scripts": [
@@ -13,6 +13,8 @@
         "modules/extractor.js",
         "modules/navigation.js",
         "modules/automation.js",
+        "modules/tracker.js", // NEW
+        "modules/favorites-ui.js", // NEW
         "modules/panel.js",
         "content.js"
       ],
