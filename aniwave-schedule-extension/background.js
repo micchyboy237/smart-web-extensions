@@ -1,15 +1,25 @@
 // Background service worker for managing cache
 console.log("[AWS] Background service worker started");
 
-// Initialize storage on install
-chrome.runtime.onInstalled.addListener(() => {
-  console.log("[AWS] Extension installed, initializing storage");
-  chrome.storage.local.set({
-    extractedData: [],
-    processedDays: [],
-    lastUpdated: null,
-    favorites: [], // NEW: List of favorite hrefs
-    watchHistory: {}, // NEW: { href: { episodeNumber: timestamp } }
+// Initialize storage on install ONLY if it doesn't exist yet
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log("[AWS] Extension installed/updated. Reason:", details.reason);
+
+  // Only initialize if it's a fresh install or if storage is empty
+  // This prevents wiping data during updates
+  chrome.storage.local.get(["extractedData"], (result) => {
+    if (!result.extractedData || result.extractedData.length === 0) {
+      console.log("[AWS] Initializing empty storage (Fresh Install or Empty)");
+      chrome.storage.local.set({
+        extractedData: [],
+        processedDays: [],
+        lastUpdated: null,
+        favorites: [],
+        watchHistory: {},
+      });
+    } else {
+      console.log("[AWS] Storage already exists. Preserving data.");
+    }
   });
 });
 
@@ -29,7 +39,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case "CLEAR_DATA":
       handleClearData(sendResponse);
       return true;
-    // NEW: Handle tracker updates
     case "UPDATE_FAVORITES":
       handleUpdateFavorites(message.favorites, sendResponse);
       return true;
@@ -78,8 +87,8 @@ async function handleGetData(sendResponse) {
       "extractedData",
       "processedDays",
       "lastUpdated",
-      "favorites", // NEW
-      "watchHistory", // NEW
+      "favorites",
+      "watchHistory",
     ]);
 
     console.log("[AWS] Background retrieved data:", {
@@ -93,12 +102,12 @@ async function handleGetData(sendResponse) {
       extractedData: data.extractedData || [],
       processedDays: data.processedDays || [],
       lastUpdated: data.lastUpdated,
-      favorites: data.favorites || [], // NEW
-      watchHistory: data.watchHistory || {}, // NEW
+      favorites: data.favorites || [],
+      watchHistory: data.watchHistory || {},
     });
   } catch (error) {
     console.error("[AWS] Background error getting data:", error);
-    sendResponse({ success: false, error: error.message });
+    sendResponse({ success: false, error: message });
   }
 }
 
@@ -128,8 +137,8 @@ async function handleClearData(sendResponse) {
       extractedData: [],
       processedDays: [],
       lastUpdated: null,
-      favorites: [], // NEW
-      watchHistory: {}, // NEW
+      favorites: [],
+      watchHistory: {},
     });
     console.log("[AWS] Background data cleared successfully");
     sendResponse({ success: true });
@@ -139,7 +148,6 @@ async function handleClearData(sendResponse) {
   }
 }
 
-// NEW: Handle favorites update
 async function handleUpdateFavorites(favorites, sendResponse) {
   try {
     console.log("[AWS] Background updating favorites:", favorites.length);
@@ -151,7 +159,6 @@ async function handleUpdateFavorites(favorites, sendResponse) {
   }
 }
 
-// NEW: Handle watch history update
 async function handleUpdateWatchHistory(watchHistory, sendResponse) {
   try {
     console.log("[AWS] Background updating watch history");
