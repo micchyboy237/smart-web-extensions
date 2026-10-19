@@ -6,7 +6,7 @@ if (!window.AWSFavoritesUI) {
 
 Object.assign(window.AWSFavoritesUI, {
   /**
-   * Render the favorites dashboard
+   * Render the favorites timeline dashboard
    */
   renderFavoritesDashboard(items, favorites, watchHistory) {
     const container = document.getElementById("aws-favorites-list");
@@ -14,90 +14,138 @@ Object.assign(window.AWSFavoritesUI, {
 
     if (!container || !countEl) return;
 
-    // Group items by normalized title
-    const grouped = {};
-    items.forEach((item) => {
+    // 1. Filter items that are favorites
+    const favoriteItems = items.filter((item) => {
       const normTitle = window.AWSTracker.normalizeTitle(item.title);
-      if (!normTitle) return;
-
-      if (!grouped[normTitle]) {
-        grouped[normTitle] = {
-          title: item.title, // Keep original casing for display
-          normalizedTitle: normTitle,
-          episodes: [],
-          latestDate: item.date,
-        };
-      }
-
-      // Avoid duplicate episodes in the group
-      const exists = grouped[normTitle].episodes.some(
-        (e) => e.episodeNumber === item.episodeNumber && e.date === item.date,
-      );
-      if (!exists) {
-        grouped[normTitle].episodes.push(item);
-      }
-
-      if (item.date > grouped[normTitle].latestDate) {
-        grouped[normTitle].latestDate = item.date;
-      }
+      return favorites.includes(normTitle);
     });
 
-    // Filter to only show favorites
-    const favoriteKeys = Object.keys(grouped).filter((key) =>
-      favorites.includes(key),
-    );
-    const animeList = favoriteKeys.map((key) => grouped[key]);
+    // 2. Sort by Date (Newest first) then Time
+    favoriteItems.sort((a, b) => {
+      if (a.date !== b.date) return b.date.localeCompare(a.date);
+      return b.time.localeCompare(a.time);
+    });
 
-    // Sort by latest date
-    animeList.sort((a, b) => new Date(b.latestDate) - new Date(a.latestDate));
+    // 3. Group by Date
+    const groupedByDate = {};
+    favoriteItems.forEach((item) => {
+      if (!groupedByDate[item.date]) {
+        groupedByDate[item.date] = [];
+      }
+      groupedByDate[item.date].push(item);
+    });
 
-    countEl.textContent = animeList.length;
+    const dates = Object.keys(groupedByDate).sort().reverse(); // Newest dates first
+    countEl.textContent = favoriteItems.length;
 
-    if (animeList.length === 0) {
+    if (favoriteItems.length === 0) {
       container.innerHTML =
         '<p class="aws-empty">No favorites added yet. Click ⭐ on an item to add it.</p>';
       return;
     }
 
-    container.innerHTML = animeList
-      .map((anime) => {
-        const progress = window.AWSTracker.getProgress(
-          anime.normalizedTitle,
-          items,
-          watchHistory,
+    // 4. Generate Timeline HTML
+    let html = "";
+
+    dates.forEach((date) => {
+      const dayItems = groupedByDate[date];
+      const dateObj = new Date(date);
+      const today = new Date();
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+
+      let dateLabel = dateObj.toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "short",
+        day: "numeric",
+      });
+      if (date === today.toISOString().split("T")[0]) dateLabel = "Today";
+      else if (date === yesterday.toISOString().split("T")[0])
+        dateLabel = "Yesterday";
+
+      html += `<div class="aws-timeline-date-header">${dateLabel}</div>`;
+
+      dayItems.forEach((item) => {
+        const normTitle = window.AWSTracker.normalizeTitle(item.title);
+        const history = watchHistory[normTitle] || {};
+        const isWatched = !!history[item.episodeNumber];
+
+        // Calculate series progress for context
+        const allSeriesItems = items.filter(
+          (i) => window.AWSTracker.normalizeTitle(i.title) === normTitle,
         );
-        const percent =
-          progress.total > 0
-            ? Math.round((progress.watched / progress.total) * 100)
-            : 0;
+        const uniqueEps = [
+          ...new Set(allSeriesItems.map((i) => i.episodeNumber)),
+        ]
+          .filter((n) => n > 0)
+          .sort((a, b) => a - b);
+        const currentEpIndex = uniqueEps.indexOf(item.episodeNumber);
+        const progressText =
+          uniqueEps.length > 0
+            ? `${currentEpIndex + 1}/${uniqueEps.length}`
+            : "";
 
-        return `
-        <div class="aws-favorite-item">
-          <div class="aws-favorite-header">
-            <div class="aws-favorite-title">${this.escapeHtml(anime.title)}</div>
-            <button class="aws-remove-fav-btn" data-title="${anime.normalizedTitle}" title="Remove from favorites">❌</button>
+        html += `
+          <div class="aws-timeline-card ${isWatched ? "aws-watched" : ""}" data-href="${item.href}">
+            <div class="aws-card-left">
+              <input type="checkbox" 
+                     class="aws-watch-checkbox" 
+                     ${isWatched ? "checked" : ""} 
+                     data-title="${normTitle}" 
+                     data-ep="${item.episodeNumber}" 
+                     title="Mark as watched" />
+            </div>
+            <div class="aws-card-content" onclick="window.open('${item.href}', '_blank')">
+              <div class="aws-card-header">
+                <span class="aws-card-time">${item.time}</span>
+                <span class="aws-card-episode">${item.episode}</span>
+                ${progressText ? `<span class="aws-card-progress">(${progressText})</span>` : ""}
+              </div>
+              <div class="aws-card-title">${this.escapeHtml(item.title)}</div>
+              ${item.japaneseTitle ? `<div class="aws-card-jp">${this.escapeHtml(item.japaneseTitle)}</div>` : ""}
+            </div>
+            <div class="aws-card-actions">
+              <button class="aws-fav-btn aws-star-active" data-title="${normTitle}" title="Remove from favorites">⭐</button>
+            </div>
           </div>
-          <div class="aws-progress-bar">
-            <div class="aws-progress-fill" style="width: ${percent}%"></div>
-          </div>
-          <div class="aws-favorite-meta">
-            <span>${progress.watched}/${progress.total} Episodes</span>
-            ${progress.nextEp ? `<span class="aws-next-ep">Next: ${progress.nextEp}</span>` : '<span class="aws-completed">✅ Completed</span>'}
-          </div>
-        </div>
-      `;
-      })
-      .join("");
+        `;
+      });
+    });
 
-    // Add event listeners for remove buttons
-    container.querySelectorAll(".aws-remove-fav-btn").forEach((btn) => {
-      btn.addEventListener("click", async (e) => {
+    container.innerHTML = html;
+
+    // 5. Attach Event Listeners
+
+    // Watch Checkboxes
+    container.querySelectorAll(".aws-watch-checkbox").forEach((checkbox) => {
+      checkbox.addEventListener("change", async (e) => {
+        e.stopPropagation(); // Prevent card click
         const normTitle = e.target.dataset.title;
+        const epNum = parseInt(e.target.dataset.ep);
+        const isWatched = e.target.checked;
+
         // Find original title for logging
-        const originalTitle =
-          items.find(
-            (i) => window.AWSTracker.normalizeTitle(i.title) === normTitle,
-          )?.title || normTitle;
+        const card = e.target.closest(".aws-timeline-card");
+        const titleEl = card.querySelector(".aws-card-title");
+        const originalTitle = titleEl ? titleEl.textContent : normTitle;
+
+        await window.AWSTracker.updateWatchStatus(
+          originalTitle,
+          epNum,
+          isWatched,
+        );
+        window.AWSPanel.loadAndDisplayData();
+      });
+    });
+
+    // Remove Favorite Buttons
+    container.querySelectorAll(".aws-fav-btn").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation(); // Prevent card click
+        const normTitle = e.target.dataset.title;
+        const card = e.target.closest(".aws-timeline-card");
+        const titleEl = card.querySelector(".aws-card-title");
+        const originalTitle = titleEl ? titleEl.textContent : normTitle;
 
         await window.AWSTracker.toggleFavorite(originalTitle, false);
         window.AWSPanel.loadAndDisplayData();
@@ -105,9 +153,6 @@ Object.assign(window.AWSFavoritesUI, {
     });
   },
 
-  /**
-   * Escape HTML helper
-   */
   escapeHtml(text) {
     if (!text) return "";
     const div = document.createElement("div");
