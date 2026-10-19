@@ -9,6 +9,8 @@ Object.assign(window.AWSContent, {
   itemObservers: [], // Track individual item observers
   extractionCheckInterval: null, // Polling interval for extraction readiness
   lastItemCount: 0, // Track item count changes
+  isExtracting: false, // Lock to prevent concurrent extractions
+  extractionDebounceTimer: null, // Timer for debouncing extraction triggers
   /**
    * Initialize the extension
    */
@@ -78,6 +80,10 @@ Object.assign(window.AWSContent, {
     this.itemObservers.forEach((obs) => obs.disconnect());
     this.itemObservers = [];
 
+    // CRITICAL: Start polling FIRST (before any early returns)
+    // This ensures polling works even if no items exist at initialization
+    this.startExtractionPolling();
+
     // CRITICAL: Use the EXACT selector from reference script
     // This observes the first .item element, not the container
     const firstItemElement = document.querySelector(
@@ -95,8 +101,10 @@ Object.assign(window.AWSContent, {
         console.log("[AWS] Found alternative .item element, using it");
         this.observeItemElement(anyItem);
       } else {
-        console.error("[AWS] No .item elements found at all");
-        return;
+        console.warn(
+          "[AWS] No .item elements found at initialization - relying on polling",
+        );
+        // Don't return early - polling is already running!
       }
     } else {
       console.log(
@@ -115,8 +123,8 @@ Object.assign(window.AWSContent, {
           console.log(`[AWS] Mutation type: ${mutation.type}`, mutation);
         });
 
-        // When the item changes, check if we should extract
-        this.checkAndExtractIfReady();
+        // When the item changes, check if we should extract (with debounce)
+        this.triggerExtractionWithDebounce();
       });
 
       this.mutationObserver.observe(firstItemElement, {
@@ -128,9 +136,6 @@ Object.assign(window.AWSContent, {
 
       console.log("[AWS] Observer on first .item element started");
     }
-
-    // Also set up polling as backup since reference shows mutations might be 0
-    this.startExtractionPolling();
   },
 
   /**
@@ -169,9 +174,25 @@ Object.assign(window.AWSContent, {
           console.log(
             `[AWS] Detected ${currentCount} items via polling - triggering extraction`,
           );
-          this.checkAndExtractIfReady();
+          // Use debounced trigger to prevent multiple extractions
+          this.triggerExtractionWithDebounce();
         }
       }
+    }, 500);
+  },
+
+  /**
+   * Trigger extraction with debounce to prevent rapid-fire calls
+   */
+  triggerExtractionWithDebounce() {
+    // Clear any pending debounce timer
+    if (this.extractionDebounceTimer) {
+      clearTimeout(this.extractionDebounceTimer);
+    }
+
+    // Wait 500ms before extracting to let DOM stabilize
+    this.extractionDebounceTimer = setTimeout(() => {
+      this.checkAndExtractIfReady();
     }, 500);
   },
 
@@ -183,6 +204,11 @@ Object.assign(window.AWSContent, {
       clearInterval(this.extractionCheckInterval);
       this.extractionCheckInterval = null;
       console.log("[AWS] Stopped extraction polling");
+    }
+    // Clear any pending debounce timer
+    if (this.extractionDebounceTimer) {
+      clearTimeout(this.extractionDebounceTimer);
+      this.extractionDebounceTimer = null;
     }
   },
 
@@ -197,8 +223,8 @@ Object.assign(window.AWSContent, {
           `[AWS] Item mutation type: ${mutation.type}, attribute: ${mutation.attributeName}`,
         );
       });
-      // When an item changes, check if we should extract
-      this.checkAndExtractIfReady();
+      // When an item changes, check if we should extract (with debounce)
+      this.triggerExtractionWithDebounce();
     });
 
     observer.observe(itemElement, {
@@ -215,8 +241,15 @@ Object.assign(window.AWSContent, {
 
   /**
    * Check if items are ready and trigger extraction
+   * Uses lock to prevent concurrent extractions
    */
-  checkAndExtractIfReady() {
+  async checkAndExtractIfReady() {
+    // Prevent concurrent extractions
+    if (this.isExtracting) {
+      console.log("[AWS] Extraction already in progress, skipping");
+      return;
+    }
+
     // Find items using the reference selector pattern
     const items = document.querySelectorAll(
       "#schedule-block .body .items a.item",
@@ -240,18 +273,24 @@ Object.assign(window.AWSContent, {
         window.AWSAutomation.autoExtractEnabled &&
         window.AWSAutomation.isRunning
       ) {
-        console.log("[AWS] Auto-extract enabled, triggering extraction");
-        // Small delay to ensure DOM is fully updated
-        setTimeout(async () => {
-          if (window.AWSAutomation.isRunning) {
-            const success = await window.AWSExtractor.extractAndSave();
-            if (success) {
-              window.AWSPanel.loadAndDisplayData();
-              // Signal automation loop that extraction is done (clears timeout)
-              window.AWSAutomation.signalExtractionComplete();
-            }
+        // Set lock
+        this.isExtracting = true;
+        console.log("[AWS] Auto-extract enabled, starting extraction");
+
+        try {
+          const success = await window.AWSExtractor.extractAndSave();
+          if (success) {
+            window.AWSPanel.loadAndDisplayData();
+            // Signal automation loop that extraction is done (clears timeout)
+            window.AWSAutomation.signalExtractionComplete();
           }
-        }, 300); // Reduced from 500ms
+        } catch (error) {
+          console.error("[AWS] Extraction error:", error);
+        } finally {
+          // Release lock
+          this.isExtracting = false;
+          console.log("[AWS] Extraction lock released");
+        }
       }
     }
   },

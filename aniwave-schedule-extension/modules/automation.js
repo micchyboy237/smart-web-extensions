@@ -10,6 +10,7 @@ Object.assign(window.AWSAutomation, {
   controller: null,
   extractionPromiseResolver: null, // Hook to resolve when extraction is done
   extractionTimeoutId: null, // Track timeout ID so we can clear it
+  extractionTimedOut: false, // Track if current day timed out
   /**
    * Start automation loop
    */
@@ -120,6 +121,9 @@ Object.assign(window.AWSAutomation, {
             "[AWS] Day selected, waiting for extraction to complete...",
           );
 
+          // Reset timeout flag
+          this.extractionTimedOut = false;
+
           // Create a promise that resolves when the MutationObserver triggers extraction
           await new Promise((resolve) => {
             this.extractionPromiseResolver = resolve;
@@ -131,6 +135,7 @@ Object.assign(window.AWSAutomation, {
                 console.warn(
                   `[AWS] Extraction timeout reached for ${currentDate} (10s limit)`,
                 );
+                this.extractionTimedOut = true;
                 this.extractionPromiseResolver();
                 this.extractionPromiseResolver = null;
                 this.extractionTimeoutId = null;
@@ -138,7 +143,18 @@ Object.assign(window.AWSAutomation, {
             }, 10000); // Reduced from 20000 to 10000
           });
 
-          console.log("[AWS] Day processing complete, moving to next");
+          // Only mark as processed if extraction succeeded (not timed out)
+          if (this.extractionTimedOut) {
+            console.warn(
+              `[AWS] Skipping ${currentDate} due to timeout - NOT marked as processed`,
+            );
+            if (callbacks.onStatus) {
+              callbacks.onStatus(`Skipped ${currentDate} (timeout)`, "warning");
+            }
+          } else {
+            console.log("[AWS] Day processing complete, moving to next");
+          }
+
           // Small additional wait to ensure UI stability
           await window.AWSNavigation.sleep(500);
           currentIndex++;
