@@ -1,5 +1,4 @@
 // Background service worker for managing cache
-
 console.log("[AWS] Background service worker started");
 
 // Initialize storage on install
@@ -15,24 +14,19 @@ chrome.runtime.onInstalled.addListener(() => {
 // Handle messages from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("[AWS] Background received message:", message.type);
-
   switch (message.type) {
     case "SAVE_DATA":
       handleSaveData(message.data, sendResponse);
       return true; // Keep channel open for async response
-
     case "GET_DATA":
       handleGetData(sendResponse);
       return true;
-
     case "MARK_DAY_PROCESSED":
       handleMarkDayProcessed(message.day, sendResponse);
       return true;
-
     case "CLEAR_DATA":
       handleClearData(sendResponse);
       return true;
-
     default:
       console.warn("[AWS] Background unknown message type:", message.type);
   }
@@ -45,21 +39,16 @@ async function handleSaveData(data, sendResponse) {
       data.length,
       "items",
     );
-
     const existing = await chrome.storage.local.get("extractedData");
     const currentData = existing.extractedData || [];
-
     // Merge new data, avoiding duplicates by href
     const existingHrefs = new Set(currentData.map((item) => item.href));
     const newData = data.filter((item) => !existingHrefs.has(item.href));
-
     const updatedData = [...currentData, ...newData];
-
     await chrome.storage.local.set({
       extractedData: updatedData,
       lastUpdated: new Date().toISOString(),
     });
-
     console.log(
       "[AWS] Background data saved successfully. Total items:",
       updatedData.length,
@@ -78,12 +67,10 @@ async function handleGetData(sendResponse) {
       "processedDays",
       "lastUpdated",
     ]);
-
     console.log("[AWS] Background retrieved data:", {
       items: data.extractedData?.length || 0,
       processedDays: data.processedDays?.length || 0,
     });
-
     sendResponse({
       success: true,
       extractedData: data.extractedData || [],
@@ -99,16 +86,13 @@ async function handleGetData(sendResponse) {
 async function handleMarkDayProcessed(day, sendResponse) {
   try {
     console.log("[AWS] Background marking day as processed:", day);
-
     const existing = await chrome.storage.local.get("processedDays");
     const processedDays = existing.processedDays || [];
-
     if (!processedDays.includes(day)) {
       processedDays.push(day);
       await chrome.storage.local.set({ processedDays });
       console.log("[AWS] Background day marked as processed:", day);
     }
-
     sendResponse({ success: true, processedDays });
   } catch (error) {
     console.error("[AWS] Background error marking day processed:", error);
@@ -119,13 +103,11 @@ async function handleMarkDayProcessed(day, sendResponse) {
 async function handleClearData(sendResponse) {
   try {
     console.log("[AWS] Background clearing all cached data");
-
     await chrome.storage.local.set({
       extractedData: [],
       processedDays: [],
       lastUpdated: null,
     });
-
     console.log("[AWS] Background data cleared successfully");
     sendResponse({ success: true });
   } catch (error) {

@@ -8,7 +8,14 @@
   "content_scripts": [
     {
       "matches": ["https://aniwaves.ru/home*"],
-      "js": ["content.js"],
+      "js": [
+        "modules/storage.js",
+        "modules/extractor.js",
+        "modules/navigation.js",
+        "modules/automation.js",
+        "modules/panel.js",
+        "content.js"
+      ],
       "css": ["panel.css"],
       "run_at": "document_idle"
     }
