@@ -11,13 +11,11 @@ function logWarn(...args) {
 function logError(...args) {
   console.error("[PTO-BG]", ...args);
 }
-
 // ============================================================
 // STATE
 // ============================================================
 let openedCount = 0;
 const pendingOpens = new Set();
-
 // ============================================================
 // MESSAGE HANDLER
 // ============================================================
@@ -48,7 +46,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   return false;
 });
-
 // ============================================================
 // CORE LOGIC
 // ============================================================
@@ -56,10 +53,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleCheckAndOpen(message) {
   const url = message.url;
   const threadTimestamp = message.threadTimestamp; // ✅ NEW: Get timestamp from message
-
   const normalized = normalizeUrl(url);
   log("🔍 [DUPE-CHECK] Normalizing URL:", { original: url, normalized });
-
   // --- Check 1: Pending opens (race condition guard) ---
   if (pendingOpens.has(normalized)) {
     log(
@@ -100,16 +95,13 @@ async function handleCheckAndOpen(message) {
     } else {
       log("✅ [DUPE-CHECK] No duplicates found. Proceeding to open.");
     }
-
     // ✅ NEW: Check Date Filter BEFORE opening tab if timestamp is available
     if (threadTimestamp) {
       const settings = await chrome.storage.local.get(["pto_daysBackFilter"]);
       const daysBack = settings.pto_daysBackFilter || 0;
-
       if (daysBack > 0) {
         const now = Date.now() / 1000;
         const cutoffTime = now - daysBack * 24 * 60 * 60;
-
         if (threadTimestamp < cutoffTime) {
           log(
             `🚫 [DATE-FILTER] Thread is too old. Timestamp: ${threadTimestamp}, Cutoff: ${cutoffTime}`,
@@ -123,12 +115,10 @@ async function handleCheckAndOpen(message) {
         }
       }
     }
-
     // --- Open new tab ---
     log("🆕 [ACTION] Opening new tab:", normalized);
     pendingOpens.add(normalized);
     log("   -> Added to pendingOpens. Current size:", pendingOpens.size);
-
     // Open in background (active: false)
     const newTab = await chrome.tabs.create({ url, active: false });
     openedCount++;
@@ -138,7 +128,6 @@ async function handleCheckAndOpen(message) {
       "| Total Opened:",
       openedCount,
     );
-
     // --- Setup Auto-Close Listener ---
     const onUpdatedListener = async (tabId, changeInfo, tab) => {
       if (tabId === newTab.id && changeInfo.status === "complete") {
@@ -147,12 +136,10 @@ async function handleCheckAndOpen(message) {
         chrome.tabs.onUpdated.removeListener(onUpdatedListener);
         pendingOpens.delete(normalized);
         log("   -> Removed from pendingOpens. Remaining:", pendingOpens.size);
-
         // Check if auto-close is enabled in storage
         const settings = await chrome.storage.local.get(
           "pto_autoCloseIfReacted",
         );
-
         if (settings.pto_autoCloseIfReacted) {
           log(`   -> Auto-Close is ENABLED. Injecting check script...`);
           await checkAndCloseIfReacted(newTab.id, normalized);
@@ -164,7 +151,6 @@ async function handleCheckAndOpen(message) {
       }
     };
     chrome.tabs.onUpdated.addListener(onUpdatedListener);
-
     // Safety net: remove from pending after 15s regardless
     setTimeout(() => {
       if (pendingOpens.has(normalized)) {
@@ -176,7 +162,6 @@ async function handleCheckAndOpen(message) {
         );
       }
     }, 15000);
-
     return { opened: true, duplicate: false, tabId: newTab.id };
   } catch (err) {
     pendingOpens.delete(normalized);
@@ -187,11 +172,11 @@ async function handleCheckAndOpen(message) {
     throw new Error(`Failed to open tab: ${err.message}`);
   }
 }
-
 /**
  * Injects a lightweight script to check for reactions and closes the tab if appropriate.
  *
  * Decision Logic:
+ * 0. Check date filter first - Close tab if older than Days Back Filter
  * 1. Has reaction → Close tab (already interacted)
  * 2. No reaction + Has video → Keep tab open (video content worth keeping)
  * 3. No reaction + No video + Has .bbCodeBlock → Keep tab open (hidden content requiring reaction)
@@ -207,6 +192,13 @@ async function checkAndCloseIfReacted(tabId, url) {
     const results = await chrome.scripting.executeScript({
       target: { tabId: tabId },
       func: () => {
+        // ✅ NEW: Extract thread timestamp from the page
+        let threadTimestamp = null;
+        const timeElement = document.querySelector("time[data-timestamp]");
+        if (timeElement && timeElement.dataset.timestamp) {
+          threadTimestamp = parseInt(timeElement.dataset.timestamp, 10);
+        }
+
         // Check for video elements (global is usually fine for videos)
         const videoElements = document.querySelectorAll("video");
         const hasVideoElement = videoElements.length > 0;
@@ -238,6 +230,7 @@ async function checkAndCloseIfReacted(tabId, url) {
           }
         }
         return {
+          threadTimestamp: threadTimestamp, // ✅ NEW: Return timestamp
           hasReaction: hasReaction,
           hasVideo: hasVideoElement,
           videoCount: videoElements.length,
@@ -251,6 +244,7 @@ async function checkAndCloseIfReacted(tabId, url) {
       const checkResult = results[0].result;
       // ✅ ADD: Log all detection results before decision
       log(`📋 [AUTO-CLOSE] Detection results for tab ${tabId}:`, {
+        threadTimestamp: checkResult.threadTimestamp, // ✅ NEW: Log timestamp
         hasReaction: checkResult.hasReaction,
         hasVideo: checkResult.hasVideo,
         videoCount: checkResult.videoCount,
@@ -258,6 +252,24 @@ async function checkAndCloseIfReacted(tabId, url) {
         bbCodeBlockCount: checkResult.bbCodeBlockCount,
         pageTitle: checkResult.pageTitle,
       });
+
+      // ✅ NEW: Check 0 - Date Filter
+      if (checkResult.threadTimestamp) {
+        const settings = await chrome.storage.local.get(["pto_daysBackFilter"]);
+        const daysBack = settings.pto_daysBackFilter || 0;
+        if (daysBack > 0) {
+          const now = Date.now() / 1000;
+          const cutoffTime = now - daysBack * 24 * 60 * 60;
+          if (checkResult.threadTimestamp < cutoffTime) {
+            log(
+              `🚫 [AUTO-CLOSE] DECISION: CLOSE | Reason: FILTERED_BY_DATE (older than ${daysBack} days) | Timestamp: ${checkResult.threadTimestamp} | Cutoff: ${cutoffTime} | Tab: ${tabId}`,
+            );
+            chrome.tabs.remove(tabId);
+            return; // Exit early - no need to check other conditions
+          }
+        }
+      }
+
       // Decision logic with explicit branch logging:
       // 1. If has reaction: ALWAYS close
       if (checkResult.hasReaction) {
@@ -298,7 +310,6 @@ async function checkAndCloseIfReacted(tabId, url) {
     );
   }
 }
-
 // ============================================================
 // URL NORMALIZATION
 // ============================================================
