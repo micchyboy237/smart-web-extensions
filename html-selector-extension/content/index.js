@@ -6,19 +6,32 @@
  */
 (() => {
   let includeClassId = false;
+  let cleaningMode = "rag"; // 'rag' or 'all'
 
-  // Initialize setting from storage
-  chrome.storage.sync.get({ includeClassId: false }, (result) => {
-    includeClassId = result.includeClassId;
-    console.log(`[Orchestrator] Loaded includeClassId: ${includeClassId}`);
-  });
+  // Initialize settings from storage
+  chrome.storage.sync.get(
+    { includeClassId: false, cleaningMode: "rag" },
+    (result) => {
+      includeClassId = result.includeClassId;
+      cleaningMode = result.cleaningMode;
+      console.log(
+        `[Orchestrator] Loaded settings | includeClassId: ${includeClassId}, mode: ${cleaningMode}`,
+      );
+    },
+  );
 
   // React to setting changes in real-time without requiring re-selection
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "sync" && changes.includeClassId) {
-      includeClassId = changes.includeClassId.newValue;
-      console.log(`[Orchestrator] includeClassId updated: ${includeClassId}`);
-      _broadcastState(); // Re-render preview with new setting immediately
+    if (area === "sync") {
+      if (changes.includeClassId) {
+        includeClassId = changes.includeClassId.newValue;
+        console.log(`[Orchestrator] includeClassId updated: ${includeClassId}`);
+      }
+      if (changes.cleaningMode) {
+        cleaningMode = changes.cleaningMode.newValue;
+        console.log(`[Orchestrator] cleaningMode updated: ${cleaningMode}`);
+      }
+      _broadcastState(); // Re-render preview with new settings immediately
     }
   });
 
@@ -60,6 +73,7 @@
       active: Picker.getIsActive(),
       count: sorted.length,
       includeClassId,
+      cleaningMode,
       items: sorted.map(({ id, node }) => ({
         id,
         tag: node.tagName.toLowerCase(),
@@ -89,10 +103,13 @@
   // The ONE place that produces preview text — copy & send reuse this exact string.
   function _buildCombinedPreview(sortedItems) {
     if (sortedItems.length === 0) return "";
-    const pieces = sortedItems.map(
-      (item) =>
-        RAGCleaner.clean(item.node.outerHTML, { includeClassId }).cleaned,
-    );
+    const pieces = sortedItems.map((item) => {
+      const options = {
+        includeClassId,
+        mode: cleaningMode,
+      };
+      return RAGCleaner.clean(item.node.outerHTML, options).cleaned;
+    });
     return Prettify.html(pieces.join("\n\n"));
   }
 
@@ -109,15 +126,12 @@
         /* fall through */
       }
     }
-
     const tag = node.tagName.toLowerCase();
-
     // 2. Try tag + classes if it uniquely identifies the element
     const classList =
       typeof node.className === "string"
         ? node.className.trim().split(/\s+/).filter(Boolean)
         : [];
-
     if (classList.length > 0) {
       const classSelector = classList
         .map((c) => {
@@ -129,7 +143,6 @@
         })
         .filter(Boolean)
         .join("");
-
       if (classSelector) {
         const candidate = `${tag}${classSelector}`;
         try {
@@ -140,7 +153,6 @@
         }
       }
     }
-
     // 3. Fallback: build full path using nth-of-type for guaranteed uniqueness
     const path = [];
     let current = node;
@@ -154,12 +166,10 @@
       const tagName = current.tagName.toLowerCase();
       const nth = index > 0 ? `:nth-of-type(${index + 1})` : "";
       path.unshift(`${tagName}${nth}`);
-
       // Stop climbing at body or if we hit an ancestor with an ID
       if (current.parentElement === document.body || current.id) break;
       current = current.parentElement;
     }
-
     return path.join(" > ");
   }
 

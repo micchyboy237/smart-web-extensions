@@ -11,6 +11,27 @@
       <button class="btn btn-danger btn-sm" id="disableBtn">Disable</button>
     </header>
 
+    <!-- Mode Selection Section -->
+    <section class="section settings-section">
+      <label class="label">Cleaning Mode</label>
+      <div class="mode-selector">
+        <label class="mode-option">
+          <input type="radio" name="cleaningMode" value="rag" checked />
+          <span class="mode-text">
+            <strong>RAG Mode</strong><br />
+            <small>Semantic content only, optimized for AI</small>
+          </span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="cleaningMode" value="all" />
+          <span class="mode-text">
+            <strong>All Mode</strong><br />
+            <small>Include buttons, forms & interactive elements</small>
+          </span>
+        </label>
+      </div>
+    </section>
+
     <!-- Settings Section -->
     <section class="section settings-section">
       <label class="toggle-label">
@@ -28,7 +49,6 @@
         value="https://httpbin.org/post"
       />
     </section>
-
     <section class="section">
       <div class="section-header">
         <label class="label"
@@ -42,14 +62,12 @@
         <li class="sel-empty">Click elements on the page to select them.</li>
       </ul>
     </section>
-
     <section class="section preview-section">
       <label class="label">Cleaned HTML Preview</label>
       <pre
         class="preview-box"
       ><code id="previewCode">// Nothing selected yet</code></pre>
     </section>
-
     <section class="section actions">
       <button class="btn btn-primary" id="copyBtn">Copy HTML</button>
       <button class="btn btn-secondary" id="copySelectorsBtn">
@@ -57,7 +75,6 @@
       </button>
       <button class="btn btn-accent" id="sendBtn">Send to Endpoint</button>
     </section>
-
     <div class="status" id="status">
       Picker active. Click elements on the page.
     </div>

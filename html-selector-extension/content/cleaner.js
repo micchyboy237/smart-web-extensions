@@ -2,9 +2,11 @@
  * RAG-Optimized HTML Cleaner
  * Combines DOMPurify sanitization with semantic-aware stripping
  * Based on HtmlRAG research: preserve structure, remove noise
+ * Supports two modes: 'rag' (semantic only) and 'all' (includes interactive elements)
  */
 const RAGCleaner = (() => {
-  const STRIP_TAGS = new Set([
+  // Tags to strip in RAG mode (kept in All mode)
+  const RAG_STRIP_TAGS = new Set([
     "script",
     "style",
     "noscript",
@@ -20,6 +22,20 @@ const RAGCleaner = (() => {
     "base",
   ]);
 
+  // Interactive elements preserved in All mode
+  const INTERACTIVE_TAGS = new Set([
+    "button",
+    "input",
+    "select",
+    "textarea",
+    "form",
+    "label",
+    "fieldset",
+    "legend",
+    "optgroup",
+    "option",
+  ]);
+
   const BASE_KEEP_ATTRS = new Set([
     "href",
     "alt",
@@ -32,8 +48,27 @@ const RAGCleaner = (() => {
     "datetime",
   ]);
 
+  // Additional attributes for interactive elements in All mode
+  const INTERACTIVE_ATTRS = new Set([
+    "type",
+    "name",
+    "value",
+    "placeholder",
+    "disabled",
+    "checked",
+    "selected",
+    "required",
+    "maxlength",
+    "minlength",
+    "pattern",
+    "autocomplete",
+    "for",
+    "action",
+    "method",
+    "enctype",
+  ]);
+
   // Tags that are inherently meaningful even without text content
-  // (e.g., an <img> with alt text, an <a> with href, a <hr> separator)
   const SELF_MEANINGFUL_TAGS = new Set([
     "img",
     "a",
@@ -45,19 +80,26 @@ const RAGCleaner = (() => {
   ]);
 
   /**
-   * Clean HTML string for RAG ingestion
+   * Clean HTML string for RAG ingestion or full extraction
    * @param {string} rawHtml - Raw outerHTML
-   * @param {{ includeClassId?: boolean }} [options={}]
+   * @param {{ includeClassId?: boolean, mode?: 'rag' | 'all' }} [options={}]
    * @returns {{ cleaned: string, textContent: string, metadata: object }}
    */
   function clean(rawHtml, options = {}) {
-    const { includeClassId = false } = options;
+    const { includeClassId = false, mode = "rag" } = options;
+    const isAllMode = mode === "all";
+
     console.log(
-      `[RAGCleaner] Starting cleanup | includeClassId: ${includeClassId} | input length: ${rawHtml.length}`,
+      `[RAGCleaner] Starting cleanup | mode: ${mode} | includeClassId: ${includeClassId} | input length: ${rawHtml.length}`,
     );
 
     const allowedAttrs = [...BASE_KEEP_ATTRS];
-    const forbiddenAttrs = ["onclick", "onerror", "onload", "style"];
+    const forbiddenAttrs = ["onclick", "onerror", "onload"];
+
+    // Add style to forbidden unless in All mode (some forms use inline styles)
+    if (!isAllMode) {
+      forbiddenAttrs.push("style");
+    }
 
     // Always allow class/id/data-* through DOMPurify first; we filter numerics post-parse
     if (includeClassId) {
@@ -66,12 +108,26 @@ const RAGCleaner = (() => {
       forbiddenAttrs.push("class", "id");
     }
 
+    // In All mode, include interactive element attributes
+    if (isAllMode) {
+      allowedAttrs.push(...INTERACTIVE_ATTRS);
+    }
+
+    // Determine which tags to allow based on mode
+    const allowedTags = isAllMode
+      ? [..._getAllAllowedTags()]
+      : [..._getRagAllowedTags()];
+
+    const forbidTags = isAllMode
+      ? [..._getAllModeStripTags()]
+      : [...RAG_STRIP_TAGS];
+
     // Step 1: DOMPurify baseline sanitization
     const purified = DOMPurify.sanitize(rawHtml, {
-      ALLOWED_TAGS: [..._getAllowedTags()],
+      ALLOWED_TAGS: allowedTags,
       ALLOWED_ATTR: allowedAttrs,
-      ALLOW_DATA_ATTR: true, // Allow data-* through; filtered post-parse for non-semantic values
-      FORBID_TAGS: [...STRIP_TAGS],
+      ALLOW_DATA_ATTR: true,
+      FORBID_TAGS: forbidTags,
       FORBID_ATTR: forbiddenAttrs,
     });
 
@@ -87,13 +143,17 @@ const RAGCleaner = (() => {
     _filterNonSemanticDataAttrs(doc);
 
     // Step 5: Flatten redundant same-tag wrappers with no class/id and no immediate text
-    _flattenRedundantWrappers(doc);
+    if (!isAllMode) {
+      _flattenRedundantWrappers(doc);
+    }
 
     // Step 6: Remove hidden/invisible elements
     _removeHiddenElements(doc);
 
-    // Step 7: Prune empty structural wrappers (div/span with no text & no meaningful descendants)
-    _pruneEmptyContainers(doc);
+    // Step 7: Prune empty structural containers (only in RAG mode)
+    if (!isAllMode) {
+      _pruneEmptyContainers(doc);
+    }
 
     // Step 8: Collapse whitespace in remaining text nodes
     _normalizeWhitespace(doc);
@@ -112,7 +172,11 @@ const RAGCleaner = (() => {
       reduction: `${((1 - cleanedHtml.length / rawHtml.length) * 100).toFixed(1)}%`,
       hasLinks: doc.querySelectorAll("a[href]").length > 0,
       hasImages: doc.querySelectorAll("img[alt]").length > 0,
+      hasInteractiveElements: isAllMode
+        ? doc.querySelectorAll([...INTERACTIVE_TAGS].join(",")).length > 0
+        : false,
       includeClassId,
+      mode,
     };
 
     console.log("[RAGCleaner] Cleanup complete:", metadata);
@@ -121,8 +185,6 @@ const RAGCleaner = (() => {
 
   /**
    * Remove class tokens and id values that contain digits.
-   * Numeric identifiers are typically framework-generated hashes or indices
-   * that carry no semantic meaning for RAG retrieval.
    */
   function _filterNumericClassIds(doc) {
     const NUMERIC_RE = /\d/;
@@ -136,7 +198,6 @@ const RAGCleaner = (() => {
         .split(/\s+/)
         .filter((token) => token && !NUMERIC_RE.test(token))
         .join(" ");
-
       if (!filtered) {
         el.removeAttribute("class");
         strippedCount++;
@@ -162,10 +223,7 @@ const RAGCleaner = (() => {
   }
 
   /**
-   * Remove data-* attributes that carry no semantic value for RAG:
-   * 1. Attribute names containing digits (e.g., data-id-482, data-index-3)
-   * 2. Attribute values that look like JSON (start with { or [)
-   * Single pass over all elements for efficiency.
+   * Remove data-* attributes that carry no semantic value for RAG
    */
   function _filterNonSemanticDataAttrs(doc) {
     const NUMERIC_NAME_RE = /\d/;
@@ -174,7 +232,6 @@ const RAGCleaner = (() => {
 
     const allElements = doc.body.querySelectorAll("*");
     for (const el of allElements) {
-      // Collect attrs to remove first to avoid mutating during iteration
       const attrsToRemove = [];
       for (const attr of el.attributes) {
         if (!attr.name.startsWith("data-")) continue;
@@ -203,12 +260,7 @@ const RAGCleaner = (() => {
   }
 
   /**
-   * Flatten elements that are pure structural wrappers:
-   * - No class, no id
-   * - No immediate non-whitespace text nodes
-   * - Either parent shares the same tag, OR all element children share the same tag
-   *   (catches nested same-tag chains where innermost has text)
-   * Runs iteratively so deeply nested chains collapse fully.
+   * Flatten elements that are pure structural wrappers
    */
   function _flattenRedundantWrappers(doc) {
     let flattenedCount = 0;
@@ -238,11 +290,10 @@ const RAGCleaner = (() => {
         }
         if (hasImmediateText) continue;
 
-        // Condition A: Parent is the same tag (original behavior)
+        // Condition A: Parent is the same tag
         const parentSameTag = el.tagName === parent.tagName;
 
         // Condition B: All element children share this element's tag
-        // Catches <span><span>text</span></span> where outer qualifies
         let allChildrenSameTag = false;
         if (!parentSameTag) {
           const elementChildren = [...el.children];
@@ -271,15 +322,12 @@ const RAGCleaner = (() => {
   }
 
   /**
-   * Remove div/span elements that have no text content AND no self-meaningful
-   * descendants. Preserves containers that wrap actual content.
-   * Runs bottom-up so nested empties collapse correctly.
+   * Remove div/span elements that have no text content AND no self-meaningful descendants
    */
   function _pruneEmptyContainers(doc) {
     const PRUNE_CANDIDATES = new Set(["div", "span"]);
     let changed = true;
 
-    // Iterate until stable — removing a child may make its parent empty
     while (changed) {
       changed = false;
       const candidates = doc.body.querySelectorAll("div, span");
@@ -293,8 +341,6 @@ const RAGCleaner = (() => {
         );
 
         if (!hasText && !hasMeaningfulDescendant) {
-          // If the element has children, unwrap them into the parent
-          // to avoid losing non-empty siblings that were nested inside
           const parent = el.parentNode;
           while (el.firstChild) {
             parent.insertBefore(el.firstChild, el);
@@ -315,7 +361,7 @@ const RAGCleaner = (() => {
     return textarea.value;
   }
 
-  function _getAllowedTags() {
+  function _getRagAllowedTags() {
     return [
       "p",
       "br",
@@ -359,6 +405,38 @@ const RAGCleaner = (() => {
     ];
   }
 
+  function _getAllAllowedTags() {
+    // Include all RAG tags plus interactive elements
+    return [
+      ..._getRagAllowedTags(),
+      "button",
+      "input",
+      "select",
+      "textarea",
+      "form",
+      "label",
+      "fieldset",
+      "legend",
+      "optgroup",
+      "option",
+    ];
+  }
+
+  function _getAllModeStripTags() {
+    // In All mode, we still strip scripts, styles, and other non-content tags
+    return [
+      "script",
+      "style",
+      "noscript",
+      "iframe",
+      "svg",
+      "template",
+      "meta",
+      "link",
+      "base",
+    ];
+  }
+
   function _removeHiddenElements(doc) {
     const hidden = doc.querySelectorAll(
       '[aria-hidden="true"], [hidden], .sr-only, .visually-hidden',
@@ -374,6 +452,7 @@ const RAGCleaner = (() => {
     );
     const textNodes = [];
     while (walker.nextNode()) textNodes.push(walker.currentNode);
+
     textNodes.forEach((node) => {
       node.textContent = node.textContent.replace(/\s+/g, " ");
     });
