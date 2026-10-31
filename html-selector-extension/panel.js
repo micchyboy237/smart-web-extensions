@@ -18,7 +18,9 @@ const statusEl = document.getElementById("status");
 const includeClassIdToggle = document.getElementById("includeClassIdToggle");
 const modeRadios = document.querySelectorAll('input[name="cleaningMode"]');
 let currentState = null;
+
 init();
+
 async function init() {
   if (!tabId) {
     setStatus("❌ No tab associated with this panel.", "error");
@@ -49,6 +51,7 @@ async function init() {
     console.error("[Panel] GET_STATE failed:", err.message);
   }
 }
+
 // Persist toggle change — content script listens to storage.onChanged
 includeClassIdToggle.addEventListener("change", async () => {
   const val = includeClassIdToggle.checked;
@@ -59,6 +62,7 @@ includeClassIdToggle.addEventListener("change", async () => {
     console.error("[Panel] Failed to save setting:", err.message);
   }
 });
+
 // Handle mode change
 modeRadios.forEach((radio) => {
   radio.addEventListener("change", async () => {
@@ -71,13 +75,16 @@ modeRadios.forEach((radio) => {
     }
   });
 });
+
 // Closing the window is enough — background.js's windows.onRemoved listener
 // handles deactivating the picker and clearing the badge.
 disableBtn.addEventListener("click", () => window.close());
+
 clearBtn.addEventListener("click", async () => {
   await chrome.tabs.sendMessage(tabId, { type: "CLEAR_SELECTIONS" });
   setStatus("🗑️ All selections cleared");
 });
+
 copyBtn.addEventListener("click", async () => {
   if (!currentState?.preview) {
     setStatus("⚠️ Nothing to copy yet", "warning");
@@ -91,6 +98,7 @@ copyBtn.addEventListener("click", async () => {
     setStatus("❌ Copy failed: " + err.message, "error");
   }
 });
+
 // Copy selectors as a JSON array
 copySelectorsBtn.addEventListener("click", async () => {
   if (!currentState?.items?.length) {
@@ -107,6 +115,7 @@ copySelectorsBtn.addEventListener("click", async () => {
     setStatus("❌ Copy failed: " + err.message, "error");
   }
 });
+
 sendBtn.addEventListener("click", async () => {
   const endpoint = endpointInput.value.trim();
   if (!endpoint) {
@@ -139,20 +148,24 @@ sendBtn.addEventListener("click", async () => {
     result.success ? "info" : "error",
   );
 });
+
 // Live updates pushed from the content script whenever a selection changes.
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "STATE_UPDATE" && sender.tab?.id === tabId) {
     render(msg.state);
   }
 });
+
 function render(state) {
   currentState = state;
   statusDot.style.background = state.active ? "#34a853" : "#9aa0a6";
   selCountEl.textContent = state.count;
+
   // Sync toggle if state reports a value (handles external/storage changes)
   if (typeof state.includeClassId === "boolean") {
     includeClassIdToggle.checked = state.includeClassId;
   }
+
   // Sync mode if state reports a value
   if (state.cleaningMode) {
     const modeRadio = document.querySelector(
@@ -162,6 +175,7 @@ function render(state) {
       modeRadio.checked = true;
     }
   }
+
   selListEl.innerHTML = "";
   if (state.items.length === 0) {
     const li = document.createElement("li");
@@ -192,6 +206,7 @@ function render(state) {
   }
   previewCode.textContent = state.preview || "// Nothing selected yet";
 }
+
 function setStatus(msg, type = "info") {
   statusEl.textContent = msg;
   statusEl.style.color =

@@ -6,7 +6,7 @@
  */
 (() => {
   let includeClassId = false;
-  let cleaningMode = "rag"; // 'rag' or 'all'
+  let cleaningMode = "rag"; // 'rag', 'all', or 'interactive'
 
   // Initialize settings from storage
   chrome.storage.sync.get(

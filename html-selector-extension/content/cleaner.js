@@ -1,8 +1,9 @@
 /**
  * RAG-Optimized HTML Cleaner
- * Combines DOMPurify sanitization with semantic-aware stripping
- * Based on HtmlRAG research: preserve structure, remove noise
- * Supports two modes: 'rag' (semantic only) and 'all' (includes interactive elements)
+ * Supports three modes:
+ * 1. 'rag': Semantic content only (headings, paragraphs, lists)
+ * 2. 'all': Everything including interactive elements and layout
+ * 3. 'interactive': Only buttons, forms, inputs, and their labels
  */
 const RAGCleaner = (() => {
   // Tags to strip in RAG mode (kept in All mode)
@@ -22,7 +23,7 @@ const RAGCleaner = (() => {
     "base",
   ]);
 
-  // Interactive elements preserved in All mode
+  // Interactive elements preserved in All/Interactive modes
   const INTERACTIVE_TAGS = new Set([
     "button",
     "input",
@@ -48,7 +49,7 @@ const RAGCleaner = (() => {
     "datetime",
   ]);
 
-  // Additional attributes for interactive elements in All mode
+  // Additional attributes for interactive elements
   const INTERACTIVE_ATTRS = new Set([
     "type",
     "name",
@@ -80,14 +81,15 @@ const RAGCleaner = (() => {
   ]);
 
   /**
-   * Clean HTML string for RAG ingestion or full extraction
+   * Clean HTML string based on mode
    * @param {string} rawHtml - Raw outerHTML
-   * @param {{ includeClassId?: boolean, mode?: 'rag' | 'all' }} [options={}]
+   * @param {{ includeClassId?: boolean, mode?: 'rag' | 'all' | 'interactive' }} [options={}]
    * @returns {{ cleaned: string, textContent: string, metadata: object }}
    */
   function clean(rawHtml, options = {}) {
     const { includeClassId = false, mode = "rag" } = options;
     const isAllMode = mode === "all";
+    const isInteractiveMode = mode === "interactive";
 
     console.log(
       `[RAGCleaner] Starting cleanup | mode: ${mode} | includeClassId: ${includeClassId} | input length: ${rawHtml.length}`,
@@ -96,7 +98,7 @@ const RAGCleaner = (() => {
     const allowedAttrs = [...BASE_KEEP_ATTRS];
     const forbiddenAttrs = ["onclick", "onerror", "onload"];
 
-    // Add style to forbidden unless in All mode (some forms use inline styles)
+    // Add style to forbidden unless in All mode
     if (!isAllMode) {
       forbiddenAttrs.push("style");
     }
@@ -108,19 +110,75 @@ const RAGCleaner = (() => {
       forbiddenAttrs.push("class", "id");
     }
 
-    // In All mode, include interactive element attributes
-    if (isAllMode) {
+    // In All/Interactive mode, include interactive element attributes
+    if (isAllMode || isInteractiveMode) {
       allowedAttrs.push(...INTERACTIVE_ATTRS);
     }
 
     // Determine which tags to allow based on mode
-    const allowedTags = isAllMode
-      ? [..._getAllAllowedTags()]
-      : [..._getRagAllowedTags()];
+    let allowedTags = [];
+    let forbidTags = [];
 
-    const forbidTags = isAllMode
-      ? [..._getAllModeStripTags()]
-      : [...RAG_STRIP_TAGS];
+    if (isInteractiveMode) {
+      // Interactive Mode: Only allow interactive tags + basic structure for context if needed
+      // We allow div/span temporarily to hold structure, but prune them later if empty
+      allowedTags = [
+        ...Array.from(INTERACTIVE_TAGS),
+        "div",
+        "span",
+        "p",
+        "br",
+        "hr",
+        "label",
+      ];
+      // Strip everything else aggressively
+      forbidTags = [
+        "script",
+        "style",
+        "noscript",
+        "iframe",
+        "svg",
+        "template",
+        "meta",
+        "link",
+        "base",
+        "nav",
+        "footer",
+        "header",
+        "aside",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "ul",
+        "ol",
+        "li",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+        "article",
+        "section",
+        "main",
+        "img",
+        "video",
+        "audio",
+        "canvas",
+        "picture",
+        "source",
+      ];
+    } else if (isAllMode) {
+      allowedTags = [..._getAllAllowedTags()];
+      forbidTags = [..._getAllModeStripTags()];
+    } else {
+      // RAG Mode
+      allowedTags = [..._getRagAllowedTags()];
+      forbidTags = [...RAG_STRIP_TAGS];
+    }
 
     // Step 1: DOMPurify baseline sanitization
     const purified = DOMPurify.sanitize(rawHtml, {
@@ -139,30 +197,30 @@ const RAGCleaner = (() => {
       _filterNumericClassIds(doc);
     }
 
-    // Step 4: Strip non-semantic data-* attributes (numeric names or JSON values)
+    // Step 4: Strip non-semantic data-* attributes
     _filterNonSemanticDataAttrs(doc);
 
-    // Step 5: Flatten redundant same-tag wrappers with no class/id and no immediate text
-    if (!isAllMode) {
+    // Step 5: Flatten redundant wrappers (skip in Interactive mode to preserve form structure)
+    if (!isInteractiveMode && !isAllMode) {
       _flattenRedundantWrappers(doc);
     }
 
     // Step 6: Remove hidden/invisible elements
     _removeHiddenElements(doc);
 
-    // Step 7: Prune empty structural containers (only in RAG mode)
-    if (!isAllMode) {
+    // Step 7: Prune empty containers (skip in Interactive mode)
+    if (!isInteractiveMode && !isAllMode) {
       _pruneEmptyContainers(doc);
     }
 
-    // Step 8: Collapse whitespace in remaining text nodes
+    // Step 8: Collapse whitespace
     _normalizeWhitespace(doc);
 
     // Step 9: Extract clean outputs
     let cleanedHtml = doc.body.innerHTML.trim();
     let textContent = doc.body.textContent.replace(/\s+/g, " ").trim();
 
-    // Step 10: Decode HTML entities for RAG-friendly output
+    // Step 10: Decode HTML entities
     cleanedHtml = _decodeEntities(cleanedHtml);
     textContent = _decodeEntities(textContent);
 
@@ -172,9 +230,8 @@ const RAGCleaner = (() => {
       reduction: `${((1 - cleanedHtml.length / rawHtml.length) * 100).toFixed(1)}%`,
       hasLinks: doc.querySelectorAll("a[href]").length > 0,
       hasImages: doc.querySelectorAll("img[alt]").length > 0,
-      hasInteractiveElements: isAllMode
-        ? doc.querySelectorAll([...INTERACTIVE_TAGS].join(",")).length > 0
-        : false,
+      hasInteractiveElements:
+        doc.querySelectorAll([...INTERACTIVE_TAGS].join(",")).length > 0,
       includeClassId,
       mode,
     };
@@ -190,7 +247,6 @@ const RAGCleaner = (() => {
     const NUMERIC_RE = /\d/;
     let strippedCount = 0;
 
-    // Filter class attributes
     const withClass = doc.body.querySelectorAll("[class]");
     for (const el of withClass) {
       const original = el.getAttribute("class");
@@ -207,7 +263,6 @@ const RAGCleaner = (() => {
       }
     }
 
-    // Filter id attributes
     const withId = doc.body.querySelectorAll("[id]");
     for (const el of withId) {
       const id = el.getAttribute("id");
@@ -223,7 +278,7 @@ const RAGCleaner = (() => {
   }
 
   /**
-   * Remove data-* attributes that carry no semantic value for RAG
+   * Remove data-* attributes that carry no semantic value
    */
   function _filterNonSemanticDataAttrs(doc) {
     const NUMERIC_NAME_RE = /\d/;
@@ -236,13 +291,11 @@ const RAGCleaner = (() => {
       for (const attr of el.attributes) {
         if (!attr.name.startsWith("data-")) continue;
 
-        // Reason 1: Numeric name → framework-generated index/hash
         if (NUMERIC_NAME_RE.test(attr.name)) {
           attrsToRemove.push(attr.name);
           continue;
         }
 
-        // Reason 2: JSON value → serialized app state, not semantic content
         if (JSON_VALUE_RE.test(attr.value)) {
           attrsToRemove.push(attr.name);
         }
@@ -274,10 +327,8 @@ const RAGCleaner = (() => {
         const parent = el.parentElement;
         if (!parent || parent === doc.body) continue;
 
-        // Gate: must have no class and no id
         if (el.hasAttribute("class") || el.hasAttribute("id")) continue;
 
-        // Gate: must have no immediate non-whitespace text node
         let hasImmediateText = false;
         for (const child of el.childNodes) {
           if (
@@ -290,10 +341,8 @@ const RAGCleaner = (() => {
         }
         if (hasImmediateText) continue;
 
-        // Condition A: Parent is the same tag
         const parentSameTag = el.tagName === parent.tagName;
 
-        // Condition B: All element children share this element's tag
         let allChildrenSameTag = false;
         if (!parentSameTag) {
           const elementChildren = [...el.children];
@@ -306,7 +355,6 @@ const RAGCleaner = (() => {
 
         if (!parentSameTag && !allChildrenSameTag) continue;
 
-        // Unwrap into parent
         while (el.firstChild) {
           parent.insertBefore(el.firstChild, el);
         }
@@ -406,7 +454,6 @@ const RAGCleaner = (() => {
   }
 
   function _getAllAllowedTags() {
-    // Include all RAG tags plus interactive elements
     return [
       ..._getRagAllowedTags(),
       "button",
@@ -423,7 +470,6 @@ const RAGCleaner = (() => {
   }
 
   function _getAllModeStripTags() {
-    // In All mode, we still strip scripts, styles, and other non-content tags
     return [
       "script",
       "style",

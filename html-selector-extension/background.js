@@ -3,7 +3,6 @@
  * Owns the lifecycle of the detached "panel" window (one per tab) and
  * relays HTTP requests that a normal page/content script can't make cleanly.
  */
-
 // tabId -> windowId of that tab's currently-open panel window
 const openPanels = new Map();
 
@@ -15,8 +14,7 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// User closed the panel window with the OS close button (not our Disable button,
-// which also just calls window.close() — this listener catches both cases).
+// User closed the panel window with the OS close button
 chrome.windows.onRemoved.addListener((closedWindowId) => {
   for (const [tabId, windowId] of openPanels.entries()) {
     if (windowId === closedWindowId) {
@@ -46,7 +44,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     _closePanel(sender.tab.id);
     return false;
   }
-
   if (msg.type === "SEND_TO_ENDPOINT") {
     fetch(msg.url, {
       method: "POST",
@@ -65,7 +62,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true; // async response
   }
-
   return false;
 });
 
@@ -113,9 +109,12 @@ async function _setPickerActive(tabId, active) {
   try {
     await chrome.tabs.sendMessage(tabId, { type: "TOGGLE_PICKER", active });
   } catch (err) {
-    console.warn(
-      `[BG] Could not reach content script on tab ${tabId}:`,
-      err.message,
-    );
+    // Ignore "Receiving end does not exist" errors during initial load
+    if (!err.message.includes("Receiving end does not exist")) {
+      console.warn(
+        `[BG] Could not reach content script on tab ${tabId}:`,
+        err.message,
+      );
+    }
   }
 }
