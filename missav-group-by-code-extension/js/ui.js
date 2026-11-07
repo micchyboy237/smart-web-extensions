@@ -139,32 +139,42 @@ function handleCopyJson(config) {
   }
 
   // Extract video data
-  const videoData = itemsToCopy.map((item, index) => {
-    const videoAnchor = item.querySelector(config.videoAnchorSelector);
-    const titleEl = item.querySelector(config.titleSelector);
-    const img = item.querySelector("img");
+  const videoData = itemsToCopy
+    .map((item, index) => {
+      const videoAnchor = item.querySelector(config.videoAnchorSelector);
+      const titleEl = item.querySelector(config.titleSelector);
+      const img = item.querySelector("img");
 
-    const href = videoAnchor?.href || "";
-    const title = titleEl?.textContent?.trim() || "Untitled";
+      const href = videoAnchor?.href || "";
+      const title = titleEl?.textContent?.trim() || "Untitled";
 
-    // Get image source
-    let imgSrc = "";
-    if (img) {
-      imgSrc = img.getAttribute("data-src") || img.dataset.src || img.src || "";
-    }
+      // Get image source
+      let imgSrc = "";
+      if (img) {
+        imgSrc =
+          img.getAttribute("data-src") || img.dataset.src || img.src || "";
+      }
 
-    // Extract code from alt attribute
-    const rawAlt = videoAnchor?.getAttribute(config.altAttr) || "";
-    const code = extractCode(rawAlt);
+      // Extract code and episode from alt attribute
+      const rawAlt = videoAnchor?.getAttribute(config.altAttr) || "";
+      const code = extractCode(rawAlt);
+      const episode = extractEpisode(rawAlt);
 
-    return {
-      index: index + 1,
-      title: title,
-      url: href,
-      image: imgSrc,
-      code: code || null,
-    };
-  });
+      return {
+        index: index + 1,
+        title: title,
+        url: href,
+        image: imgSrc,
+        code: code || null,
+        episode: episode || null,
+      };
+    })
+    .filter((item) => item.url && item.url.trim() !== ""); // Filter out items with empty URLs
+
+  if (videoData.length === 0) {
+    showToast("No valid items with URLs to copy");
+    return;
+  }
 
   // Convert to JSON
   const jsonString = JSON.stringify(videoData, null, 2);
