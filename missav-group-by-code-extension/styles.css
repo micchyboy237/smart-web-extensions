@@ -56,6 +56,14 @@
 #jav-group-by-code-panel .jav-refresh-btn:hover {
   background: rgba(255, 255, 255, 0.25);
 }
+#jav-group-by-code-panel .jav-copy-json-btn {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+}
+#jav-group-by-code-panel .jav-copy-json-btn:hover {
+  background: rgba(59, 130, 246, 0.35);
+  color: #93c5fd;
+}
 #jav-group-by-code-panel.jav-panel-collapsed {
   padding: 0 !important;
   gap: 0 !important;
