@@ -161,7 +161,6 @@ function handleCopyJson(config) {
       const episode = extractEpisode(rawAlt);
 
       return {
-        index: index + 1,
         title: title,
         url: href,
         image: imgSrc,
