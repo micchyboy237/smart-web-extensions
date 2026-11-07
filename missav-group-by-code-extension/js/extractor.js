@@ -1,7 +1,6 @@
 /**
  * extractor.js - Code Extraction Logic
  */
-
 function extractCode(text) {
   if (!text) return null;
   const patterns = [
@@ -16,7 +15,6 @@ function extractCode(text) {
   }
   return null;
 }
-
 function extractEpisode(text) {
   if (!text) return null;
   // Matches consecutive digits that appear after a hyphen or at the start of a numeric sequence
@@ -28,7 +26,22 @@ function extractEpisode(text) {
   }
   return null;
 }
+function stripTitlePrefix(title) {
+  if (!title || typeof title !== "string") return title;
 
+  // Pattern to match: CODE-EPISODE followed by space and title
+  // Examples:
+  // - "ABC-123 Some Title" (most common)
+  // - "ABC-123 - Some Title" (with hyphen separator)
+  // - "ABC-123–Some Title" (en-dash, no space)
+  // - "ABC-123—Some Title" (em-dash, no space)
+  const prefixPattern = /^\s*[a-z0-9]+-\d+\s*(?:[-–—]\s*)?/i;
+
+  const stripped = title.replace(prefixPattern, "").trim();
+
+  // Only return stripped version if something was actually removed and result is non-empty
+  return stripped.length > 0 ? stripped : title;
+}
 function extractGroupedCodes(config) {
   console.log("[GroupByCode] 🔍 Extracting grouped codes...");
   const items = document.querySelectorAll(config.itemSelector);
@@ -58,7 +71,6 @@ function extractGroupedCodes(config) {
     const rawAlt = videoAnchor.getAttribute(config.altAttr);
     const code = extractCode(rawAlt);
     const episode = extractEpisode(rawAlt);
-
     if (!code) {
       skipped++;
       if (idx < 3)
@@ -97,5 +109,10 @@ function extractGroupedCodes(config) {
   return { groups: result, totalItems: items.length };
 }
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { extractCode, extractEpisode, extractGroupedCodes };
+  module.exports = {
+    extractCode,
+    extractEpisode,
+    stripTitlePrefix,
+    extractGroupedCodes,
+  };
 }

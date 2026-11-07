@@ -1,6 +1,7 @@
 /**
  * filter.js - Filtering & Rearrangement Logic
  */
+
 function saveOriginalOrder() {
   console.log("[GroupByCode] 💾 Saving original order...");
   const allItems = document.querySelectorAll(DEFAULT_CONFIG.itemSelector);
@@ -9,7 +10,6 @@ function saveOriginalOrder() {
     `[GroupByCode] Saved ${currentState.originalOrder.length} items in original order`,
   );
 }
-
 function restoreOriginalOrder(config) {
   console.log("[GroupByCode] ↩️ Restoring original order");
   if (currentState.originalOrder.length === 0) {
@@ -50,7 +50,6 @@ function restoreOriginalOrder(config) {
     });
   }
 }
-
 function rearrangeItems(prioritizedItems, unprioritizedItems, config) {
   if (prioritizedItems.length === 0 && unprioritizedItems.length === 0) {
     console.log("[GroupByCode] ⚠️ No items to rearrange");
@@ -60,13 +59,10 @@ function rearrangeItems(prioritizedItems, unprioritizedItems, config) {
   if (!firstItem) return;
   const parentContainer = firstItem.parentElement;
   if (!parentContainer) return;
-
   const desiredOrder = [...prioritizedItems, ...unprioritizedItems];
-
   console.log(
     `[GroupByCode] 🔄 Rearranging: ${prioritizedItems.length} prioritized, ${unprioritizedItems.length} unprioritized`,
   );
-
   currentState.isRearranging = true;
   try {
     desiredOrder.forEach((item) => {
@@ -81,7 +77,6 @@ function rearrangeItems(prioritizedItems, unprioritizedItems, config) {
     });
   }
 }
-
 function applyCombinedFilter(config) {
   console.log("[GroupByCode] 🔎 Applying combined filter...", {
     mode: currentState.mode,
@@ -90,23 +85,19 @@ function applyCombinedFilter(config) {
     filters: currentState.filters,
     expandedGroup: currentState.expandedGroup,
   });
-
   const allItems = document.querySelectorAll(config.itemSelector);
   console.log(`[GroupByCode]   Total DOM items: ${allItems.length}`);
-
   // Clear visual classes
   allItems.forEach((el) => {
     el.classList.remove(config.hiddenItemClass);
     el.classList.remove(config.highlightClass);
   });
-
   const { selectedCode, searchTerm, filters, mode, groups } = currentState;
   const hasActiveFilters =
     (mode === "group" && selectedCode !== null) ||
     (searchTerm && searchTerm.trim() !== "") ||
     filters.length > 0;
   console.log(`[GroupByCode] Has active filters: ${hasActiveFilters}`);
-
   // No filters → restore original order
   if (!hasActiveFilters) {
     console.log("[GroupByCode] No filters, restoring original order");
@@ -117,7 +108,6 @@ function applyCombinedFilter(config) {
     }
     return;
   }
-
   const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const primaryRegex = searchTerm.trim()
     ? new RegExp(escapeRegex(searchTerm), "i")
@@ -125,25 +115,21 @@ function applyCombinedFilter(config) {
   const filterRegexes = filters
     .filter((f) => typeof f === "string" && f.trim() !== "")
     .map((f) => ({ term: f, regex: new RegExp(escapeRegex(f), "i") }));
-
   // Build the set of elements that belong to the selected group
   let groupElements = new Set();
   if (mode === "group" && selectedCode) {
     const group = groups.find((g) => g.code === selectedCode);
-
     if (group) {
       // Filter out stale/detached DOM references
       const validElements = group.elements.filter((el) =>
         document.body.contains(el),
       );
       groupElements = new Set(validElements);
-
       console.log(
         `[GroupByCode] Group filter: code="${selectedCode}", ` +
           `stored=${group.elements.length}, ` +
           `valid(in DOM)=${validElements.length}`,
       );
-
       if (validElements.length === 0 && group.elements.length > 0) {
         console.warn(
           `[GroupByCode] ⚠️ STALE GROUP DETECTED: "${selectedCode}" has ${group.elements.length} stored elements but NONE are in the DOM.`,
@@ -156,27 +142,23 @@ function applyCombinedFilter(config) {
       );
     }
   }
-
   const prioritizedItems = [];
   const unprioritizedItems = [];
   const activeCodeCounts = new Map();
-
   allItems.forEach((container) => {
     // If a group is selected, only consider items from that group
     if (mode === "group" && selectedCode && !groupElements.has(container)) {
       unprioritizedItems.push(container);
       return;
     }
-
     // Apply text filters to items in the selected group (or all items if no group selected)
     const titleEl = container.querySelector(config.titleSelector);
-    const titleText = titleEl?.textContent?.trim() || "";
-
+    const rawTitleText = titleEl?.textContent?.trim() || "";
+    const titleText = stripTitlePrefix(rawTitleText);
     if (primaryRegex && !primaryRegex.test(titleText)) {
       unprioritizedItems.push(container);
       return;
     }
-
     const failedFilters = filterRegexes.filter(
       ({ regex }) => !regex.test(titleText),
     );
@@ -184,11 +166,9 @@ function applyCombinedFilter(config) {
       unprioritizedItems.push(container);
       return;
     }
-
     // Item passed all filters
     container.classList.add(config.highlightClass);
     prioritizedItems.push(container);
-
     if (mode === "group") {
       const videoAnchor = container.querySelector(config.videoAnchorSelector);
       if (videoAnchor) {
@@ -200,11 +180,9 @@ function applyCombinedFilter(config) {
       }
     }
   });
-
   console.log(
     `[GroupByCode] Filter result: ${prioritizedItems.length} matched, ${unprioritizedItems.length} unmatched`,
   );
-
   // Sort prioritized items by code count (descending) for consistent ordering
   if (mode === "group" && prioritizedItems.length > 0) {
     prioritizedItems.sort((a, b) => {
@@ -221,9 +199,7 @@ function applyCombinedFilter(config) {
       return countB - countA;
     });
   }
-
   rearrangeItems(prioritizedItems, unprioritizedItems, config);
-
   if (mode === "group") {
     const panel = document.getElementById(config.containerId);
     if (panel) {
@@ -231,7 +207,8 @@ function applyCombinedFilter(config) {
       const itemsForChipCalculation = selectedCode
         ? [...prioritizedItems, ...unprioritizedItems].filter((item) => {
             const titleEl = item.querySelector(config.titleSelector);
-            const titleText = titleEl?.textContent?.trim() || "";
+            const rawTitleText = titleEl?.textContent?.trim() || "";
+            const titleText = stripTitlePrefix(rawTitleText);
             if (primaryRegex && !primaryRegex.test(titleText)) return false;
             const failedFilters = filterRegexes.filter(
               ({ regex }) => !regex.test(titleText),
@@ -239,7 +216,6 @@ function applyCombinedFilter(config) {
             return failedFilters.length === 0;
           })
         : prioritizedItems;
-
       const dynamicGroupMap = new Map();
       itemsForChipCalculation.forEach((container) => {
         const videoAnchor = container.querySelector(config.videoAnchorSelector);
@@ -262,14 +238,12 @@ function applyCombinedFilter(config) {
           }
         }
       });
-
       const dynamicGroups = Array.from(dynamicGroupMap.values())
         .filter((g) => {
           if (g.code === selectedCode) return g.count >= 1;
           return g.count >= config.dynamicMinCount;
         })
         .sort((a, b) => b.count - a.count);
-
       console.log(
         `[GroupByCode] Dynamic groups from matched items: ${dynamicGroups.length} codes`,
       );
@@ -277,7 +251,6 @@ function applyCombinedFilter(config) {
     }
   }
 }
-
 function resetAll(config) {
   console.log("[GroupByCode] 🔄 Resetting all filters");
   currentState.selectedCode = null;
@@ -309,7 +282,6 @@ function resetAll(config) {
   }
   applyCombinedFilter(config);
 }
-
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     saveOriginalOrder,

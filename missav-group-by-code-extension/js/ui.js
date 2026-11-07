@@ -1,7 +1,6 @@
 /**
  * ui.js - UI Rendering & Event Handlers
  */
-
 function setActiveChip(activeChip, config) {
   console.log("[GroupByCode] 🎯 Setting active chip");
   const panel = document.getElementById(config.containerId);
@@ -110,16 +109,13 @@ function handleRefresh(config) {
 }
 function handleCopyJson(config) {
   console.log("[GroupByCode] 📋 Copy JSON triggered");
-
   // Determine which items to copy based on current filter state
   const allItems = document.querySelectorAll(config.itemSelector);
   const hasActiveFilters =
     (currentState.mode === "group" && currentState.selectedCode !== null) ||
     (currentState.searchTerm && currentState.searchTerm.trim() !== "") ||
     currentState.filters.length > 0;
-
   let itemsToCopy = [];
-
   if (hasActiveFilters) {
     // Copy only matched/highlighted items
     console.log("[GroupByCode] Copying matched items (filters active)");
@@ -132,34 +128,29 @@ function handleCopyJson(config) {
     console.log("[GroupByCode] Copying all video items (no filters)");
     itemsToCopy = Array.from(allItems);
   }
-
   if (itemsToCopy.length === 0) {
     showToast("No items to copy");
     return;
   }
-
   // Extract video data
   const videoData = itemsToCopy
     .map((item, index) => {
       const videoAnchor = item.querySelector(config.videoAnchorSelector);
       const titleEl = item.querySelector(config.titleSelector);
       const img = item.querySelector("img");
-
       const href = videoAnchor?.href || "";
-      const title = titleEl?.textContent?.trim() || "Untitled";
-
+      const rawTitle = titleEl?.textContent?.trim() || "Untitled";
+      const title = stripTitlePrefix(rawTitle);
       // Get image source
       let imgSrc = "";
       if (img) {
         imgSrc =
           img.getAttribute("data-src") || img.dataset.src || img.src || "";
       }
-
       // Extract code and episode from alt attribute
       const rawAlt = videoAnchor?.getAttribute(config.altAttr) || "";
       const code = extractCode(rawAlt);
       const episode = extractEpisode(rawAlt);
-
       return {
         title: title,
         url: href,
@@ -169,15 +160,12 @@ function handleCopyJson(config) {
       };
     })
     .filter((item) => item.url && item.url.trim() !== ""); // Filter out items with empty URLs
-
   if (videoData.length === 0) {
     showToast("No valid items with URLs to copy");
     return;
   }
-
   // Convert to JSON
   const jsonString = JSON.stringify(videoData, null, 2);
-
   // Copy to clipboard
   navigator.clipboard
     .writeText(jsonString)
@@ -299,7 +287,8 @@ function createResultCard(element, config, index) {
   const img = element.querySelector("img");
   const durationEl = element.querySelector(".absolute.bottom-1.right-1");
   const href = videoAnchor?.href || "#";
-  const title = titleEl?.textContent?.trim() || "Untitled";
+  const rawTitle = titleEl?.textContent?.trim() || "Untitled";
+  const title = stripTitlePrefix(rawTitle);
   // Get the actual image source - prefer data-src for lazy-loaded images
   let imgSrc = "";
   if (img) {
