@@ -1,11 +1,10 @@
 // Jet_Apps/web-extensions/smart-web-extensions/missav-extension/client/content.js
-
 let observer = null;
 let currentData = [];
 let retryTimeoutId = null; // Track pending retry to avoid duplicates
+let extractionTimeoutId = null; // Track debounce timeout for extraction
 
 // ====================== DOM HELPERS ======================
-
 /**
  * Walk up the DOM from `element` until we find a container that has
  * BOTH a <video> and an <img> inside it (the preview thumbnail card).
@@ -67,7 +66,6 @@ function getSrcOrDataSrc(element) {
 }
 
 // ====================== NEW: EXTRACTION HELPERS FOR DETAILS & DATE ======================
-
 /**
  * Checks if the current page is a single video watch page.
  */
@@ -118,10 +116,8 @@ function extractReleaseDate() {
 }
 
 // ====================== DATA EXTRACTION ======================
-
 function extractData() {
   console.log("[CONTENT] 🔄 Starting data extraction...");
-
   const seen = new Map(); // id -> item
 
   // 1. Determine Context
@@ -149,11 +145,10 @@ function extractData() {
       if (h1) {
         const text = h1.innerText.trim();
         const url = window.location.href.split("#")[0]; // Clean URL
-
         const { videoId, code, episode } = extractJavInfo(url, text);
 
         // Only process if the extracted ID matches the URL ID (safety check)
-        if (videoId && videoId === currentVideoId) {
+        if (videoId && videoId.startsWith(currentVideoId)) {
           const id = generateIdFromUrl(url, videoId);
 
           // Extract Thumbnail from Video Player Poster
@@ -186,7 +181,6 @@ function extractData() {
             details: pageDetails,
             releaseDate: pageReleaseDate,
           };
-
           console.log("[CONTENT] ✅ Main video extracted:", {
             id,
             code,
@@ -260,29 +254,16 @@ function extractData() {
       details: isCurrentVideo ? pageDetails : null,
       releaseDate: isCurrentVideo ? pageReleaseDate : null,
     };
-
     seen.set(id, item);
   });
 
   const data = Array.from(seen.values());
   console.log(`[CONTENT] ✅ Extraction complete. ${data.length} unique items.`);
 
-  // Log first item for debugging
-  if (data.length > 0) {
-    console.log("[CONTENT] 📦 Sample Item:", {
-      id: data[0].id,
-      code: data[0].code,
-      hasDetails: !!data[0].details,
-      hasDate: !!data[0].releaseDate,
-      hasPreview: !!data[0].preview,
-    });
-  }
-
   // ====================== RETRY: Missing thumbnails ======================
   const missingMedia = data.filter((item) => !item.thumbnail && !item.preview);
   if (missingMedia.length > 0) {
     if (retryTimeoutId) clearTimeout(retryTimeoutId);
-
     retryTimeoutId = setTimeout(() => {
       retryTimeoutId = null;
       console.log(
@@ -290,12 +271,10 @@ function extractData() {
       );
       const freshData = extractData();
       const freshMap = new Map(freshData.map((item) => [item.id, item]));
-
       let changed = false;
       for (const item of currentData) {
         const fresh = freshMap.get(item.id);
         if (!fresh) continue;
-
         if (!item.thumbnail && fresh.thumbnail) {
           item.thumbnail = fresh.thumbnail;
           changed = true;
@@ -305,7 +284,6 @@ function extractData() {
           changed = true;
         }
       }
-
       if (changed) {
         onDataChange(currentData);
       }
@@ -335,37 +313,46 @@ function generatePreviewUrl(thumbnailUrl) {
 }
 
 // ====================== DEEP COMPARISON ======================
-
 function dataEquals(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
 // ====================== DATA CHANGE HANDLER ======================
-
 async function onDataChange(newData) {
   console.log(
     `[CONTENT] 📤 Data Change Detected. Sending ${newData.length} items to sync.`,
   );
 
   // STEP 1: Sync to Python Server (via background)
+  // We don't await this because it's non-critical for local display,
+  // but we should handle errors gracefully.
   syncToServer(newData);
 
-  // STEP 2: Save to Local IndexedDB
-  newData.forEach((item) => {
+  // STEP 2: Save to Local IndexedDB - WAIT FOR COMPLETION
+  const savePromises = newData.map((item) => {
     const itemWithId = {
       ...item,
       id: generateIdFromUrl(item.url, item.videoId),
     };
-    createItem(itemWithId).catch((err) => {
+    return createItem(itemWithId).catch((err) => {
       if (err.name === "ConstraintError") {
-        updateItem(itemWithId).catch((updateErr) =>
-          console.error("❌ Update failed:", updateErr),
-        );
+        // If it exists, update it
+        return updateItem(itemWithId).catch((updateErr) => {
+          console.error("❌ Update failed:", updateErr);
+        });
       } else {
         console.error("❌ DB write failed for", item.url, err);
       }
     });
   });
+
+  // Wait for all DB operations to finish
+  try {
+    await Promise.all(savePromises);
+    console.log("[CONTENT] ✅ All items saved to IndexedDB");
+  } catch (err) {
+    console.error("[CONTENT] ❌ Error saving batch to IndexedDB:", err);
+  }
 }
 
 async function syncToServer(videos) {
@@ -377,7 +364,6 @@ async function syncToServer(videos) {
   }));
 
   console.log("[CONTENT] 📡 Relaying to Background Service Worker...");
-
   chrome.runtime.sendMessage(
     { action: "syncVideos", videos: videosWithIds },
     (response) => {
@@ -402,7 +388,6 @@ async function syncToServer(videos) {
 }
 
 // ====================== INITIAL DB LOAD & LOG ======================
-
 async function logExistingItems() {
   try {
     const allItems = await getAll();
@@ -417,20 +402,26 @@ async function logExistingItems() {
 }
 
 // ====================== OBSERVER ======================
-
 function startObserving() {
   if (observer) observer.disconnect();
 
+  // Initial extraction
   currentData = extractData();
   onDataChange(currentData);
 
   observer = new MutationObserver(() => {
-    const newData = extractData();
-    if (!dataEquals(newData, currentData)) {
-      console.log("[CONTENT] 👁️ Mutation detected: Data changed");
-      currentData = newData;
-      onDataChange(newData);
-    }
+    // Clear any pending extraction timeout
+    if (extractionTimeoutId) clearTimeout(extractionTimeoutId);
+
+    // Debounce: Wait 500ms after the last DOM change before extracting again
+    extractionTimeoutId = setTimeout(() => {
+      const newData = extractData();
+      if (!dataEquals(newData, currentData)) {
+        console.log("[CONTENT] 👁️ Mutation detected: Data changed");
+        currentData = newData;
+        onDataChange(newData);
+      }
+    }, 500);
   });
 
   observer.observe(document.documentElement, {
@@ -442,7 +433,6 @@ function startObserving() {
 }
 
 // ====================== STORAGE ======================
-
 async function loadConfig() {
   const { config } = await chrome.storage.sync.get("config");
   await logExistingItems();
@@ -456,7 +446,6 @@ chrome.storage.onChanged.addListener((changes) => {
 });
 
 // ====================== POPUP COMMUNICATION ======================
-
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getData") {
     sendResponse({ data: currentData });
