@@ -65,7 +65,8 @@ function getSrcOrDataSrc(element) {
   return null;
 }
 
-// ====================== NEW: EXTRACTION HELPERS FOR DETAILS & DATE ======================
+// ====================== NEW: EXTRACTION HELPERS FOR DETAILS, DATE & GENRES ======================
+
 /**
  * Checks if the current page is a single video watch page.
  */
@@ -115,6 +116,31 @@ function extractReleaseDate() {
   return null;
 }
 
+/**
+ * Extracts genres from the "Genre:" section.
+ * Returns an array of genre strings.
+ */
+function extractGenres() {
+  // Find the div containing "Genre:" span
+  // Based on HTML: <div class="text-secondary"><span>Genre:</span><a...>Uncensored leak</a>, ...</div>
+  const genreContainers = document.querySelectorAll(".text-secondary");
+
+  for (const container of genreContainers) {
+    const span = container.querySelector("span");
+    if (span && span.textContent.trim() === "Genre:") {
+      const links = container.querySelectorAll("a.font-medium");
+      const genres = Array.from(links)
+        .map((link) => link.textContent.trim())
+        .filter((t) => t);
+      console.log(`[CONTENT] 🏷️ Genres found: ${genres.join(", ")}`);
+      return genres;
+    }
+  }
+
+  console.log("[CONTENT] ⚠️ Genres not found in DOM");
+  return [];
+}
+
 // ====================== DATA EXTRACTION ======================
 function extractData() {
   console.log("[CONTENT] 🔄 Starting data extraction...");
@@ -126,11 +152,13 @@ function extractData() {
   // 2. Extract Global Properties (Only if Single Page)
   let pageDetails = null;
   let pageReleaseDate = null;
+  let pageGenres = [];
   let currentVideoId = null;
 
   if (isSinglePage) {
     pageDetails = extractDetails();
     pageReleaseDate = extractReleaseDate();
+    pageGenres = extractGenres(); // Extract genres
 
     // Identify the ID of the video currently in the address bar
     const pathMatch = window.location.pathname.match(
@@ -180,12 +208,14 @@ function extractData() {
             episode,
             details: pageDetails,
             releaseDate: pageReleaseDate,
+            genres: pageGenres, // Add genres
           };
           console.log("[CONTENT] ✅ Main video extracted:", {
             id,
             code,
             hasThumb: !!thumbnail,
             previewUrl: preview,
+            genres: pageGenres,
           });
           seen.set(id, item);
         }
@@ -239,7 +269,7 @@ function extractData() {
       }
     }
 
-    // STRICT MODE: Only attach details/date if this anchor matches the current URL's video ID
+    // STRICT MODE: Only attach details/date/genres if this anchor matches the current URL's video ID
     const isCurrentVideo = currentVideoId && videoId === currentVideoId;
 
     const item = {
@@ -253,6 +283,7 @@ function extractData() {
       episode,
       details: isCurrentVideo ? pageDetails : null,
       releaseDate: isCurrentVideo ? pageReleaseDate : null,
+      genres: isCurrentVideo ? pageGenres : [], // Add genres only for current video
     };
     seen.set(id, item);
   });
@@ -299,7 +330,6 @@ function extractData() {
  */
 function generatePreviewUrl(thumbnailUrl) {
   if (!thumbnailUrl || typeof thumbnailUrl !== "string") return null;
-
   // Check if it already looks like a preview or if we can safely replace the end
   if (thumbnailUrl.endsWith("/preview.mp4")) return thumbnailUrl;
 
@@ -307,7 +337,6 @@ function generatePreviewUrl(thumbnailUrl) {
   // This handles cases like cover-n.jpg, cover.jpg, etc.
   const lastSlashIndex = thumbnailUrl.lastIndexOf("/");
   if (lastSlashIndex === -1) return null;
-
   const baseUrl = thumbnailUrl.substring(0, lastSlashIndex + 1);
   return `${baseUrl}preview.mp4`;
 }

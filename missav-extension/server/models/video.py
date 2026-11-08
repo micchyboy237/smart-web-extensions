@@ -1,5 +1,5 @@
+# Jet_Apps/web-extensions/smart-web-extensions/missav-extension/server/models/video.py
 """Public API contracts for the videos router (request/response payloads).
-
 Kept separate from models/chroma.py, which describes raw repository
 shapes. These models describe what clients (the browser extension,
 API consumers) actually send and receive.
@@ -10,9 +10,6 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# ============================================================================
-# Ingest
-# ============================================================================
 class VideoIngestItem(BaseModel):
     """A single video as sent by the browser extension for ingestion."""
 
@@ -29,8 +26,6 @@ class VideoIngestItem(BaseModel):
     )
     thumbnail: Optional[str] = Field(default=None, description="Thumbnail image URL")
     preview: Optional[str] = Field(default=None, description="Preview video/gif URL")
-
-    # New optional properties
     details: Optional[str] = Field(
         default=None, description="Video description/details text for semantic context"
     )
@@ -38,6 +33,10 @@ class VideoIngestItem(BaseModel):
         default=None,
         alias="releaseDate",
         description="ISO 8601 release date/time string",
+    )
+    genres: Optional[List[str]] = Field(
+        default=None,
+        description="List of genre strings associated with the video",
     )
 
 
@@ -48,9 +47,6 @@ class VideoBatchIngest(BaseModel):
     videos: List[VideoIngestItem] = Field(default_factory=list)
 
 
-# ============================================================================
-# Retrieval — single / batch / list
-# ============================================================================
 class VideoSummary(BaseModel):
     """Lightweight video representation used across list/group responses."""
 
@@ -93,9 +89,6 @@ class IngestResponse(BaseModel):
     time_ms: float = 0.0
 
 
-# ============================================================================
-# Codes & grouping
-# ============================================================================
 class CodeSummary(BaseModel):
     """One code and its video count, as returned by GET /api/videos/codes."""
 
