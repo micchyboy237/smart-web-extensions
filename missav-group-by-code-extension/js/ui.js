@@ -1,6 +1,67 @@
 /**
  * ui.js - UI Rendering & Event Handlers
  */
+
+// Helper to reliably extract duration using the proven console script logic
+function parseDurationFromItem(item, config) {
+  let durationStr = null;
+
+  // Strategy A: Look for isolated spans (High Confidence)
+  // This matches the HTML structure: <span><span>1</span>:<span>58</span></span>
+  const candidateSpans = item.querySelectorAll("span");
+  for (const span of candidateSpans) {
+    const text = span.innerText.trim();
+    // Check if span contains ONLY time pattern
+    if (/^\s*\d{1,2}:\d{2}(:\d{2})?\s*$/.test(text)) {
+      durationStr = text.replace(/\s/g, "");
+      break;
+    }
+  }
+
+  // Strategy B: Fallback to text content regex if Strategy A fails
+  if (!durationStr) {
+    const durationRegex = /(\d{1,2}):(\d{2})(?::(\d{2}))?/g;
+    const textContent = item.innerText;
+    const matches = [...textContent.matchAll(durationRegex)];
+
+    for (const match of matches) {
+      const fullMatch = match[0];
+      const parts = fullMatch.split(":");
+
+      let isValid = false;
+      if (parts.length === 2) {
+        // MM:SS
+        const m = parseInt(parts[0]);
+        const s = parseInt(parts[1]);
+        if (m < 60 && s < 60 && m > 0) isValid = true;
+      } else if (parts.length === 3) {
+        // H:MM:SS
+        const m = parseInt(parts[1]);
+        const s = parseInt(parts[2]);
+        if (m < 60 && s < 60) isValid = true;
+      }
+
+      if (isValid) {
+        durationStr = fullMatch;
+        break;
+      }
+    }
+  }
+
+  if (durationStr) {
+    const parts = durationStr.split(":").map(Number);
+    let seconds = 0;
+    if (parts.length === 3) {
+      seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    } else if (parts.length === 2) {
+      seconds = parts[0] * 60 + parts[1];
+    }
+    return { str: durationStr, sec: seconds };
+  }
+
+  return { str: null, sec: 0 };
+}
+
 function setActiveChip(activeChip, config) {
   console.log("[GroupByCode] 🎯 Setting active chip");
   const panel = document.getElementById(config.containerId);
@@ -15,11 +76,13 @@ function setActiveChip(activeChip, config) {
     activeChip.classList.add(config.activeChipClass);
   }
 }
+
 function handleSearchInput(event, config) {
   currentState.searchTerm = event.target.value;
   console.log(`[GroupByCode] 🔍 Search term: "${currentState.searchTerm}"`);
   applyCombinedFilter(config);
 }
+
 function handleAddFilter(event, config) {
   if (event.key === "Enter" && event.target.value.trim()) {
     const newFilter = event.target.value.trim();
@@ -32,12 +95,14 @@ function handleAddFilter(event, config) {
     event.target.value = "";
   }
 }
+
 function removeFilter(filterTerm, config) {
   console.log(`[GroupByCode] ➖ Removing filter: "${filterTerm}"`);
   currentState.filters = currentState.filters.filter((f) => f !== filterTerm);
   renderFilters(config);
   applyCombinedFilter(config);
 }
+
 function renderFilters(config) {
   console.log("[GroupByCode] 🏷️ Rendering filters:", currentState.filters);
   const panel = document.getElementById(config.containerId);
@@ -66,6 +131,7 @@ function renderFilters(config) {
     filtersContainer.insertBefore(tag, inputField);
   });
 }
+
 function handleModeToggle(mode, config) {
   console.log(`[GroupByCode] 🔄 Toggling mode to: ${mode}`);
   currentState.mode = mode;
@@ -93,6 +159,7 @@ function handleModeToggle(mode, config) {
   }
   applyCombinedFilter(config);
 }
+
 function handleRefresh(config) {
   console.log("[GroupByCode] 🔄 Manual Refresh triggered");
   const { groups, totalItems } = extractGroupedCodes(config);
@@ -107,6 +174,7 @@ function handleRefresh(config) {
     console.log("[GroupByCode] ⚠️ No groups found after refresh");
   }
 }
+
 function handleCopyJson(config) {
   console.log("[GroupByCode] 📋 Copy JSON triggered");
   // Determine which items to copy based on current filter state
@@ -151,12 +219,21 @@ function handleCopyJson(config) {
       const rawAlt = videoAnchor?.getAttribute(config.altAttr) || "";
       const code = extractCode(rawAlt);
       const episode = extractEpisode(rawAlt);
+
+      // Extract duration using the robust helper
+      const { str: durationStr, sec: durationSec } = parseDurationFromItem(
+        item,
+        config,
+      );
+
       return {
         title: title,
         url: href,
         image: imgSrc,
         code: code || null,
         episode: episode || null,
+        duration_str: durationStr || null,
+        duration_sec: durationSec || null,
       };
     })
     .filter((item) => item.url && item.url.trim() !== ""); // Filter out items with empty URLs
@@ -180,6 +257,7 @@ function handleCopyJson(config) {
       showToast("Failed to copy to clipboard");
     });
 }
+
 function toggleGroupExpansion(groupCode, config) {
   console.log(`[GroupByCode] 📂 Toggling expansion for group: ${groupCode}`);
   const panel = document.getElementById(config.containerId);
@@ -220,6 +298,7 @@ function toggleGroupExpansion(groupCode, config) {
     }
   }
 }
+
 function showResultsListForGroup(groupCode, config) {
   console.log(`[GroupByCode] 📋 Showing results list for: ${groupCode}`);
   const panel = document.getElementById(config.containerId);
@@ -278,6 +357,7 @@ function showResultsListForGroup(groupCode, config) {
     `[GroupByCode] ✅ Results list displayed with ${group.elements.length} items`,
   );
 }
+
 function createResultCard(element, config, index) {
   console.log(`[GroupByCode] 🃏 Creating result card #${index}`);
   const card = document.createElement("div");
@@ -285,18 +365,22 @@ function createResultCard(element, config, index) {
   const videoAnchor = element.querySelector(config.videoAnchorSelector);
   const titleEl = element.querySelector(config.titleSelector);
   const img = element.querySelector("img");
-  const durationEl = element.querySelector(".absolute.bottom-1.right-1");
+
   const href = videoAnchor?.href || "#";
   const rawTitle = titleEl?.textContent?.trim() || "Untitled";
   const title = stripTitlePrefix(rawTitle);
+
   // Get the actual image source - prefer data-src for lazy-loaded images
   let imgSrc = "";
   if (img) {
     imgSrc = img.getAttribute("data-src") || img.dataset.src || img.src || "";
   }
-  const duration = durationEl?.textContent?.trim() || "";
+
+  // Use generic duration extractor
+  const { str: duration } = parseDurationFromItem(element, config);
+
   console.log(
-    `[GroupByCode] Card data: title="${title.substring(0, 30)}...", img="${imgSrc ? "yes" : "no"}"`,
+    `[GroupByCode] Card data: title="${title.substring(0, 30)}...", img="${imgSrc ? "yes" : "no"}", duration="${duration}"`,
   );
   card.innerHTML = `
     <div class="jav-result-index">${index}</div>
@@ -319,6 +403,7 @@ function createResultCard(element, config, index) {
   });
   return card;
 }
+
 function hideResultsList() {
   console.log("[GroupByCode] 🙈 Hiding results list");
   const panel = document.getElementById(DEFAULT_CONFIG.containerId);
@@ -335,6 +420,7 @@ function hideResultsList() {
     console.log("[GroupByCode] ⚠️ Results list element not found");
   }
 }
+
 function showToast(message) {
   console.log(`[GroupByCode] 🍞 Toast: ${message}`);
   const toast = document.createElement("div");
@@ -349,6 +435,7 @@ function showToast(message) {
     setTimeout(() => toast.remove(), 300);
   }, 2000);
 }
+
 function renderChips(panel, groups, config, currentSelectedCode = null) {
   console.log(`[GroupByCode] 🏷️ Rendering ${groups.length} chips`);
   const existingChips = panel.querySelector(".jav-chips-container");
@@ -411,6 +498,7 @@ function renderChips(panel, groups, config, currentSelectedCode = null) {
   panel.appendChild(chipsContainer);
   console.log("[GroupByCode] ✅ Chips rendered");
 }
+
 function renderEnhancedPanel(groups, config) {
   console.log("[GroupByCode] 🎨 Rendering enhanced panel");
   const existing = document.getElementById(config.containerId);
@@ -507,6 +595,7 @@ function renderEnhancedPanel(groups, config) {
   console.log("[GroupByCode] Panel appended to body");
   applyCombinedFilter(config);
 }
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     setActiveChip,
