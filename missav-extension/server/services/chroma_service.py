@@ -266,58 +266,92 @@ class ChromaVideoService:
     def add_videos(self, videos: list[dict]) -> int:
         """
         Add videos to ChromaDB with embeddings.
-        Now always uses upsert for "insert if new, update if existing".
-        Args:
-            videos: List of video metadata dicts
-        Returns:
-            Number of videos added/upserted
+        Performs a 'Smart Merge': if a video ID already exists, it will NOT
+        overwrite existing non-empty fields (like details/release_date) with null/empty values.
         """
         if not videos:
             return 0
+
         start_time = time.time()
-        ids = []
-        documents = []
-        metadatas = []
+        ids_to_upsert = []
+        docs_to_upsert = []
+        metas_to_upsert = []
+
+        # 1. Identify which videos already exist to perform merging
+        all_ids = [
+            v.get("id") or v.get("videoId")
+            for v in videos
+            if v.get("id") or v.get("videoId")
+        ]
+        existing_records_map = {}
+
+        if all_ids:
+            # Fetch existing records in bulk to avoid N+1 queries
+            page = self.repository.get_by_ids(all_ids)
+            for record in page.records:
+                existing_records_map[record.id] = record.metadata
+
         for video in videos:
             video_id = video.get("id") or video.get("videoId")
             if not video_id:
                 continue
 
-            doc_text = self._create_document_text(video)
+            # Prepare incoming metadata
+            new_meta = {
+                "id": video_id,
+                "url": video.get("url") or "",
+                "text": video.get("text") or "",
+                "code": video.get("code") or "",
+                "episode": video.get("episode") or "",
+                "video_id": video.get("videoId") or "",
+                "thumbnail": video.get("thumbnail") or "",
+                "preview": video.get("preview") or "",
+                "details": video.get("details") or "",
+                "release_date": video.get("releaseDate")
+                or video.get("release_date")
+                or "",
+            }
 
-            ids.append(video_id)
-            documents.append(doc_text)
+            # SMART MERGE LOGIC
+            if video_id in existing_records_map:
+                old_meta = existing_records_map[video_id]
+                # Iterate through fields. If new value is empty but old value is not, keep old.
+                for key in ["details", "release_date", "thumbnail", "preview", "text"]:
+                    new_val = new_meta.get(key)
+                    old_val = old_meta.get(key)
 
-            # Updated metadata construction to include new fields
-            metadatas.append(
-                {
-                    "id": video_id,
-                    "url": video.get("url") or "",
-                    "text": video.get("text") or "",
-                    "code": video.get("code") or "",
-                    "episode": video.get("episode") or "",
-                    "video_id": video.get("videoId") or "",
-                    "thumbnail": video.get("thumbnail") or "",
-                    "preview": video.get("preview") or "",
-                    # New fields
-                    "details": video.get("details") or "",
-                    "release_date": video.get("releaseDate")
-                    or video.get("release_date")
-                    or "",
-                }
-            )
+                    # If new is empty/null AND old has content, preserve old
+                    if (
+                        (not new_val or str(new_val).strip() == "")
+                        and old_val
+                        and str(old_val).strip() != ""
+                    ):
+                        new_meta[key] = old_val
 
-        if not ids:
-            logger.warning("No valid videos to add")
+            # Create document text for embedding (using the potentially merged metadata)
+            doc_text = self._create_document_text({**video, **new_meta})
+
+            ids_to_upsert.append(video_id)
+            docs_to_upsert.append(doc_text)
+            metas_to_upsert.append(new_meta)
+
+        if not ids_to_upsert:
+            logger.warning("No valid videos to add/upsert")
             return 0
+
         try:
-            self.repository.upsert(ids=ids, documents=documents, metadatas=metadatas)
+            self.repository.upsert(
+                ids=ids_to_upsert, documents=docs_to_upsert, metadatas=metas_to_upsert
+            )
             elapsed = (time.time() - start_time) * 1000
-            logger.info(f"Upserted {len(ids)} videos in {elapsed:.2f}ms")
+            logger.info(
+                f"Upserted {len(ids_to_upsert)} videos in {elapsed:.2f}ms (with smart merge)"
+            )
         except Exception as e:
             logger.error(f"Failed to upsert videos: {e}")
             raise
-        return len(ids)
+
+        return len(ids_to_upsert)
 
     def search(
         self,
