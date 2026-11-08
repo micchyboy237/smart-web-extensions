@@ -17,7 +17,6 @@ class VideoIngestItem(BaseModel):
     """A single video as sent by the browser extension for ingestion."""
 
     model_config = ConfigDict(populate_by_name=True)
-
     id: Optional[str] = Field(default=None, description="Unique video identifier")
     url: Optional[str] = Field(default=None, description="Source page URL")
     text: Optional[str] = Field(default=None, description="Raw title/alt text")
@@ -30,6 +29,16 @@ class VideoIngestItem(BaseModel):
     )
     thumbnail: Optional[str] = Field(default=None, description="Thumbnail image URL")
     preview: Optional[str] = Field(default=None, description="Preview video/gif URL")
+
+    # New optional properties
+    details: Optional[str] = Field(
+        default=None, description="Video description/details text for semantic context"
+    )
+    release_date: Optional[str] = Field(
+        default=None,
+        alias="releaseDate",
+        description="ISO 8601 release date/time string",
+    )
 
 
 class VideoBatchIngest(BaseModel):

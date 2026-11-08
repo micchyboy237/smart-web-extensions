@@ -266,31 +266,29 @@ class ChromaVideoService:
     def add_videos(self, videos: list[dict]) -> int:
         """
         Add videos to ChromaDB with embeddings.
-
         Now always uses upsert for "insert if new, update if existing".
-
         Args:
             videos: List of video metadata dicts
-
         Returns:
             Number of videos added/upserted
         """
         if not videos:
             return 0
-
         start_time = time.time()
         ids = []
         documents = []
         metadatas = []
-
         for video in videos:
             video_id = video.get("id") or video.get("videoId")
             if not video_id:
                 continue
 
             doc_text = self._create_document_text(video)
+
             ids.append(video_id)
             documents.append(doc_text)
+
+            # Updated metadata construction to include new fields
             metadatas.append(
                 {
                     "id": video_id,
@@ -301,13 +299,17 @@ class ChromaVideoService:
                     "video_id": video.get("videoId") or "",
                     "thumbnail": video.get("thumbnail") or "",
                     "preview": video.get("preview") or "",
+                    # New fields
+                    "details": video.get("details") or "",
+                    "release_date": video.get("releaseDate")
+                    or video.get("release_date")
+                    or "",
                 }
             )
 
         if not ids:
             logger.warning("No valid videos to add")
             return 0
-
         try:
             self.repository.upsert(ids=ids, documents=documents, metadatas=metadatas)
             elapsed = (time.time() - start_time) * 1000
@@ -315,7 +317,6 @@ class ChromaVideoService:
         except Exception as e:
             logger.error(f"Failed to upsert videos: {e}")
             raise
-
         return len(ids)
 
     def search(
@@ -395,12 +396,22 @@ class ChromaVideoService:
         parts = []
         if video.get("text"):
             parts.append(video["text"])
+
+        # Add details/description to the search document for better semantic matching
+        if video.get("details"):
+            parts.append(video["details"])
+
         if video.get("code"):
             parts.append(f"Series: {video['code']}")
         if video.get("episode"):
             parts.append(f"Episode: {video['episode']}")
         if video.get("videoId"):
             parts.append(f"ID: {video['videoId']}")
+
+        # Optionally add release date if useful for search, though usually less critical for semantic meaning
+        # if video.get("releaseDate"):
+        #     parts.append(f"Released: {video['releaseDate']}")
+
         return " | ".join(parts)
 
 

@@ -1,3 +1,5 @@
+// Jet_Apps/web-extensions/smart-web-extensions/missav-extension/client/content.js
+
 let observer = null;
 let currentData = [];
 let retryTimeoutId = null; // Track pending retry to avoid duplicates
@@ -20,102 +22,208 @@ function findVideoWithPreviewContainer(element) {
 
 /**
  * Extract the best available media URL from an <img> or <video> element.
- * Checks multiple attribute fallbacks to handle lazy-loading (Alpine.js, etc.).
  */
 function getSrcOrDataSrc(element) {
   if (!element) return null;
-
   const tagName = element.tagName ? element.tagName.toUpperCase() : "";
 
-  // --- Helper: validate a candidate URL ---
   function isValidMediaUrl(url) {
     if (!url || typeof url !== "string") return false;
     const trimmed = url.trim();
     if (!trimmed) return false;
-    // Reject Alpine.js expressions
-    if (/[()?:]/.test(trimmed) && /\s/.test(trimmed)) {
+    if (/[()?:]/.test(trimmed) && /\s/.test(trimmed)) return false;
+    if (
+      trimmed.startsWith("javascript:") ||
+      trimmed.startsWith("blob:") ||
+      trimmed.startsWith("data:")
+    )
       return false;
-    }
-    // Reject javascript: placeholders
-    if (trimmed.startsWith("javascript:")) {
-      return false;
-    }
-    // Reject blob URLs
-    if (trimmed.startsWith("blob:")) {
-      return false;
-    }
-    // Reject data URIs
-    if (trimmed.startsWith("data:")) {
-      return false;
-    }
-    // Must look like a real URL
-    if (!/^https?:\/\//i.test(trimmed)) {
-      return false;
-    }
+    if (!/^https?:\/\//i.test(trimmed)) return false;
     return true;
   }
 
-  // --- 1. currentSrc (browser-resolved — bypasses Alpine entirely) ---
   if (element.currentSrc) {
     const cs = element.currentSrc.trim();
-    if (isValidMediaUrl(cs)) {
-      return cs;
-    }
+    if (isValidMediaUrl(cs)) return cs;
   }
 
-  // --- 2. src attribute ---
   const src = element.getAttribute("src");
-  if (src && isValidMediaUrl(src)) {
-    return src.trim();
-  }
+  if (src && isValidMediaUrl(src)) return src.trim();
 
-  // --- 3. data-src attribute (lazy-load fallback) ---
   const dataSrc = element.getAttribute("data-src");
-  if (dataSrc && isValidMediaUrl(dataSrc)) {
-    return dataSrc.trim();
-  }
+  if (dataSrc && isValidMediaUrl(dataSrc)) return dataSrc.trim();
 
-  // --- 4. For <video>: check <source> children ---
   if (tagName === "VIDEO") {
     const sourceEl = element.querySelector("source");
     if (sourceEl) {
       const sourceSrc = sourceEl.getAttribute("src");
-      if (sourceSrc && isValidMediaUrl(sourceSrc)) {
-        return sourceSrc.trim();
-      }
+      if (sourceSrc && isValidMediaUrl(sourceSrc)) return sourceSrc.trim();
     }
-    // --- 5. poster attribute (thumbnail fallback for videos) ---
     const poster = element.getAttribute("poster");
-    if (poster && isValidMediaUrl(poster)) {
-      return poster.trim();
-    }
+    if (poster && isValidMediaUrl(poster)) return poster.trim();
   }
 
+  return null;
+}
+
+// ====================== NEW: EXTRACTION HELPERS FOR DETAILS & DATE ======================
+
+/**
+ * Checks if the current page is a single video watch page.
+ */
+function isSingleVideoPage() {
+  const pathPattern = /\/(?:dm\d+\/)?(?:en|ja|zh|ko|th)\/([a-z0-9]+-\d+)/i;
+  const isMatch = pathPattern.test(window.location.pathname);
+  console.log(
+    `[CONTENT] 📄 Page Type Check: ${isMatch ? "Single Video" : "List/Other"} (${window.location.pathname})`,
+  );
+  return isMatch;
+}
+
+/**
+ * Extracts the video description/details from the page.
+ */
+function extractDetails() {
+  // Try multiple selectors to be robust
+  const selectors = [
+    ".order-first .text-secondary.break-all", // Specific to provided HTML
+    ".mt-4.text-secondary.break-all", // Alternative common class
+    "div[data-tab-content='details'] .text-secondary", // If tab-based
+  ];
+
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (el && el.innerText.trim().length > 0) {
+      console.log(`[CONTENT] 📝 Details found via selector: ${selector}`);
+      return el.innerText.trim();
+    }
+  }
+  console.log("[CONTENT] ⚠️ Details not found in DOM");
+  return null;
+}
+
+/**
+ * Extracts the release date from the <time> tag.
+ */
+function extractReleaseDate() {
+  // Look for time tag near "Release date" label
+  const timeEl = document.querySelector(".order-first time[datetime]");
+  if (timeEl) {
+    const dt = timeEl.getAttribute("datetime");
+    console.log(`[CONTENT] 📅 Release Date found: ${dt}`);
+    return dt;
+  }
+  console.log("[CONTENT] ⚠️ Release Date not found in DOM");
   return null;
 }
 
 // ====================== DATA EXTRACTION ======================
 
 function extractData() {
-  const anchors = document.querySelectorAll(".text-secondary");
+  console.log("[CONTENT] 🔄 Starting data extraction...");
 
   const seen = new Map(); // id -> item
+
+  // 1. Determine Context
+  const isSinglePage = isSingleVideoPage();
+
+  // 2. Extract Global Properties (Only if Single Page)
+  let pageDetails = null;
+  let pageReleaseDate = null;
+  let currentVideoId = null;
+
+  if (isSinglePage) {
+    pageDetails = extractDetails();
+    pageReleaseDate = extractReleaseDate();
+
+    // Identify the ID of the video currently in the address bar
+    const pathMatch = window.location.pathname.match(
+      /\/(?:dm\d+\/)?(?:en|ja|zh|ko|th)\/([a-z0-9]+-\d+)/i,
+    );
+    if (pathMatch) {
+      currentVideoId = pathMatch[1].toLowerCase();
+      console.log(`[CONTENT] 🎯 Current Video ID detected: ${currentVideoId}`);
+
+      // --- EXPLICIT MAIN VIDEO EXTRACTION ---
+      // On single pages, the main info is in H1 and the Video Player, not necessarily in .text-secondary anchors
+
+      const h1 = document.querySelector("h1.text-base, h1.lg\\:text-lg");
+      if (h1) {
+        const text = h1.innerText.trim();
+        const url = window.location.href.split("#")[0]; // Clean URL
+
+        const { videoId, code, episode } = extractJavInfo(url, text);
+
+        // Only process if the extracted ID matches the URL ID (safety check)
+        if (videoId && videoId === currentVideoId) {
+          const id = generateIdFromUrl(url, videoId);
+
+          // Extract Thumbnail from Video Player Poster
+          const videoPlayer = document.querySelector("video.player");
+          let thumbnail = null;
+          if (videoPlayer) {
+            thumbnail =
+              videoPlayer.getAttribute("data-poster") ||
+              videoPlayer.getAttribute("poster");
+          }
+
+          // Fallback: Look for any img in the order-first container if poster is missing
+          if (!thumbnail) {
+            const fallbackImg = document.querySelector(".order-first img");
+            if (fallbackImg) thumbnail = getSrcOrDataSrc(fallbackImg);
+          }
+
+          const item = {
+            id,
+            url,
+            text,
+            thumbnail,
+            preview: null, // Main player usually doesn't have a simple preview gif link in DOM
+            videoId,
+            code,
+            episode,
+            details: pageDetails,
+            releaseDate: pageReleaseDate,
+          };
+
+          console.log("[CONTENT] ✅ Main video extracted:", {
+            id,
+            code,
+            hasThumb: !!thumbnail,
+          });
+          seen.set(id, item);
+        }
+      }
+    }
+  }
+
+  // 3. Extract Related Videos (Anchors)
+  const anchors = document.querySelectorAll(".text-secondary");
+  console.log(
+    `[CONTENT] 🔍 Found ${anchors.length} potential related video anchors`,
+  );
 
   Array.from(anchors).forEach((a) => {
     let url = a.href?.trim() || "";
     const text = a.textContent?.trim() || "";
+
+    // Clean hash from URL
     const hashIndex = url.indexOf("#");
     if (hashIndex !== -1) {
       url = url.substring(0, hashIndex);
     }
-    if (!url || !text) {
-      return;
-    }
+
+    if (!url || !text) return;
 
     const { videoId, code, episode } = extractJavInfo(url, text);
-    const id = generateIdFromUrl(url, videoId);
-    const container = findVideoWithPreviewContainer(a);
+    if (!videoId) return;
 
+    const id = generateIdFromUrl(url, videoId);
+
+    // Skip if we already extracted this as the main video
+    if (seen.has(id)) return;
+
+    const container = findVideoWithPreviewContainer(a);
     let thumbnail = null;
     let preview = null;
 
@@ -129,31 +237,48 @@ function extractData() {
       }
     }
 
-    const item = { id, url, text, thumbnail, preview, videoId, code, episode };
-    const existing = seen.get(id);
+    // STRICT MODE: Only attach details/date if this anchor matches the current URL's video ID
+    const isCurrentVideo = currentVideoId && videoId === currentVideoId;
 
-    if (!existing) {
-      seen.set(id, item);
-    } else {
-      // Merge: keep whichever copy has more data
-      const merged = {
-        ...existing,
-        thumbnail: existing.thumbnail || item.thumbnail,
-        preview: existing.preview || item.preview,
-      };
-      seen.set(id, merged);
-    }
+    const item = {
+      id,
+      url,
+      text,
+      thumbnail,
+      preview,
+      videoId,
+      code,
+      episode,
+      details: isCurrentVideo ? pageDetails : null,
+      releaseDate: isCurrentVideo ? pageReleaseDate : null,
+    };
+
+    seen.set(id, item);
   });
 
   const data = Array.from(seen.values());
+  console.log(`[CONTENT] ✅ Extraction complete. ${data.length} unique items.`);
+
+  // Log first item for debugging
+  if (data.length > 0) {
+    console.log("[CONTENT] 📦 Sample Item:", {
+      id: data[0].id,
+      code: data[0].code,
+      hasDetails: !!data[0].details,
+      hasDate: !!data[0].releaseDate,
+    });
+  }
 
   // ====================== RETRY: Missing thumbnails ======================
   const missingMedia = data.filter((item) => !item.thumbnail && !item.preview);
   if (missingMedia.length > 0) {
-    // Clear any previously scheduled retry to avoid stacking
     if (retryTimeoutId) clearTimeout(retryTimeoutId);
+
     retryTimeoutId = setTimeout(() => {
       retryTimeoutId = null;
+      console.log(
+        "[CONTENT] 🔄 Retrying media extraction for missing thumbnails...",
+      );
       const freshData = extractData();
       const freshMap = new Map(freshData.map((item) => [item.id, item]));
 
@@ -161,6 +286,7 @@ function extractData() {
       for (const item of currentData) {
         const fresh = freshMap.get(item.id);
         if (!fresh) continue;
+
         if (!item.thumbnail && fresh.thumbnail) {
           item.thumbnail = fresh.thumbnail;
           changed = true;
@@ -170,6 +296,7 @@ function extractData() {
           changed = true;
         }
       }
+
       if (changed) {
         onDataChange(currentData);
       }
@@ -187,14 +314,12 @@ function dataEquals(a, b) {
 
 // ====================== DATA CHANGE HANDLER ======================
 
-/**
- * Handle data changes - sync to IndexedDB and Python server.
- * Server sync is relayed through the background service worker.
- */
 async function onDataChange(newData) {
-  console.log("🔄 Data CHANGED →", newData.length, "items");
+  console.log(
+    `[CONTENT] 📤 Data Change Detected. Sending ${newData.length} items to sync.`,
+  );
 
-  // STEP 1: Sync to Python Server (via background) — fire-and-forget
+  // STEP 1: Sync to Python Server (via background)
   syncToServer(newData);
 
   // STEP 2: Save to Local IndexedDB
@@ -215,17 +340,16 @@ async function onDataChange(newData) {
   });
 }
 
-/**
- * Sync scraped videos to the Python server via the background service worker.
- */
 async function syncToServer(videos) {
-  if (!videos || videos.length === 0) {
-    return;
-  }
+  if (!videos || videos.length === 0) return;
+
   const videosWithIds = videos.map((video) => ({
     ...video,
     id: video.id || generateIdFromUrl(video.url, video.videoId),
   }));
+
+  console.log("[CONTENT] 📡 Relaying to Background Service Worker...");
+
   chrome.runtime.sendMessage(
     { action: "syncVideos", videos: videosWithIds },
     (response) => {
@@ -259,14 +383,6 @@ async function logExistingItems() {
       `📚 Loaded ${allItems.length} existing items from MissAVExtensionDB`,
     );
     console.log(`📊 Database contains ${count} total records`);
-    if (allItems.length > 0) {
-      const withJavInfo = allItems.filter((item) => item.videoId);
-      console.log(
-        `📊 ${withJavInfo.length}/${allItems.length} items have JAV info`,
-      );
-    } else {
-      console.log("📭 Database is currently empty.");
-    }
   } catch (err) {
     console.error("❌ Failed to read from IndexedDB:", err);
   }
@@ -276,15 +392,19 @@ async function logExistingItems() {
 
 function startObserving() {
   if (observer) observer.disconnect();
+
   currentData = extractData();
   onDataChange(currentData);
+
   observer = new MutationObserver(() => {
     const newData = extractData();
     if (!dataEquals(newData, currentData)) {
+      console.log("[CONTENT] 👁️ Mutation detected: Data changed");
       currentData = newData;
       onDataChange(newData);
     }
   });
+
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
@@ -314,64 +434,40 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ data: currentData });
     return true;
   }
+  if (request.action === "getPageVideoIds") {
+    const videoIds = currentData.map((item) => item.id).filter(Boolean);
+    sendResponse({ videoIds });
+    return true;
+  }
+  // ... other handlers remain same ...
   if (request.action === "getItem") {
     getItem(request.id)
-      .then((item) => {
-        sendResponse({ success: true, item });
-      })
-      .catch((err) => {
-        console.error("❌ Failed to get item:", err);
-        sendResponse({ success: false, error: err.message });
-      });
+      .then((item) => sendResponse({ success: true, item }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
   if (request.action === "getAll") {
     getAll(request.options || {})
-      .then((items) => {
-        sendResponse({ success: true, items });
-      })
-      .catch((err) => {
-        console.error("❌ Failed to get all items:", err);
-        sendResponse({ success: false, error: err.message });
-      });
+      .then((items) => sendResponse({ success: true, items }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
   if (request.action === "getCount") {
     getCount()
-      .then((count) => {
-        sendResponse({ success: true, count });
-      })
-      .catch((err) => {
-        console.error("❌ Failed to get count:", err);
-        sendResponse({ success: false, error: err.message });
-      });
+      .then((count) => sendResponse({ success: true, count }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
   if (request.action === "deleteItem") {
     deleteItem(request.id)
-      .then(() => {
-        sendResponse({ success: true });
-      })
-      .catch((err) => {
-        console.error("❌ Failed to delete item:", err);
-        sendResponse({ success: false, error: err.message });
-      });
+      .then(() => sendResponse({ success: true }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
   if (request.action === "deleteAll") {
     deleteAll()
-      .then(() => {
-        sendResponse({ success: true });
-      })
-      .catch((err) => {
-        console.error("❌ Failed to delete all items:", err);
-        sendResponse({ success: false, error: err.message });
-      });
-    return true;
-  }
-  if (request.action === "getPageVideoIds") {
-    const videoIds = currentData.map((item) => item.id).filter(Boolean);
-    sendResponse({ videoIds });
+      .then(() => sendResponse({ success: true }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
 });
