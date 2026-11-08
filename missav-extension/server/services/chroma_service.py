@@ -246,7 +246,8 @@ class ChromaVideoService:
         """
         Add videos to ChromaDB with embeddings.
         Performs a 'Smart Merge': if a video ID already exists, it will NOT
-        overwrite existing non-empty fields (like details/release_date) with null/empty values.
+        overwrite existing non-empty fields (like details/release_date/genres)
+        with null/empty values.
         """
         if not videos:
             return 0
@@ -274,7 +275,7 @@ class ChromaVideoService:
 
             # Extract genres, ensuring it's a list
             raw_genres = video.get("genres")
-            genres = raw_genres if isinstance(raw_genres, list) else []
+            incoming_genres = raw_genres if isinstance(raw_genres, list) else []
 
             new_meta = {
                 "id": video_id,
@@ -291,14 +292,11 @@ class ChromaVideoService:
                 or "",
             }
 
-            # FIX: Only add genres to metadata if the list is not empty.
-            # ChromaDB often rejects empty lists for array-type metadata fields.
-            if genres:
-                new_meta["genres"] = genres
-
+            # --- SMART MERGE LOGIC ---
             if video_id in existing_records_map:
                 old_meta = existing_records_map[video_id]
-                # Smart merge for specific fields
+
+                # 1. Merge simple text fields (keep old if new is empty)
                 for key in ["details", "release_date", "thumbnail", "preview", "text"]:
                     new_val = new_meta.get(key)
                     old_val = old_meta.get(key)
@@ -309,12 +307,18 @@ class ChromaVideoService:
                     ):
                         new_meta[key] = old_val
 
-                # Optional: Merge genres if new is empty but old has them?
-                # Since we omitted the key if empty, this check isn't strictly needed
-                # unless we want to preserve old genres when new extraction fails.
-                # If you want to preserve old genres when new is empty:
-                if "genres" not in new_meta and old_meta.get("genres"):
+                # 2. Merge Genres specifically
+                # If incoming genres are empty, but old meta has genres, keep the old ones.
+                if not incoming_genres and old_meta.get("genres"):
                     new_meta["genres"] = old_meta["genres"]
+                elif incoming_genres:
+                    # Only add to meta if we actually have new genres
+                    new_meta["genres"] = incoming_genres
+
+            else:
+                # New video: only add genres if they exist
+                if incoming_genres:
+                    new_meta["genres"] = incoming_genres
 
             doc_text = self._create_document_text({**video, **new_meta})
             ids_to_upsert.append(video_id)
