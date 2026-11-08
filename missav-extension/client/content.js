@@ -145,8 +145,6 @@ function extractData() {
       console.log(`[CONTENT] 🎯 Current Video ID detected: ${currentVideoId}`);
 
       // --- EXPLICIT MAIN VIDEO EXTRACTION ---
-      // On single pages, the main info is in H1 and the Video Player, not necessarily in .text-secondary anchors
-
       const h1 = document.querySelector("h1.text-base, h1.lg\\:text-lg");
       if (h1) {
         const text = h1.innerText.trim();
@@ -173,12 +171,15 @@ function extractData() {
             if (fallbackImg) thumbnail = getSrcOrDataSrc(fallbackImg);
           }
 
+          // Generate Preview URL from Thumbnail
+          const preview = generatePreviewUrl(thumbnail);
+
           const item = {
             id,
             url,
             text,
             thumbnail,
-            preview: null, // Main player usually doesn't have a simple preview gif link in DOM
+            preview, // Added generated preview
             videoId,
             code,
             episode,
@@ -190,6 +191,7 @@ function extractData() {
             id,
             code,
             hasThumb: !!thumbnail,
+            previewUrl: preview,
           });
           seen.set(id, item);
         }
@@ -231,8 +233,14 @@ function extractData() {
       const img = container.querySelector("img");
       thumbnail = getSrcOrDataSrc(img);
 
+      // For related videos, we can also try to generate a preview if we have a thumbnail
+      // but usually related videos might have their own preview logic or none.
+      // If you want to apply the same rule to related videos, uncomment below:
+      // if (thumbnail) preview = generatePreviewUrl(thumbnail);
+
       const video = container.querySelector("video");
       if (video) {
+        // If a video tag exists in the container, use its source as preview
         preview = getSrcOrDataSrc(video);
       }
     }
@@ -266,6 +274,7 @@ function extractData() {
       code: data[0].code,
       hasDetails: !!data[0].details,
       hasDate: !!data[0].releaseDate,
+      hasPreview: !!data[0].preview,
     });
   }
 
@@ -304,6 +313,25 @@ function extractData() {
   }
 
   return data;
+}
+
+/**
+ * Converts a thumbnail URL to a preview URL by replacing the filename.
+ * Example: https://fourhoi.com/jukd-593/cover-n.jpg -> https://fourhoi.com/jukd-593/preview.mp4
+ */
+function generatePreviewUrl(thumbnailUrl) {
+  if (!thumbnailUrl || typeof thumbnailUrl !== "string") return null;
+
+  // Check if it already looks like a preview or if we can safely replace the end
+  if (thumbnailUrl.endsWith("/preview.mp4")) return thumbnailUrl;
+
+  // Replace the last segment (filename) with preview.mp4
+  // This handles cases like cover-n.jpg, cover.jpg, etc.
+  const lastSlashIndex = thumbnailUrl.lastIndexOf("/");
+  if (lastSlashIndex === -1) return null;
+
+  const baseUrl = thumbnailUrl.substring(0, lastSlashIndex + 1);
+  return `${baseUrl}preview.mp4`;
 }
 
 // ====================== DEEP COMPARISON ======================

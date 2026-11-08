@@ -26,9 +26,10 @@ for i, id in enumerate(results["ids"]):
     # Print if they exist or if you want to see everything
     if details or release_date:
         print(f"ID: {id}")
-        print(f"  Code: {metadata.get('code')}")
+        print(f"  Code: {metadata.get('code')}-{metadata.get('episode')}")
         print(f"  Details: {details[:50]}..." if details else "  Details: None")
         print(f"  Release Date: {release_date}")
+        print(f"  URL: {metadata.get('url')}")
         print("-" * 20)
 
 # 5. Option B: Search for a specific video by ID
