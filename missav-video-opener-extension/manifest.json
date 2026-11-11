@@ -1,13 +1,10 @@
 {
   "manifest_version": 3,
   "name": "MissAV Video Opener",
-  "version": "1.0",
-  "description": "Opens all matching video URLs from search results and waits for JS to load",
+  "version": "1.1",
   "permissions": ["tabs", "activeTab", "storage"],
   "host_permissions": ["https://missav.ws/*"],
-  "background": {
-    "service_worker": "background.js"
-  },
+  "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
       "matches": ["https://missav.ws/en/search/*"],
@@ -16,6 +13,6 @@
     }
   ],
   "action": {
-    "default_title": "MissAV Video Opener"
+    "default_title": "Show MissAV Control Panel"
   }
 }

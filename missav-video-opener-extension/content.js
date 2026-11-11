@@ -1,7 +1,7 @@
-// content.js
 (function () {
   "use strict";
 
+  const LOG_PREFIX = "[MissAV-Content]";
   let panelElement = null;
 
   function extractVideoUrls(code) {
@@ -12,62 +12,65 @@
       const href = anchor.getAttribute("href");
       if (!href) return;
 
-      // Check if this anchor contains a video element
       const hasVideo = anchor.querySelector("video") !== null;
       if (!hasVideo) return;
 
-      // Check if href contains the code pattern (case-insensitive)
       const codeRegex = new RegExp(code, "i");
       if (!codeRegex.test(href)) return;
 
-      // Ensure it's a video detail page (contains /en/)
       if (!href.includes("/en/")) return;
 
-      // Make absolute URL if relative
       const absoluteUrl = href.startsWith("http")
         ? href
         : new URL(href, window.location.origin).href;
       uniqueUrls.add(absoluteUrl);
     });
 
+    console.log(
+      `${LOG_PREFIX} Extracted ${uniqueUrls.size} video URLs for code '${code}'`,
+    );
     return Array.from(uniqueUrls);
   }
 
-  function getNextPageUrl(currentPageNum) {
-    const nextPageNum = currentPageNum + 1;
+  function getTotalPagesFromDom() {
+    let maxPage = 0;
 
-    // Look for pagination link with the next page number
-    const links = Array.from(
-      document.querySelectorAll('a[aria-label^="Go to page"]'),
-    );
-
-    for (const link of links) {
-      const label = link.getAttribute("aria-label");
-      if (label && label.includes(nextPageNum.toString())) {
-        return link.href;
-      }
+    const paginationContainer = document.querySelector(".hidden.md\\:flex");
+    if (paginationContainer) {
+      const links = paginationContainer.querySelectorAll('a[href*="page="]');
+      links.forEach((link) => {
+        const href = link.getAttribute("href");
+        const match = href.match(/page=(\d+)/);
+        if (match) {
+          const pageNum = parseInt(match[1]);
+          if (pageNum > maxPage) maxPage = pageNum;
+        }
+      });
     }
 
-    // Also check for "Next" button
-    const nextButton = document.querySelector('a[aria-label*="Next"]');
-    if (nextButton) {
-      return nextButton.href;
+    if (maxPage === 0) {
+      const links = Array.from(
+        document.querySelectorAll('a[aria-label^="Go to page"]'),
+      );
+      links.forEach((link) => {
+        const label = link.getAttribute("aria-label");
+        const match = label.match(/(\d+)/);
+        if (match) {
+          const pageNum = parseInt(match[1]);
+          if (pageNum > maxPage) maxPage = pageNum;
+        }
+      });
     }
 
-    return null;
+    console.log(`${LOG_PREFIX} Detected total pages: ${maxPage}`);
+    return maxPage;
   }
 
   function createPanel(state) {
-    // Remove existing panel if any
-    if (panelElement) {
-      panelElement.remove();
-    }
+    if (panelElement) panelElement.remove();
 
-    // Create panel container
     panelElement = document.createElement("div");
     panelElement.id = "missav-control-panel";
-
-    // Set styles with high z-index and fixed positioning
     panelElement.style.cssText = `
       position: fixed !important;
       top: 10px !important;
@@ -79,25 +82,17 @@
       z-index: 2147483647 !important;
       font-family: Arial, Helvetica, sans-serif !important;
       box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important;
-      min-width: 280px !important;
+      min-width: 300px !important;
       border: 2px solid #4CAF50 !important;
       display: block !important;
-      visibility: visible !important;
-      opacity: 1 !important;
     `;
 
-    // Append to body
     document.body.appendChild(panelElement);
-
-    // Update panel content
     updatePanelContent(state);
-
-    console.log("Panel created and appended to body");
   }
 
   function updatePanelContent(state) {
     if (!panelElement) {
-      console.log("Panel element not found, creating...");
       createPanel(state);
       return;
     }
@@ -107,6 +102,9 @@
     const buttonText = state.isRunning ? "⏹ Stop" : "▶ Start";
     const buttonBg = state.isRunning ? "#f44336" : "#4CAF50";
 
+    const openVideosChecked = state.openVideos ? "checked" : "";
+    const totalPagesDisplay = state.totalPages || "?";
+
     panelElement.innerHTML = `
       <div style="margin-bottom: 12px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -115,11 +113,21 @@
         </div>
         <div style="font-size: 13px; line-height: 1.8;">
           <div><strong>Code:</strong> ${state.code || "N/A"}</div>
-          <div><strong>Page:</strong> ${state.currentPage || 0}</div>
-          <div><strong>Videos:</strong> <span style="color: #4CAF50; font-weight: bold;">${state.totalVideosOpened}</span></div>
-          <div><strong>Pages:</strong> ${state.totalPagesProcessed}</div>
+          <div><strong>Progress:</strong> ${state.totalPagesProcessed} / ${totalPagesDisplay} Pages</div>
+          <div><strong>Videos Found:</strong> <span style="color: #4CAF50; font-weight: bold;">${state.totalVideosOpened}</span></div>
         </div>
       </div>
+      
+      <div style="border-top: 1px solid #555; padding-top: 12px; margin-bottom: 12px;">
+        <label style="display: flex; align-items: center; cursor: pointer; font-size: 13px;">
+          <input type="checkbox" id="missav-open-videos-toggle" ${openVideosChecked} style="margin-right: 8px;">
+          <span>Open Video Tabs</span>
+        </label>
+        <div style="font-size: 11px; color: #aaa; margin-left: 24px; margin-top: 4px;">
+          Uncheck to only scan pages first
+        </div>
+      </div>
+
       <div style="border-top: 1px solid #555; padding-top: 12px;">
         <button id="missav-toggle-btn" style="
           background: ${buttonBg};
@@ -131,35 +139,30 @@
           font-size: 14px;
           font-weight: bold;
           width: 100%;
-          margin-bottom: 10px;
           transition: background 0.2s;
         ">${buttonText}</button>
-        <div style="font-size: 11px; color: #aaa; text-align: center;">
-          Click button or extension icon to toggle
-        </div>
       </div>
     `;
 
-    // Add button handler
-    const toggleBtn = document.getElementById("missav-toggle-btn");
-    if (toggleBtn) {
-      toggleBtn.addEventListener("click", (e) => {
+    document
+      .getElementById("missav-toggle-btn")
+      .addEventListener("click", (e) => {
         e.preventDefault();
-        e.stopPropagation();
-        console.log("Toggle button clicked");
+        console.log(`${LOG_PREFIX} Toggle button clicked`);
         chrome.runtime.sendMessage({ action: "toggleState" });
       });
-    }
 
-    console.log("Panel content updated");
-  }
-
-  function hidePanel() {
-    if (panelElement) {
-      panelElement.remove();
-      panelElement = null;
-      console.log("Panel hidden");
-    }
+    document
+      .getElementById("missav-open-videos-toggle")
+      .addEventListener("change", (e) => {
+        console.log(
+          `${LOG_PREFIX} Settings changed: Open Videos = ${e.target.checked}`,
+        );
+        chrome.runtime.sendMessage({
+          action: "updateSettings",
+          updates: { openVideos: e.target.checked },
+        });
+      });
   }
 
   function showNotification(message, duration = 3000) {
@@ -174,233 +177,120 @@
       border-radius: 5px !important;
       z-index: 2147483647 !important;
       font-family: Arial, Helvetica, sans-serif !important;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.3) !important;
-      max-width: 400px !important;
-      display: block !important;
     `;
     notif.textContent = message;
     document.body.appendChild(notif);
-
-    setTimeout(() => {
-      if (notif.parentNode) {
-        notif.remove();
-      }
-    }, duration);
+    setTimeout(() => notif.remove(), duration);
   }
 
-  async function processCurrentPage() {
-    // Get current state
-    const response = await new Promise((resolve) => {
-      chrome.runtime.sendMessage({ action: "getProcessingState" }, (resp) => {
-        if (chrome.runtime.lastError) {
-          console.error("Message error:", chrome.runtime.lastError);
-          resolve(null);
-        } else {
-          resolve(resp);
-        }
-      });
-    });
-
-    if (!response) {
-      console.log("Failed to get processing state");
-      return;
-    }
-
-    const state = response.state;
-
-    if (!state.isRunning || state.shouldStop) {
-      console.log("Not running or should stop");
-      return;
-    }
-
-    // Parse current page from URL
-    const urlMatch = window.location.href.match(
-      /\/en\/search\/([a-zA-Z0-9]+)-\?page=(\d+)/,
+  async function initializeBatchProcess(code, startPage) {
+    console.log(
+      `${LOG_PREFIX} Initializing batch process for code: ${code}, start page: ${startPage}`,
     );
-    if (!urlMatch) {
-      console.log("Not on a search page");
-      return;
+    const totalPages = getTotalPagesFromDom();
+
+    if (totalPages === 0) {
+      showNotification("Could not detect total pages. Defaulting to 50.");
+      console.warn(
+        `${LOG_PREFIX} Could not detect total pages, defaulting to 50`,
+      );
     }
 
-    const code = urlMatch[1];
-    const pageNum = parseInt(urlMatch[2]);
+    const limit = totalPages > 0 ? totalPages : 50;
+    const pageUrls = [];
+    const baseUrl = `https://missav.ws/en/search/${code}-`;
 
-    console.log(`Processing page ${pageNum} for code: ${code}`);
-
-    // Update panel
-    updatePanelContent({ ...state, code, currentPage: pageNum });
-
-    // Extract video URLs
-    const videoUrls = extractVideoUrls(code);
-
-    if (videoUrls.length === 0) {
-      console.log(`No videos found on page ${pageNum}`);
-      showNotification(`No videos found on page ${pageNum}`, 2000);
-
-      // Check if there's a next page
-      const nextPageUrl = getNextPageUrl(pageNum);
-      if (nextPageUrl) {
-        console.log(`Next page available: ${nextPageUrl}`);
-        showNotification("Moving to next page...", 1500);
-
-        // Navigate to next page
-        chrome.runtime.sendMessage({
-          action: "navigateToNextPage",
-          nextPageUrl: nextPageUrl,
-          code: code,
-          pageNum: pageNum + 1,
-          state: state,
-        });
-      } else {
-        console.log("No more pages available");
-        showNotification("All pages processed!", 3000);
-        setTimeout(() => {
-          hidePanel();
-          chrome.runtime.sendMessage({ action: "processingComplete" });
-        }, 3000);
-      }
-
-      return;
+    for (let i = 1; i <= limit; i++) {
+      pageUrls.push(`${baseUrl}?page=${i}`);
     }
 
-    console.log(`Found ${videoUrls.length} videos on page ${pageNum}`);
-    showNotification(`Found ${videoUrls.length} videos. Opening...`, 2000);
+    console.log(
+      `${LOG_PREFIX} Generated ${pageUrls.length} page URLs. Sending to background...`,
+    );
 
-    // Send URLs to background script to open
+    // Send page queue
     chrome.runtime.sendMessage(
       {
-        action: "openVideos",
-        urls: videoUrls,
-        code: code,
-        pageNum: pageNum,
-        state: state,
+        action: "setPageQueue",
+        pageUrls: pageUrls,
+        totalPages: totalPages,
       },
       (response) => {
         if (chrome.runtime.lastError) {
-          console.error("Failed to send message:", chrome.runtime.lastError);
-          showNotification("Error opening videos");
-          hidePanel();
-          chrome.runtime.sendMessage({ action: "processingComplete" });
+          console.error(
+            `${LOG_PREFIX} Failed to send page queue:`,
+            chrome.runtime.lastError,
+          );
         } else {
-          console.log(`Successfully opened ${videoUrls.length} videos`);
-
-          // Check if there's a next page
-          const nextPageUrl = getNextPageUrl(pageNum);
-          if (nextPageUrl) {
-            console.log(`Next page available: ${nextPageUrl}`);
-            showNotification("Moving to next page in 2 seconds...", 2000);
-
-            // Navigate to next page after delay
-            setTimeout(() => {
-              chrome.runtime.sendMessage({
-                action: "navigateToNextPage",
-                nextPageUrl: nextPageUrl,
-                code: code,
-                pageNum: pageNum + 1,
-                state: state,
-              });
-            }, 2000);
-          } else {
-            console.log("No more pages available");
-            showNotification("All pages processed!", 3000);
-            setTimeout(() => {
-              hidePanel();
-              chrome.runtime.sendMessage({ action: "processingComplete" });
-            }, 3000);
-          }
+          console.log(`${LOG_PREFIX} Page queue sent successfully`);
         }
       },
     );
+
+    // Process the CURRENT page immediately
+    const videoUrls = extractVideoUrls(code);
+    chrome.runtime.sendMessage({
+      action: "extractedVideos",
+      urls: videoUrls,
+      pageNum: startPage,
+    });
   }
 
-  // Listen for messages from background script
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.action === "showNotification") {
       showNotification(message.message);
       sendResponse({ success: true });
-    } else if (message.action === "updatePanel") {
-      updatePanelContent(message.state);
+    } else if (
+      message.action === "updatePanel" ||
+      message.action === "forceShowPanel"
+    ) {
+      console.log(`${LOG_PREFIX} Received panel update request`);
+      if (message.action === "forceShowPanel" || !panelElement) {
+        createPanel(message.state);
+      } else {
+        updatePanelContent(message.state);
+      }
       sendResponse({ success: true });
-    } else if (message.action === "startProcessing") {
-      const { code, pageNum, tabId, state } = message;
-
-      console.log(`Starting processing for page ${pageNum}, code: ${code}`);
-
-      // Create/update panel
-      createPanel(state);
-
-      // Process current page
-      processCurrentPage();
-
-      sendResponse({ success: true });
-    } else if (message.action === "toggleState") {
-      // This will be handled by clicking the extension icon
-      // Just provide visual feedback
-      showNotification("Click extension icon to toggle");
+    } else if (message.action === "initializeBatchProcess") {
+      createPanel(message.state);
+      initializeBatchProcess(message.code, message.pageNum);
       sendResponse({ success: true });
     }
 
     return true;
   });
 
-  // Auto-detect running state when page loads
-  function initOnLoad() {
-    console.log("Initializing on page load...");
-
-    // Check if body exists
-    if (!document.body) {
-      console.log("Body not ready, retrying...");
-      setTimeout(initOnLoad, 100);
-      return;
-    }
-
+  window.addEventListener("load", () => {
     setTimeout(async () => {
-      try {
-        const response = await new Promise((resolve) => {
-          chrome.runtime.sendMessage(
-            { action: "getProcessingState" },
-            (resp) => {
-              if (chrome.runtime.lastError) {
-                console.error("Message error:", chrome.runtime.lastError);
-                resolve(null);
-              } else {
-                resolve(resp);
-              }
-            },
+      console.log(`${LOG_PREFIX} Page loaded, checking state...`);
+      const response = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: "getProcessingState" }, resolve);
+      });
+
+      if (response && response.state && response.state.isRunning) {
+        console.log(`${LOG_PREFIX} Detected running state. Showing panel.`);
+        createPanel(response.state);
+
+        const urlMatch = window.location.href.match(
+          /\/en\/search\/([a-zA-Z0-9]+)-\?page=(\d+)/,
+        );
+        if (urlMatch) {
+          const code = urlMatch[1];
+          const pageNum = parseInt(urlMatch[2]);
+
+          console.log(
+            `${LOG_PREFIX} Extracting videos from current page ${pageNum} as part of batch...`,
           );
-        });
-
-        if (!response) {
-          console.log("Failed to get state on load");
-          return;
+          const videoUrls = extractVideoUrls(code);
+          chrome.runtime.sendMessage({
+            action: "extractedVideos",
+            urls: videoUrls,
+            pageNum: pageNum,
+          });
         }
-
-        const state = response.state;
-
-        // If running, show panel and process
-        if (state.isRunning && !state.shouldStop) {
-          console.log("Detected running state on page load");
-          createPanel(state);
-
-          // Small delay to ensure page is fully loaded
-          setTimeout(() => {
-            processCurrentPage();
-          }, 1000);
-        } else {
-          console.log("Not in running state");
-        }
-      } catch (e) {
-        console.error("Error during initialization:", e);
+      } else {
+        console.log(`${LOG_PREFIX} Not in running state`);
       }
     }, 500);
-  }
-
-  // Initialize when DOM is ready
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", initOnLoad);
-  } else {
-    initOnLoad();
-  }
-
-  console.log("MissAV Video Opener extension loaded");
+  });
 })();
