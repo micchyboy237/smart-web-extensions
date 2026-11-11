@@ -211,17 +211,25 @@ async function handleMessage(message, sender, sendResponse) {
       sendResponse({ success: true, isRunning: false });
     } else {
       const url = sender.tab ? sender.tab.url : "";
+      // Updated Regex to handle optional ?page=1
       const searchMatch = url.match(
-        /\/en\/search\/([a-zA-Z0-9]+)-\?page=(\d+)/,
+        /\/en\/search\/([a-zA-Z0-9]+)-(\?page=(\d+))?/,
       );
+
       if (!searchMatch) {
-        console.warn(`${LOG_PREFIX} Cannot start: Not on a valid search page`);
+        console.warn(
+          `${LOG_PREFIX} Cannot start: Not on a valid search page. URL: ${url}`,
+        );
         sendResponse({ success: false, error: "Not on search page" });
         return;
       }
 
+      const code = searchMatch[1];
+      // Default to page 1 if parameter is missing
+      const pageNum = searchMatch[3] ? parseInt(searchMatch[3]) : 1;
+
       console.log(
-        `${LOG_PREFIX} STARTING processing for code: ${searchMatch[1]}, page: ${searchMatch[2]}`,
+        `${LOG_PREFIX} STARTING processing for code: ${code}, page: ${pageNum}`,
       );
 
       localActiveTabCount = 0;
@@ -229,8 +237,8 @@ async function handleMessage(message, sender, sendResponse) {
       state = {
         ...DEFAULT_STATE,
         isRunning: true,
-        code: searchMatch[1],
-        currentPage: parseInt(searchMatch[2]),
+        code: code,
+        currentPage: pageNum,
         shouldStop: false,
         openVideos: state.openVideos,
       };

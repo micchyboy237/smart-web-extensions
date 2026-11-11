@@ -272,11 +272,11 @@
         createPanel(response.state);
 
         const urlMatch = window.location.href.match(
-          /\/en\/search\/([a-zA-Z0-9]+)-\?page=(\d+)/,
+          /\/en\/search\/([a-zA-Z0-9]+)-(\?page=(\d+))?/,
         );
         if (urlMatch) {
           const code = urlMatch[1];
-          const pageNum = parseInt(urlMatch[2]);
+          const pageNum = urlMatch[3] ? parseInt(urlMatch[3]) : 1;
 
           console.log(
             `${LOG_PREFIX} Extracting videos from current page ${pageNum} as part of batch...`,
