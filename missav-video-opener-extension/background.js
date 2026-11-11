@@ -1,29 +1,37 @@
 // background.js
-let processingState = {
-  isProcessing: false,
+const DEFAULT_STATE = {
+  isRunning: false,
   code: null,
   currentPage: 0,
   totalVideosOpened: 0,
   totalPagesProcessed: 0,
   shouldStop: false,
+  autoCloseTabs: true,
+  jsWaitTime: 5000,
+  pageDelay: 2000,
+  tabOpenDelay: 200,
 };
 
-// Initialize processing state from storage
-chrome.storage.local.get(["processingState"], (result) => {
-  if (result.processingState) {
-    processingState = result.processingState;
-  }
-});
+// Get processing state from storage
+async function getProcessingState() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["processingState"], (result) => {
+      resolve(result.processingState || { ...DEFAULT_STATE });
+    });
+  });
+}
 
 // Save processing state to storage
-function saveProcessingState() {
-  chrome.storage.local.set({ processingState });
+async function saveProcessingState(state) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ processingState: state }, resolve);
+  });
 }
 
 // Update toolbar badge with progress
-function updateBadge() {
-  if (processingState.isProcessing) {
-    const text = `${processingState.totalVideosOpened}`;
+function updateBadge(state) {
+  if (state.isRunning) {
+    const text = `${state.totalVideosOpened}`;
     chrome.action.setBadgeText({ text });
     chrome.action.setBadgeBackgroundColor({ color: "#4CAF50" });
   } else {
@@ -31,141 +39,190 @@ function updateBadge() {
   }
 }
 
-// Listen for toolbar button click
+// Initialize badge on startup
+chrome.runtime.onStartup.addListener(async () => {
+  const state = await getProcessingState();
+  updateBadge(state);
+});
+
+chrome.runtime.onInstalled.addListener(async () => {
+  const state = await getProcessingState();
+  updateBadge(state);
+});
+
+// Listen for toolbar button click - toggles running state
 chrome.action.onClicked.addListener(async (tab) => {
-  // Check if we're on a missav search page
   const url = tab.url;
   const searchMatch = url.match(/\/en\/search\/([a-zA-Z0-9]+)-\?page=(\d+)/);
 
   if (!searchMatch) {
-    console.log("Not on a missav search page");
     chrome.tabs
       .sendMessage(tab.id, {
         action: "showNotification",
-        message:
-          "Please navigate to a missav search page first (e.g., https://missav.ws/en/search/wnz-?page=1)",
+        message: "Please navigate to a missav search page first",
       })
-      .catch(() => {
-        console.log("Content script not available");
-      });
+      .catch(() => {});
     return;
   }
 
-  const code = searchMatch[1];
-  const pageNum = parseInt(searchMatch[2]);
+  let state = await getProcessingState();
 
-  // If already processing, this click will stop it
-  if (processingState.isProcessing) {
+  // Toggle running state
+  if (state.isRunning) {
+    // Stop
     console.log("Stopping processing...");
-    processingState.shouldStop = true;
-    processingState.isProcessing = false;
-    saveProcessingState();
-    updateBadge();
+    state.isRunning = false;
+    state.shouldStop = true;
+    await saveProcessingState(state);
+    updateBadge(state);
 
     chrome.tabs
       .sendMessage(tab.id, {
-        action: "showNotification",
-        message: `Stopped! Processed ${processingState.totalPagesProcessed} pages, opened ${processingState.totalVideosOpened} videos.`,
+        action: "updatePanel",
+        state: state,
       })
       .catch(() => {});
 
-    return;
-  }
+    chrome.tabs
+      .sendMessage(tab.id, {
+        action: "showNotification",
+        message: `Stopped! Processed ${state.totalPagesProcessed} pages, opened ${state.totalVideosOpened} videos.`,
+      })
+      .catch(() => {});
+  } else {
+    // Start
+    const code = searchMatch[1];
+    const pageNum = parseInt(searchMatch[2]);
 
-  // Start new processing
-  console.log(`Starting processing for code: ${code}, page: ${pageNum}`);
+    console.log(`Starting processing for code: ${code}, page: ${pageNum}`);
 
-  processingState = {
-    isProcessing: true,
-    code: code,
-    currentPage: pageNum,
-    totalVideosOpened: 0,
-    totalPagesProcessed: 0,
-    shouldStop: false,
-  };
-  saveProcessingState();
-  updateBadge();
-
-  try {
-    await chrome.tabs.sendMessage(tab.id, {
-      action: "startProcessing",
+    state = {
+      ...DEFAULT_STATE,
+      isRunning: true,
       code: code,
-      pageNum: pageNum,
-      tabId: tab.id,
-    });
-  } catch (e) {
-    console.error("Failed to send message to content script:", e);
-    processingState.isProcessing = false;
-    saveProcessingState();
-    updateBadge();
+      currentPage: pageNum,
+      shouldStop: false,
+    };
+    await saveProcessingState(state);
+    updateBadge(state);
+
+    chrome.tabs
+      .sendMessage(tab.id, {
+        action: "startProcessing",
+        code: code,
+        pageNum: pageNum,
+        tabId: tab.id,
+        state: state,
+      })
+      .catch((e) => {
+        console.error("Failed to send message:", e);
+      });
   }
 });
 
 // Listen for messages from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  handleMessage(message, sender, sendResponse);
+  return true;
+});
+
+async function handleMessage(message, sender, sendResponse) {
   if (message.action === "openVideos") {
-    const { urls, code, pageNum } = message;
+    const { urls, code, pageNum, state: currentState } = message;
 
     console.log(
       `Opening ${urls.length} videos from page ${pageNum} for code: ${code}`,
     );
 
     // Update state
-    processingState.totalVideosOpened += urls.length;
-    processingState.totalPagesProcessed += 1;
-    saveProcessingState();
-    updateBadge();
+    currentState.totalVideosOpened += urls.length;
+    currentState.totalPagesProcessed += 1;
+    await saveProcessingState(currentState);
+    updateBadge(currentState);
+
+    // Notify content script to update panel
+    chrome.tabs
+      .sendMessage(sender.tab.id, {
+        action: "updatePanel",
+        state: currentState,
+      })
+      .catch(() => {});
 
     // Open each video URL in a new tab
-    urls.forEach((url, index) => {
-      setTimeout(() => {
-        // Check if should stop
-        if (processingState.shouldStop) {
-          console.log("Stop requested, skipping remaining videos");
-          return;
-        }
+    const openedTabIds = [];
 
-        chrome.tabs.create(
-          {
-            url: url,
-            active: false,
-            index: sender.tab.index + 1,
-          },
-          (tab) => {
-            if (chrome.runtime.lastError) {
-              console.error("Failed to create tab:", chrome.runtime.lastError);
-              return;
-            }
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
 
-            console.log(`Opened video ${index + 1}/${urls.length}: ${url}`);
+      // Check if should stop
+      const currentState = await getProcessingState();
+      if (currentState.shouldStop || !currentState.isRunning) {
+        console.log("Stop requested, skipping remaining videos");
+        break;
+      }
 
-            // Wait for JS to load (5 seconds)
+      // Delay between opening tabs
+      await new Promise((resolve) =>
+        setTimeout(resolve, currentState.tabOpenDelay),
+      );
+
+      chrome.tabs.create(
+        {
+          url: url,
+          active: false,
+          index: sender.tab.index + 1,
+        },
+        (tab) => {
+          if (chrome.runtime.lastError) {
+            console.error("Failed to create tab:", chrome.runtime.lastError);
+            return;
+          }
+
+          openedTabIds.push(tab.id);
+          console.log(`Opened video ${i + 1}/${urls.length}: ${url}`);
+
+          // Wait for JS to load, then close tab if autoCloseTabs is enabled
+          if (currentState.autoCloseTabs) {
+            setTimeout(() => {
+              console.log(`JS loaded for: ${url}, closing tab`);
+              chrome.tabs.remove(tab.id).catch((err) => {
+                console.error("Failed to close tab:", err);
+              });
+            }, currentState.jsWaitTime);
+          } else {
             setTimeout(() => {
               console.log(`JS loaded for: ${url}`);
-              // Optionally close the tab after waiting
-              // chrome.tabs.remove(tab.id);
-            }, 5000);
-          },
-        );
-      }, index * 200);
-    });
+            }, currentState.jsWaitTime);
+          }
+        },
+      );
+    }
 
-    sendResponse({ success: true });
+    sendResponse({ success: true, openedTabs: openedTabIds });
   } else if (message.action === "processingComplete") {
     console.log("Processing complete");
-    processingState.isProcessing = false;
-    saveProcessingState();
-    updateBadge();
+    let state = await getProcessingState();
+    state.isRunning = false;
+    await saveProcessingState(state);
+    updateBadge(state);
+
+    chrome.tabs
+      .sendMessage(sender.tab.id, {
+        action: "updatePanel",
+        state: state,
+      })
+      .catch(() => {});
+
     sendResponse({ success: true });
   } else if (message.action === "navigateToNextPage") {
-    const { nextPageUrl, code, pageNum } = message;
+    const { nextPageUrl, code, pageNum, state: currentState } = message;
 
     // Check if should stop
-    if (processingState.shouldStop) {
+    if (currentState.shouldStop || !currentState.isRunning) {
       console.log("Stop requested, not navigating to next page");
-      processingState.isProcessing = false;
-      saveProcessingState();
-      updateBadge();
+      currentState.isRunning = false;
+      await saveProcessingState(currentState);
+      updateBadge(currentState);
       sendResponse({ success: false, stopped: true });
       return;
     }
@@ -173,8 +230,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log(`Navigating to next page: ${nextPageUrl}`);
 
     // Update current page in state
-    processingState.currentPage = pageNum;
-    saveProcessingState();
+    currentState.currentPage = pageNum;
+    await saveProcessingState(currentState);
+
+    // Delay before navigating to next page
+    await new Promise((resolve) => setTimeout(resolve, currentState.pageDelay));
+
+    // Check again if should stop
+    const updatedState = await getProcessingState();
+    if (updatedState.shouldStop || !updatedState.isRunning) {
+      console.log("Stop requested during delay");
+      updatedState.isRunning = false;
+      await saveProcessingState(updatedState);
+      updateBadge(updatedState);
+      sendResponse({ success: false, stopped: true });
+      return;
+    }
 
     // Update the current tab to the next page
     chrome.tabs.update(
@@ -185,47 +256,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       () => {
         if (chrome.runtime.lastError) {
           console.error("Failed to navigate:", chrome.runtime.lastError);
-          processingState.isProcessing = false;
-          saveProcessingState();
-          updateBadge();
+          getProcessingState().then((state) => {
+            state.isRunning = false;
+            saveProcessingState(state);
+            updateBadge(state);
+          });
           return;
         }
 
-        // Wait for page to load, then continue processing
-        setTimeout(() => {
-          // Check again if should stop
-          if (processingState.shouldStop) {
-            console.log("Stop requested during navigation wait");
-            processingState.isProcessing = false;
-            saveProcessingState();
-            updateBadge();
-            return;
-          }
-
-          chrome.tabs
-            .sendMessage(sender.tab.id, {
-              action: "startProcessing",
-              code: code,
-              pageNum: pageNum,
-              tabId: sender.tab.id,
-            })
-            .catch((e) => {
-              console.error("Failed to send message after navigation:", e);
-              processingState.isProcessing = false;
-              saveProcessingState();
-              updateBadge();
-            });
-        }, 2000);
+        // Page will reload and content script will auto-detect running state
       },
     );
 
     sendResponse({ success: true });
   } else if (message.action === "getProcessingState") {
-    sendResponse({ state: processingState });
+    const state = await getProcessingState();
+    sendResponse({ state });
+  } else if (message.action === "updateState") {
+    const { updates } = message;
+    let state = await getProcessingState();
+    state = { ...state, ...updates };
+    await saveProcessingState(state);
+    updateBadge(state);
+    sendResponse({ success: true, state });
   }
-
-  return true;
-});
-
-// Update badge on extension load
-updateBadge();
+}
