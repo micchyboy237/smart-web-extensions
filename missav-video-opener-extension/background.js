@@ -12,6 +12,9 @@ const DEFAULT_STATE = {
   tabOpenDelay: 200,
 };
 
+// Track tabs that are waiting to be closed
+const pendingTabCloses = new Map(); // Map<tabId, {url, createdAt}>
+
 // Get processing state from storage
 async function getProcessingState() {
   return new Promise((resolve) => {
@@ -48,6 +51,28 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.runtime.onInstalled.addListener(async () => {
   const state = await getProcessingState();
   updateBadge(state);
+});
+
+// Listen for tab updates to detect when pages finish loading
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // Check if this tab is pending closure
+  if (pendingTabCloses.has(tabId)) {
+    const pendingInfo = pendingTabCloses.get(tabId);
+
+    // Check if tab has finished loading
+    if (changeInfo.status === "complete") {
+      console.log(`Tab ${tabId} finished loading: ${pendingInfo.url}`);
+
+      // Wait additional time for JS to execute
+      setTimeout(() => {
+        console.log(`Closing tab ${tabId} after JS wait`);
+        chrome.tabs.remove(tabId).catch((err) => {
+          console.error("Failed to close tab:", err);
+        });
+        pendingTabCloses.delete(tabId);
+      }, pendingInfo.waitTime);
+    }
+  }
 });
 
 // Listen for toolbar button click - toggles running state
@@ -149,8 +174,6 @@ async function handleMessage(message, sender, sendResponse) {
       .catch(() => {});
 
     // Open each video URL in a new tab
-    const openedTabIds = [];
-
     for (let i = 0; i < urls.length; i++) {
       const url = urls[i];
 
@@ -178,27 +201,24 @@ async function handleMessage(message, sender, sendResponse) {
             return;
           }
 
-          openedTabIds.push(tab.id);
           console.log(`Opened video ${i + 1}/${urls.length}: ${url}`);
 
-          // Wait for JS to load, then close tab if autoCloseTabs is enabled
+          // If autoCloseTabs is enabled, mark this tab for closing after it loads
           if (currentState.autoCloseTabs) {
-            setTimeout(() => {
-              console.log(`JS loaded for: ${url}, closing tab`);
-              chrome.tabs.remove(tab.id).catch((err) => {
-                console.error("Failed to close tab:", err);
-              });
-            }, currentState.jsWaitTime);
-          } else {
-            setTimeout(() => {
-              console.log(`JS loaded for: ${url}`);
-            }, currentState.jsWaitTime);
+            pendingTabCloses.set(tab.id, {
+              url: url,
+              createdAt: Date.now(),
+              waitTime: currentState.jsWaitTime,
+            });
+            console.log(
+              `Tab ${tab.id} marked for auto-close after load + ${currentState.jsWaitTime}ms`,
+            );
           }
         },
       );
     }
 
-    sendResponse({ success: true, openedTabs: openedTabIds });
+    sendResponse({ success: true });
   } else if (message.action === "processingComplete") {
     console.log("Processing complete");
     let state = await getProcessingState();
@@ -281,3 +301,16 @@ async function handleMessage(message, sender, sendResponse) {
     sendResponse({ success: true, state });
   }
 }
+
+// Cleanup: Remove old pending tabs periodically
+setInterval(() => {
+  const now = Date.now();
+  const maxAge = 60000; // 1 minute
+
+  for (const [tabId, info] of pendingTabCloses.entries()) {
+    if (now - info.createdAt > maxAge) {
+      console.log(`Removing stale pending tab ${tabId}`);
+      pendingTabCloses.delete(tabId);
+    }
+  }
+}, 30000); // Check every 30 seconds
