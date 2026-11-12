@@ -1,63 +1,59 @@
-# Jet_Apps/web-extensions/smart-web-extensions/missav-extension/server/models/video.py
-"""Public API contracts for the videos router (request/response payloads).
-Kept separate from models/chroma.py, which describes raw repository
-shapes. These models describe what clients (the browser extension,
-API consumers) actually send and receive.
-"""
+"""Public API contracts for the videos router."""
 
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class VideoIngestItem(BaseModel):
     """A single video as sent by the browser extension for ingestion."""
 
-    model_config = ConfigDict(populate_by_name=True)
-    id: Optional[str] = Field(default=None, description="Unique video identifier")
-    url: Optional[str] = Field(default=None, description="Source page URL")
-    text: Optional[str] = Field(default=None, description="Raw title/alt text")
-    code: Optional[str] = Field(
-        default=None, description="Extracted JAV code, e.g. 'abp'"
+    model_config = {"populate_by_name": True}
+
+    id: Optional[str] = Field(default=None)
+    url: Optional[str] = Field(default=None)
+    title: Optional[str] = Field(default=None, alias="text")
+    code: Optional[str] = Field(default=None)
+    episode: Optional[str] = Field(default=None)
+    video_id: Optional[str] = Field(default=None, alias="videoId")
+    thumbnail: Optional[str] = Field(default=None)
+    preview: Optional[str] = Field(default=None)
+    details: Optional[str] = Field(default=None)
+    release_date: Optional[str] = Field(default=None, alias="releaseDate")
+    genres: Optional[List[str]] = Field(default=None)
+
+    @field_validator("url", "code", "episode", "video_id", mode="before")
+    @classmethod
+    def require_non_empty(cls, v):
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
+    @field_validator(
+        "title", "thumbnail", "preview", "details", "release_date", mode="before"
     )
-    episode: Optional[str] = Field(default=None, description="Episode number, if any")
-    video_id: Optional[str] = Field(
-        default=None, alias="videoId", description="Site-specific video ID"
-    )
-    thumbnail: Optional[str] = Field(default=None, description="Thumbnail image URL")
-    preview: Optional[str] = Field(default=None, description="Preview video/gif URL")
-    details: Optional[str] = Field(
-        default=None, description="Video description/details text for semantic context"
-    )
-    release_date: Optional[str] = Field(
-        default=None,
-        alias="releaseDate",
-        description="ISO 8601 release date/time string",
-    )
-    genres: Optional[List[str]] = Field(
-        default=None,
-        description="List of genre strings associated with the video",
-    )
+    @classmethod
+    def clean_optional(cls, v):
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
 
 class VideoBatchIngest(BaseModel):
-    """Request body for POST /api/videos/ingest."""
-
-    source: str = Field(description="Origin of this batch, e.g. 'missav-extension'")
+    source: str
     videos: List[VideoIngestItem] = Field(default_factory=list)
 
 
 class VideoSummary(BaseModel):
-    """Lightweight video representation used across list/group responses."""
-
     id: str
-    document: str
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    title: Optional[str] = None
+    url: Optional[str] = None
+    code: Optional[str] = None
+    episode: Optional[str] = None
+    thumbnail: Optional[str] = None
 
 
 class VideoListResponse(BaseModel):
-    """Response body for GET /api/videos."""
-
     total: int = 0
     limit: int = 0
     offset: int = 0
@@ -65,24 +61,13 @@ class VideoListResponse(BaseModel):
 
 
 class VideosByIdsResponse(BaseModel):
-    """Response body for POST /api/videos/by-ids."""
-
     requested: int = 0
     found: int = 0
     missing: List[str] = Field(default_factory=list)
     videos: List[VideoSummary] = Field(default_factory=list)
 
 
-class VideoCountResponse(BaseModel):
-    """Response body for GET /api/videos/count."""
-
-    count: int = 0
-    timestamp: float = 0.0
-
-
 class IngestResponse(BaseModel):
-    """Response body for POST /api/videos/ingest."""
-
     success: bool
     ingested: int = 0
     total: int = 0
@@ -90,31 +75,23 @@ class IngestResponse(BaseModel):
 
 
 class CodeSummary(BaseModel):
-    """One code and its video count, as returned by GET /api/videos/codes."""
-
     code: str
     count: int
 
 
 class CodesResponse(BaseModel):
-    """Response body for GET /api/videos/codes."""
-
     code_count: int = 0
     total_videos: int = 0
     codes: List[CodeSummary] = Field(default_factory=list)
 
 
 class VideoGroup(BaseModel):
-    """All videos sharing a single code."""
-
     code: str
     count: int
     videos: List[VideoSummary] = Field(default_factory=list)
 
 
 class GroupedVideosResponse(BaseModel):
-    """Response body for GET /api/videos/grouped-by-code."""
-
     group_count: int = 0
     total_videos: int = 0
     limit: int = 0

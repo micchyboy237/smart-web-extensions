@@ -81,12 +81,14 @@ class ChromaVideoService:
             f"🔍 [ChromaService] Fetching {len(unique_ids)} videos by ids: "
             f"{unique_ids[:5]}{'...' if len(unique_ids) > 5 else ''}"
         )
+
         start_time = time.time()
         page = self.repository.get_by_ids(unique_ids)
         videos = [
             {"id": r.id, "document": r.document, "metadata": r.metadata}
             for r in page.records
         ]
+
         found_ids = {r.id for r in page.records}
         missing = [vid for vid in unique_ids if vid not in found_ids]
         if missing:
@@ -94,6 +96,7 @@ class ChromaVideoService:
                 f"⚠️ [ChromaService] {len(missing)} IDs not found: {missing[:10]}"
                 f"{'...' if len(missing) > 10 else ''}"
             )
+
         elapsed = (time.time() - start_time) * 1000
         logger.info(
             f"✅ [ChromaService] Found {len(videos)}/{len(unique_ids)} videos "
@@ -109,30 +112,19 @@ class ChromaVideoService:
     ) -> dict:
         """
         Get all videos with pagination and optional metadata filtering.
-        ChromaDB doesn't have a native "get all" with offset, so we use
-        collection.get() which returns all items when no filters are given,
-        then slice manually. For very large collections, consider using
-        the where filter to narrow results.
-        Args:
-            limit: Max results to return (None = all videos, max 1000 if provided).
-            offset: Number of results to skip (for pagination)
-            where: Optional metadata filter (ChromaDB where clause)
-        Returns:
-            dict with keys:
-            - videos: list of {id, document, metadata} dicts
-            - total: total count matching the filter
-            - limit: requested limit (or total count if None)
-            - offset: requested offset
         """
         logger.info(
             f"📋 [ChromaService] Getting videos (limit={limit}, offset={offset})"
         )
         start_time = time.time()
+
         if limit is not None:
             limit = min(limit, 1000)
 
+        # Repository now handles chunking internally
         page = self.repository.get_all(where=where)
         total = page.total
+
         if limit is not None:
             slice_end = offset + limit
             records_slice = page.records[offset:slice_end]
@@ -143,6 +135,7 @@ class ChromaVideoService:
             {"id": r.id, "document": r.document, "metadata": r.metadata}
             for r in records_slice
         ]
+
         elapsed = (time.time() - start_time) * 1000
         actual_limit = limit if limit is not None else len(videos)
         logger.info(
@@ -164,13 +157,17 @@ class ChromaVideoService:
         """
         logger.info("🏷️ [ChromaService] Getting all codes")
         start_time = time.time()
+
+        # Repository now handles chunking internally
         counts = self.repository.get_all_codes()
+
         codes = [
             {"code": code, "count": count}
             for code, count in sorted(
                 counts.items(), key=lambda kv: kv[1], reverse=True
             )
         ]
+
         elapsed = (time.time() - start_time) * 1000
         logger.info(
             f"✅ [ChromaService] {len(codes)} unique codes, "
@@ -190,23 +187,16 @@ class ChromaVideoService:
     ) -> dict:
         """
         Group videos by their 'code' metadata field.
-        Args:
-            min_count: Only include codes with at least this many videos.
-            top_n: Max number of groups to return, ranked by count desc
-            (None = all groups that pass min_count).
-            limit_per_group: Max videos included per group's "videos" list
-            (the group's "count" still reflects the true total).
-        Returns:
-            dict: {groups: [{code, count, videos}, ...], group_count,
-            total_videos} — total_videos sums ALL codes passing
-            min_count, not just the returned top_n groups.
         """
         logger.info(
             f"🏷️ [ChromaService] Grouping videos by code "
             f"(min_count={min_count}, top_n={top_n}, limit_per_group={limit_per_group})"
         )
         start_time = time.time()
+
+        # Repository now handles chunking internally
         page = self.repository.get_all()
+
         buckets: dict[str, list] = {}
         for record in page.records:
             code = (record.metadata or {}).get("code")
@@ -216,6 +206,7 @@ class ChromaVideoService:
 
         filtered = {c: recs for c, recs in buckets.items() if len(recs) >= min_count}
         total_videos = sum(len(recs) for recs in filtered.values())
+
         sorted_codes = sorted(filtered.items(), key=lambda kv: len(kv[1]), reverse=True)
         if top_n is not None:
             sorted_codes = sorted_codes[:top_n]
@@ -231,6 +222,7 @@ class ChromaVideoService:
             }
             for code, records in sorted_codes
         ]
+
         elapsed = (time.time() - start_time) * 1000
         logger.info(
             f"✅ [ChromaService] {len(groups)} groups returned "
@@ -262,6 +254,7 @@ class ChromaVideoService:
             for v in videos
             if v.get("id") or v.get("videoId")
         ]
+
         existing_records_map = {}
         if all_ids:
             page = self.repository.get_by_ids(all_ids)
@@ -273,7 +266,6 @@ class ChromaVideoService:
             if not video_id:
                 continue
 
-            # Extract genres, ensuring it's a list
             raw_genres = video.get("genres")
             incoming_genres = raw_genres if isinstance(raw_genres, list) else []
 
@@ -292,11 +284,8 @@ class ChromaVideoService:
                 or "",
             }
 
-            # --- SMART MERGE LOGIC ---
             if video_id in existing_records_map:
                 old_meta = existing_records_map[video_id]
-
-                # 1. Merge simple text fields (keep old if new is empty)
                 for key in ["details", "release_date", "thumbnail", "preview", "text"]:
                     new_val = new_meta.get(key)
                     old_val = old_meta.get(key)
@@ -307,16 +296,11 @@ class ChromaVideoService:
                     ):
                         new_meta[key] = old_val
 
-                # 2. Merge Genres specifically
-                # If incoming genres are empty, but old meta has genres, keep the old ones.
                 if not incoming_genres and old_meta.get("genres"):
                     new_meta["genres"] = old_meta["genres"]
                 elif incoming_genres:
-                    # Only add to meta if we actually have new genres
                     new_meta["genres"] = incoming_genres
-
             else:
-                # New video: only add genres if they exist
                 if incoming_genres:
                     new_meta["genres"] = incoming_genres
 
@@ -352,34 +336,30 @@ class ChromaVideoService:
     ) -> list[dict]:
         """
         Semantic search with optional metadata filtering.
-        Args:
-            query: Search query
-            top_k: Number of results
-            where: Metadata filter (ChromaDB where clause)
-            where_document: Document content filter
-        Returns:
-            List of {id, score, document, metadata} dicts,
-            sorted by score descending (best match first).
         """
         start_time = time.time()
         query_prefix = llm_config.EMBED_QUERY_PREFIX or None
         logger.info(f"🧠 [ChromaService] Embedding query with prefix={query_prefix!r}")
+
         query_embedding = embed(
             query,
             return_format="list",
             prefix=query_prefix,
         )
+
         query_result = self.repository.query_by_embedding(
             query_embedding=query_embedding,
             n_results=top_k,
             where=where,
             where_document=where_document,
         )
+
         elapsed = (time.time() - start_time) * 1000
         logger.info(
             f"✅ [ChromaService] search completed in {elapsed:.2f}ms, "
             f"returned {len(query_result.matches)} results"
         )
+
         formatted = []
         for match in query_result.matches:
             similarity = 1 - (match.distance / 2)
@@ -422,11 +402,9 @@ class ChromaVideoService:
             parts.append(f"Episode: {video['episode']}")
         if video.get("videoId"):
             parts.append(f"ID: {video['videoId']}")
-        # Optionally add genres to document text for better semantic search
         genres = video.get("genres")
         if genres and isinstance(genres, list):
             parts.append(f"Genres: {', '.join(genres)}")
-
         return " | ".join(parts)
 
 
@@ -469,14 +447,10 @@ def search(
     """
     Semantic search with optional ID restriction, score filtering,
     diversity-aware result selection, and shuffle support.
-    Shuffle is now INDEPENDENT of diversity:
-    - If shuffle_seed is provided, shuffle activates regardless of diversity value
-    - Shuffle can work with diversity=0.0 (pure relevance)
-    - When both shuffle and diversity are active, shuffle samples first, then MMR diversifies
-    ...
     """
     diversity = max(0.0, min(1.0, diversity))
     is_shuffle = shuffle_seed is not None
+
     max_from_pool = len(candidate_ids) if candidate_ids else None
     effective_top_k = min(top_k, max_from_pool) if max_from_pool is not None else top_k
 
@@ -517,6 +491,7 @@ def search(
     fetch_k = (
         min(raw_fetch_k, max_from_pool) if max_from_pool is not None else raw_fetch_k
     )
+
     logger.info(
         f"🔍 [chroma_service] fetch_k={fetch_k} "
         f"(raw={raw_fetch_k}, max_from_pool={max_from_pool}, "
@@ -524,6 +499,7 @@ def search(
     )
 
     results = get_service().search(query, fetch_k, combined_where, where_document)
+
     logger.info(
         f"🔍 [chroma_service] ChromaDB returned {len(results)} results "
         f"(fetch_k={fetch_k})"
@@ -607,12 +583,6 @@ def _reorder_by_candidate_ids(
 ) -> list[dict]:
     """
     Reorder search results to match the order of candidate_ids.
-    Results not in candidate_ids are placed at the end, sorted by score descending.
-    Args:
-        results: Search results from ChromaDB (similarity-ordered)
-        candidate_ids: The desired order of IDs
-    Returns:
-        Results reordered to match candidate_ids order
     """
     results_by_id = {r["id"]: r for r in results}
     reordered = []
@@ -621,9 +591,11 @@ def _reorder_by_candidate_ids(
         if cid in results_by_id and cid not in seen_ids:
             reordered.append(results_by_id[cid])
             seen_ids.add(cid)
+
     remaining = [r for r in results if r["id"] not in seen_ids]
     remaining.sort(key=lambda r: r["score"], reverse=True)
     reordered.extend(remaining)
+
     logger.info(
         f"📋 [_reorder_by_candidate_ids] Reordered {len(reordered)} results: "
         f"{len(reordered) - len(remaining)} from candidate_ids + {len(remaining)} extra"
