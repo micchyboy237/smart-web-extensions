@@ -8,7 +8,7 @@ curl -X POST "http://localhost:8000/search/smart" \
      -d '{
            "mode": "semantic",
            "query": "summer beach vibes",
-           "limit": 5
+           "limit": 20
          }'
 ```
 
@@ -20,7 +20,7 @@ curl -X POST "http://localhost:8000/search/smart" \
      -d '{
            "mode": "semantic",
            "query": ["beach", "outdoor", "sun"],
-           "limit": 5
+           "limit": 20
          }'
 ```
 
@@ -33,7 +33,7 @@ curl -X POST "http://localhost:8000/search/smart" \
            "mode": "hybrid",
            "query": "SSIS-123 office lady",
            "keyword_weight": 0.7,
-           "limit": 5
+           "limit": 20
          }'
 ```
 
@@ -62,7 +62,7 @@ curl -X POST "http://localhost:8000/search/smart" \
            "mode": "diverse",
            "query": "action",
            "diversity_level": 0.6,
-           "limit": 5
+           "limit": 20
          }'
 ```
 
@@ -79,7 +79,7 @@ curl -X POST "http://localhost:8000/search/smart" \
              "has_thumbnail": true,
              "date_range": { "start": "2024-01-01T00:00:00Z" }
            },
-           "limit": 5
+           "limit": 20
          }'
 ```
 
