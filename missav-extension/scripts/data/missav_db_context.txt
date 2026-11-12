@@ -1,0 +1,124 @@
+================================================================================
+POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
+Generated: 2026-11-12T21:11:56.477977
+================================================================================
+
+## DATABASE OVERVIEW
+Available Schemas: public
+Target Schema: public
+Total Tables: 1
+Tables: videos
+
+## TABLE SCHEMAS
+--------------------------------------------------------------------------------
+
+### Table: public.videos (45284 rows)
+```sql
+CREATE TABLE "public"."videos" (
+    "id" text NOT NULL,
+    "embedding" vector(768) NULL,
+    "url" text NOT NULL,
+    "code" text NOT NULL,
+    "episode" text NOT NULL,
+    "video_id" text NOT NULL,
+    "title" text NULL,
+    "thumbnail" text NULL,
+    "preview" text NULL,
+    "details" text NULL,
+    "release_date" timestamp with time zone NULL,
+    "created_at" timestamp with time zone NULL DEFAULT now(),
+    "updated_at" timestamp with time zone NULL DEFAULT now(),
+    "genres" text[] NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: text [PK]
+- `embedding`: vector(768) (nullable)
+- `url`: text
+- `code`: text
+- `episode`: text
+- `video_id`: text
+- `title`: text (nullable)
+- `thumbnail`: text (nullable)
+- `preview`: text (nullable)
+- `details`: text (nullable)
+- `release_date`: timestamp with time zone (nullable)
+- `created_at`: timestamp with time zone (nullable)
+- `updated_at`: timestamp with time zone (nullable)
+- `genres`: text[] (nullable)
+
+**Indexes:**
+- `idx_videos_genres_gin`: CREATE INDEX idx_videos_genres_gin ON public.videos USING gin (genres)
+- `videos_embedding_cosine_hnsw_idx`: CREATE INDEX videos_embedding_cosine_hnsw_idx ON public.videos USING hnsw (embedding vector_cosine_ops)
+- `videos_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX videos_pkey ON public.videos USING btree (id)
+- `videos_title_fts_idx`: CREATE INDEX videos_title_fts_idx ON public.videos USING gin (to_tsvector('english'::regconfig, title))
+
+## COLUMN STATISTICS SUMMARY
+--------------------------------------------------------------------------------
+
+### Table: videos
+| Column | Type | Distinct Values | Null % |
+|--------|------|-----------------|--------|
+| `id` | text | 45284 | 0.0% |
+| `embedding` | vector(768) | 43184 | 0.0% |
+| `url` | text | 45284 | 0.0% |
+| `code` | text | 3199 | 0.0% |
+| `episode` | text | 3412 | 0.0% |
+| `video_id` | text | 45089 | 0.0% |
+| `title` | text | 40340 | 0.0% |
+| `thumbnail` | text | 45238 | 0.0% |
+| `preview` | text | 45238 | 0.0% |
+| `details` | text | 1898 | 95.09% |
+| `release_date` | timestamp with time zone | 1945 | 94.52% |
+| `created_at` | timestamp with time zone | 46 | 0.0% |
+| `updated_at` | timestamp with time zone | 46 | 0.0% |
+| `genres` | text[] | 1799 | 94.54% |
+
+## SAMPLE DATA
+--------------------------------------------------------------------------------
+
+### Table: videos (first 3 rows)
+| id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| jav-63v9uv | [0.026671855,0.045126542,-0.047170874,0.0030154632… | https://missav.ws/dm2/en/mdyd-948-english-subtitle | mdyd | 948 | mdyd-948-english-subtitle | Invitation of a mannequin Nanami Hirose | https://fourhoi.com/mdyd-948-english-subtitle/cove… | https://fourhoi.com/mdyd-948-english-subtitle/prev… | A shock runs to Nanami, a married woman who lived… | 2014-09-07 12:00:28+08 | 2026-11-12 13:11:18.760873+08 | 2026-11-12 13:11:18.760873+08 | {"English subtitle","Mature Woman",Wife,Individual… |
+| jav-1wxbsic | [0.07953843,0.058681436,-0.016839162,0.02315939,-0… | https://missav.ws/en/sprd-1245-english-subtitle | sprd | 1245 | sprd-1245-english-subtitle | Mother Fucking Creampie Mother Karasuma Madoka Fir… | https://fourhoi.com/sprd-1245-english-subtitle/cov… | https://fourhoi.com/sprd-1245-english-subtitle/pre… | After my father's funeral, I was too busy to go ho… | 2020-01-30 11:00:46+08 | 2026-11-12 13:11:18.760873+08 | 2026-11-12 13:11:18.760873+08 | {"English subtitle","Mature Woman",Mother,Incest,I… |
+| jav-9xlnmg | [0.0266506,0.019135771,-0.01263857,0.01504007,0.00… | https://missav.ws/dm80/en/mdyd-819 | mdyd | 819 | mdyd-819 | I was raped by my husband's best friend ● I felt l… | https://fourhoi.com/mdyd-819/cover-t.jpg | https://fourhoi.com/mdyd-819/preview.mp4 | Eriko, who lives with her husband, has the same af… | 2013-08-08 12:00:56+08 | 2026-11-12 13:11:18.760873+08 | 2026-11-12 13:11:18.760873+08 | {Humiliation,"Mature Woman",Wife,Adultery,Individu… |
+
+## QUERY GUIDANCE FOR DYNAMIC POSTGRESQL QUERIES
+--------------------------------------------------------------------------------
+
+When constructing PostgreSQL queries based on user questions:
+
+1. **Identify Tables**: Use table names above to determine which tables to query
+2. **Available Columns**: See column lists for each table above
+3. **Common Column Names Found**: id, embedding, url, code, episode, video_id, title, thumbnail, preview, details, release_date, created_at, updated_at, genres
+4. **Relationships**: Check foreign keys section for table relationships
+5. **Data Types**: Note column types for proper filtering and casting
+6. **Truncated values**: Sample values ending with … are cut for display only
+
+Example Query Pattern:
+```python
+import psycopg
+
+conn = psycopg.connect("<CONNECTION_STRING>")  # credentials intentionally omitted
+cursor = conn.cursor()
+
+# Simple SELECT with filtering
+cursor.execute("""
+    SELECT * FROM public.{table_name}
+    WHERE {column} = %s
+    LIMIT 10
+""", (value,))
+
+results = cursor.fetchall()
+```
+
+**Best Practices:**
+- Always use parameterized queries (%s) to prevent SQL injection
+- Use explicit schema qualification (public.table_name)
+- Leverage indexes shown above for better performance
+- Consider NULL handling in filters (IS NULL / IS NOT NULL)
+- Use LIMIT for large tables to avoid memory issues
+================================================================================

@@ -1,3 +1,4 @@
+# Jet_Apps/web-extensions/smart-web-extensions/missav-extension/server_postgres/app/services/search_service.py
 from typing import Any, Dict, List, Optional
 
 from app.config import PG_DB_NAME, PG_HOST, PG_PASSWORD, PG_PORT, PG_USER
@@ -27,13 +28,10 @@ def translate_filters(filters: Optional[SearchFilters]) -> Optional[Dict[str, An
         return None
 
     db_filters = {}
-
     if filters.codes:
         db_filters["code"] = {"$in": filters.codes}
-
     if filters.genres:
         db_filters["genres"] = {"$contains": filters.genres}
-
     if filters.date_range:
         d = {}
         if filters.date_range.start:
@@ -42,13 +40,11 @@ def translate_filters(filters: Optional[SearchFilters]) -> Optional[Dict[str, An
             d["$lte"] = filters.date_range.end.isoformat()
         if d:
             db_filters["release_date"] = d
-
     if filters.has_thumbnail is not None:
         if filters.has_thumbnail:
-            # Ensure your FilterBuilder supports $not_null or handle it via raw SQL
             db_filters["thumbnail"] = {"$not_null": True}
         else:
-            db_filters["thumbnail"] = None  # IS NULL
+            db_filters["thumbnail"] = None
 
     return db_filters if db_filters else None
 
@@ -89,12 +85,49 @@ class SearchService:
         elif request.mode == "metadata":
             if not request.filters:
                 raise ValueError("Metadata search requires filters")
-            return self.client.get_filtered_rows(
-                self.table_name,
-                filters=db_filters,
-                limit=request.limit,
-                order_by=(request.sort_by, "DESC"),
-            )
+
+            # Use Raw SQL for Metadata Mode to support custom ORDER BY
+            from jet.db.postgres.managers.filter_builder import FilterBuilder
+            from psycopg import sql
+
+            where_clause, where_params = FilterBuilder.build(db_filters)
+
+            with self.client.conn.cursor() as cur:
+                # Get columns dynamically
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s AND column_name != 'embedding';",
+                    (self.table_name,),
+                )
+                cols = [r["column_name"] for r in cur.fetchall()]
+
+                if not cols:
+                    return []
+
+                select_cols = sql.SQL(", ").join(map(sql.Identifier, cols))
+
+                # Build the query using psycopg.sql for safety
+                query = sql.SQL("SELECT {} FROM {}{}").format(
+                    select_cols, sql.Identifier(self.table_name), where_clause
+                )
+
+                # Add Order By
+                order_col = (
+                    request.sort_by
+                    if request.sort_by in ["release_date", "id", "created_at"]
+                    else "release_date"
+                )
+                query = sql.SQL("{} ORDER BY {} DESC").format(
+                    query, sql.Identifier(order_col)
+                )
+
+                # Add Limit with a placeholder
+                query = sql.SQL("{} LIMIT %s").format(query)
+
+                # Combine filter params + limit param
+                final_params = where_params + [request.limit]
+
+                cur.execute(query, final_params)
+                return [dict(row) for row in cur.fetchall()]
 
         elif request.mode == "diverse":
             if not queries:
