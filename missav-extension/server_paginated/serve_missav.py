@@ -108,11 +108,14 @@ class SearchRequest(BaseModel):
 class VideoItem(BaseModel):
     id: str
     title: Optional[str]
+    details: Optional[str]
     code: str
     episode: str
+    url: str
+    preview: Optional[str]
+    thumbnail: Optional[str]
     release_date: Optional[datetime]
     genres: Optional[List[str]]
-    thumbnail: Optional[str]
     similarity: float
 
 
@@ -213,7 +216,7 @@ def search(req: SearchRequest) -> SearchResponse:
     where_sql = " AND ".join(conditions) if conditions else "TRUE"
 
     sql = f"""
-        SELECT id, title, code, episode, release_date, genres, thumbnail,
+        SELECT id, title, details, url, code, episode, release_date, genres, thumbnail, preview,
                embedding <=> %(emb)s::vector AS distance
         FROM public.videos
         WHERE {where_sql}
@@ -244,11 +247,14 @@ def search(req: SearchRequest) -> SearchResponse:
         VideoItem(
             id=r["id"],
             title=r["title"],
+            details=r["details"],
             code=r["code"],
             episode=r["episode"],
+            url=r["url"],
+            preview=r["preview"],
+            thumbnail=r["thumbnail"],
             release_date=r["release_date"],
             genres=r["genres"],
-            thumbnail=r["thumbnail"],
             similarity=1.0 - r["distance"],
         )
         for r in rows
