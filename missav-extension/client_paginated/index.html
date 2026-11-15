@@ -1,0 +1,1091 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MissAV Explorer</title>
+
+    <!-- Tailwind (JIT via CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              ink: {
+                950: "#0a0c11",
+                900: "#0f1218",
+                800: "#151a23",
+                700: "#1d2430",
+                600: "#293241",
+              },
+              accent: { 400: "#7db4ff", 500: "#5a9cff", 600: "#3b82f6" },
+              violet: { 500: "#a78bfa" },
+            },
+            fontFamily: {
+              sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
+            },
+            boxShadow: {
+              glow: "0 0 0 1px rgba(90,156,255,.25), 0 8px 32px -8px rgba(90,156,255,.45)",
+            },
+          },
+        },
+      };
+    </script>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Alpine.js -->
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"
+    ></script>
+
+    <!-- Lucide icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+
+    <style>
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+      }
+
+      /* custom scrollbar */
+      ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #293241;
+        border-radius: 8px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #3b4658;
+      }
+
+      /* film-grain background */
+      .bg-grain::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence baseFrequency='.9' numOctaves='2'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .04 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+        opacity: 0.35;
+        mix-blend-mode: overlay;
+      }
+
+      /* skeleton shimmer */
+      .skeleton {
+        background: linear-gradient(
+          90deg,
+          #1d2430 0%,
+          #293241 50%,
+          #1d2430 100%
+        );
+        background-size: 200% 100%;
+        animation: shimmer 1.4s infinite;
+      }
+      @keyframes shimmer {
+        0% {
+          background-position: 200% 0;
+        }
+        100% {
+          background-position: -200% 0;
+        }
+      }
+
+      /* fade-in-up card */
+      .card-enter {
+        animation: cardEnter 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+      }
+      @keyframes cardEnter {
+        from {
+          opacity: 0;
+          transform: translateY(10px) scale(0.985);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      /* modal backdrop */
+      .modal-backdrop {
+        backdrop-filter: blur(6px);
+        background: rgba(5, 7, 12, 0.72);
+      }
+
+      [x-cloak] {
+        display: none !important;
+      }
+
+      /* line-clamp helper (Tailwind CDN includes it, but explicit for safety) */
+      .line-clamp-2 {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .line-clamp-3 {
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body
+    class="bg-ink-950 text-slate-200 min-h-screen bg-grain antialiased"
+    x-data="app()"
+    x-init="boot()"
+    x-cloak
+  >
+    <!-- ═══════════════════ TOP NAV ═══════════════════ -->
+    <header
+      class="sticky top-0 z-30 border-b border-white/5 bg-ink-950/80 backdrop-blur-xl"
+    >
+      <div
+        class="mx-auto flex max-w-[1600px] items-center gap-4 px-4 py-3 md:px-6"
+      >
+        <!-- logo -->
+        <a href="/" class="flex shrink-0 items-center gap-2">
+          <div
+            class="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-accent-500 to-violet-500 shadow-glow"
+          >
+            <i data-lucide="film" class="h-5 w-5 text-white"></i>
+          </div>
+          <span class="hidden text-lg font-extrabold tracking-tight sm:inline">
+            MissAV<span class="text-accent-400">.</span>Explorer
+          </span>
+        </a>
+
+        <!-- search -->
+        <form
+          @submit.prevent="doSearch()"
+          class="flex flex-1 items-center gap-2"
+        >
+          <div class="relative flex-1 max-w-2xl">
+            <i
+              data-lucide="search"
+              class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
+            ></i>
+            <input
+              x-ref="searchInput"
+              x-model="query"
+              @input.debounce.400ms="onQueryInput()"
+              type="search"
+              placeholder="Describe what you want — try “lonely wife, rainy night”…"
+              class="w-full rounded-xl border border-white/10 bg-ink-800/70 py-2.5 pl-10 pr-24 text-sm text-slate-100 placeholder:text-slate-500 transition focus:border-accent-500/60 focus:bg-ink-800 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
+            />
+            <kbd
+              class="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 rounded-md border border-white/10 bg-ink-900 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 sm:inline"
+              >/</kbd
+            >
+          </div>
+          <button
+            type="submit"
+            class="hidden items-center gap-1.5 rounded-xl bg-accent-500 px-4 py-2.5 text-sm font-semibold text-ink-950 shadow-glow transition hover:bg-accent-400 active:scale-[.98] sm:flex"
+          >
+            <i data-lucide="sparkles" class="h-4 w-4"></i> Search
+          </button>
+          <button
+            type="button"
+            @click="doBrowse()"
+            class="hidden items-center gap-1.5 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:bg-white/5 md:flex"
+          >
+            <i data-lucide="layout-grid" class="h-4 w-4"></i> Browse
+          </button>
+        </form>
+
+        <!-- right status -->
+        <div class="hidden items-center gap-2 md:flex">
+          <span
+            class="flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/60 px-2.5 py-1 text-[11px] font-medium text-slate-400"
+          >
+            <span
+              class="h-1.5 w-1.5 rounded-full"
+              :class="online ? 'bg-emerald-400' : 'bg-rose-500'"
+              :class="online ? 'animate-pulse' : ''"
+            ></span>
+            <span x-text="online ? 'live' : 'offline'"></span>
+          </span>
+        </div>
+
+        <!-- mobile filters trigger -->
+        <button
+          @click="filtersOpen = !filtersOpen"
+          class="rounded-xl border border-white/10 p-2.5 text-slate-300 lg:hidden"
+        >
+          <i data-lucide="sliders-horizontal" class="h-4 w-4"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- ═══════════════════ MAIN LAYOUT ═══════════════════ -->
+    <div
+      class="relative z-10 mx-auto flex max-w-[1600px] gap-6 px-4 py-6 md:px-6"
+    >
+      <!-- ─── Filter sidebar ─── -->
+      <aside
+        :class="filtersOpen ? 'fixed inset-0 z-40 flex justify-end bg-black/60 backdrop-blur-sm lg:static lg:z-auto lg:block lg:bg-transparent lg:backdrop-blur-none' : 'hidden lg:block'"
+        class="w-full shrink-0 lg:w-72"
+      >
+        <div
+          class="h-full w-full max-w-sm overflow-y-auto border-l border-white/10 bg-ink-900 p-5 lg:sticky lg:top-24 lg:max-h-[calc(100vh-7rem)] lg:rounded-2xl lg:border"
+        >
+          <div class="mb-4 flex items-center justify-between">
+            <h2
+              class="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-slate-400"
+            >
+              <i data-lucide="sliders-horizontal" class="h-4 w-4"></i> Filters
+            </h2>
+            <button
+              @click="filtersOpen = false"
+              class="rounded-lg p-1 text-slate-500 hover:bg-white/5 lg:hidden"
+            >
+              <i data-lucide="x" class="h-5 w-5"></i>
+            </button>
+          </div>
+
+          <!-- code -->
+          <label class="mb-4 block">
+            <span class="mb-1.5 block text-xs font-medium text-slate-500"
+              >Series code</span
+            >
+            <div class="relative">
+              <i
+                data-lucide="tag"
+                class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500"
+              ></i>
+              <input
+                x-model="filters.code"
+                @change="refetch()"
+                placeholder="mdyd, sprd…"
+                class="w-full rounded-lg border border-white/10 bg-ink-800 py-2 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-accent-500/60 focus:outline-none"
+              />
+            </div>
+          </label>
+
+          <!-- date range -->
+          <div class="mb-4">
+            <span
+              class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+            >
+              <i data-lucide="calendar-range" class="h-3.5 w-3.5"></i> Released
+              between
+            </span>
+            <div class="grid grid-cols-2 gap-2">
+              <input
+                type="date"
+                x-model="filters.from"
+                @change="refetch()"
+                class="rounded-lg border border-white/10 bg-ink-800 px-2.5 py-2 text-xs text-slate-100 focus:border-accent-500/60 focus:outline-none [color-scheme:dark]"
+              />
+              <input
+                type="date"
+                x-model="filters.to"
+                @change="refetch()"
+                class="rounded-lg border border-white/10 bg-ink-800 px-2.5 py-2 text-xs text-slate-100 focus:border-accent-500/60 focus:outline-none [color-scheme:dark]"
+              />
+            </div>
+          </div>
+
+          <!-- genres mode toggle -->
+          <div class="mb-4">
+            <span
+              class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+            >
+              <i data-lucide="git-merge" class="h-3.5 w-3.5"></i> Genre match
+            </span>
+            <div
+              class="flex rounded-lg border border-white/10 bg-ink-800 p-1 text-xs"
+            >
+              <button
+                @click="filters.genresMode = 'any'; refetch()"
+                :class="filters.genresMode === 'any' ? 'bg-accent-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
+                class="flex-1 rounded-md py-1.5 font-semibold transition"
+              >
+                Any of
+              </button>
+              <button
+                @click="filters.genresMode = 'all'; refetch()"
+                :class="filters.genresMode === 'all' ? 'bg-accent-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
+                class="flex-1 rounded-md py-1.5 font-semibold transition"
+              >
+                All of
+              </button>
+            </div>
+          </div>
+
+          <!-- genres chips -->
+          <div class="mb-4">
+            <span
+              class="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+            >
+              <i data-lucide="drama" class="h-3.5 w-3.5"></i> Genres
+              <span
+                class="ml-auto text-[10px] text-slate-600"
+                x-text="`${filters.genres.length} selected`"
+              ></span>
+            </span>
+            <div class="flex flex-wrap gap-1.5">
+              <template x-for="g in facets.genres" :key="g.name">
+                <button
+                  @click="toggleGenre(g.name)"
+                  :class="filters.genres.includes(g.name)
+                      ? 'border-accent-500 bg-accent-500/15 text-accent-300'
+                      : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                  class="rounded-full border px-2.5 py-1 text-[11px] font-medium transition"
+                  :title="`${g.count.toLocaleString()} videos`"
+                >
+                  <span x-text="g.name"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+
+          <!-- year quick-pick -->
+          <div class="mb-4">
+            <span
+              class="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+            >
+              <i data-lucide="calendar" class="h-3.5 w-3.5"></i> Quick year
+            </span>
+            <div class="flex flex-wrap gap-1">
+              <template x-for="y in recentYears()" :key="y.year">
+                <button
+                  @click="pickYear(y.year)"
+                  :class="filters.from === y.year+'-01-01' && filters.to === y.year+'-12-31'
+                      ? 'border-violet-500 bg-violet-500/20 text-violet-300'
+                      : 'border-white/10 bg-ink-800 text-slate-400 hover:text-slate-200'"
+                  class="rounded-md border px-2 py-1 text-[11px] font-medium transition"
+                  :title="`${y.count.toLocaleString()} videos`"
+                  x-text="y.year"
+                ></button>
+              </template>
+            </div>
+          </div>
+
+          <button
+            @click="clearFilters()"
+            class="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/10 py-2 text-xs font-semibold text-slate-400 transition hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300"
+          >
+            <i data-lucide="rotate-ccw" class="h-3.5 w-3.5"></i> Clear all
+            filters
+          </button>
+        </div>
+      </aside>
+
+      <!-- ─── Results ─── -->
+      <section class="min-w-0 flex-1">
+        <!-- result header -->
+        <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 class="text-2xl font-extrabold tracking-tight text-slate-100">
+              <template x-if="mode === 'search'">
+                <span
+                  >Results for
+                  <span class="text-accent-400" x-text="`“${lastQuery}”`"></span
+                ></span>
+              </template>
+              <template x-if="mode === 'similar'">
+                <span class="flex items-center gap-2"
+                  ><i data-lucide="orbit" class="h-6 w-6 text-violet-400"></i>
+                  Similar videos</span
+                >
+              </template>
+              <template x-if="mode === 'browse'">
+                <span class="flex items-center gap-2"
+                  ><i
+                    data-lucide="layout-grid"
+                    class="h-6 w-6 text-accent-400"
+                  ></i>
+                  Browse</span
+                >
+              </template>
+            </h1>
+            <p class="mt-1 text-sm text-slate-500">
+              <span x-text="items.length"></span> loaded
+              <span x-show="exhausted && items.length" class="text-slate-600">
+                · end of results</span
+              >
+              <span
+                x-show="lastTook != null"
+                class="text-slate-600"
+                x-text="` · ${lastTook?.toFixed(0)} ms`"
+              ></span>
+            </p>
+          </div>
+
+          <!-- active filter pills -->
+          <div class="flex flex-wrap items-center gap-1.5">
+            <template x-for="g in filters.genres" :key="g">
+              <span
+                class="inline-flex items-center gap-1 rounded-full bg-accent-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-accent-300"
+              >
+                <span x-text="g"></span>
+                <button
+                  @click="toggleGenre(g)"
+                  class="rounded-full p-0.5 hover:bg-white/10"
+                >
+                  <i data-lucide="x" class="h-3 w-3"></i>
+                </button>
+              </span>
+            </template>
+            <template x-if="filters.code">
+              <span
+                class="inline-flex items-center gap-1 rounded-full bg-violet-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-violet-300"
+              >
+                <span x-text="'code: ' + filters.code"></span>
+                <button
+                  @click="filters.code = ''; refetch()"
+                  class="rounded-full p-0.5 hover:bg-white/10"
+                >
+                  <i data-lucide="x" class="h-3 w-3"></i>
+                </button>
+              </span>
+            </template>
+            <template x-if="filters.from || filters.to">
+              <span
+                class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
+              >
+                <span
+                  x-text="`${filters.from || '…'} → ${filters.to || '…'}`"
+                ></span>
+                <button
+                  @click="filters.from=''; filters.to=''; refetch()"
+                  class="rounded-full p-0.5 hover:bg-white/10"
+                >
+                  <i data-lucide="x" class="h-3 w-3"></i>
+                </button>
+              </span>
+            </template>
+          </div>
+        </div>
+
+        <!-- skeleton on first load -->
+        <div
+          x-show="items.length === 0 && loading"
+          class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+        >
+          <template x-for="i in 10" :key="i">
+            <div
+              class="overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
+            >
+              <div class="aspect-[4/3] skeleton"></div>
+              <div class="space-y-2 p-3">
+                <div class="h-3 w-4/5 skeleton rounded"></div>
+                <div class="h-2.5 w-2/5 skeleton rounded"></div>
+                <div class="flex gap-1 pt-1">
+                  <div class="h-4 w-12 skeleton rounded"></div>
+                  <div class="h-4 w-14 skeleton rounded"></div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <!-- cards grid -->
+        <div
+          x-show="items.length > 0"
+          class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+        >
+          <template x-for="(v, idx) in items" :key="v.id + '-' + idx">
+            <article
+              class="card-enter group relative overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
+              :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
+            >
+              <!-- thumbnail -->
+              <div class="relative aspect-[4/3] overflow-hidden bg-ink-800">
+                <img
+                  :src="v.thumbnail"
+                  :alt="v.title"
+                  loading="lazy"
+                  decoding="async"
+                  class="h-full w-full object-cover transition duration-500 group-hover:scale-110"
+                  @error="$event.target.style.opacity = .2"
+                />
+                <div
+                  class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
+                ></div>
+
+                <!-- similarity badge -->
+                <div
+                  x-show="v.similarity != null"
+                  class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-accent-300 backdrop-blur"
+                >
+                  <i data-lucide="target" class="h-3 w-3"></i>
+                  <span x-text="(v.similarity * 100).toFixed(0) + '%'"></span>
+                </div>
+
+                <!-- year badge -->
+                <div
+                  x-show="v.release_date"
+                  class="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-slate-300 backdrop-blur"
+                  x-text="v.release_date?.slice(0,4)"
+                ></div>
+
+                <!-- hover overlay actions -->
+                <div
+                  class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
+                >
+                  <button
+                    @click="openDetail(v.id)"
+                    class="flex items-center gap-1.5 rounded-full bg-accent-500 px-3 py-1.5 text-xs font-bold text-ink-950 transition hover:scale-105"
+                  >
+                    <i data-lucide="play" class="h-3.5 w-3.5"></i> Preview
+                  </button>
+                  <button
+                    @click="findSimilar(v.id)"
+                    class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
+                  >
+                    <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
+                  </button>
+                </div>
+              </div>
+
+              <!-- body -->
+              <div class="p-3">
+                <h3
+                  @click="openDetail(v.id)"
+                  class="line-clamp-2 min-h-[2.4em] cursor-pointer text-[13px] font-semibold leading-snug text-slate-100 transition group-hover:text-accent-300"
+                  x-text="v.title || '(untitled)'"
+                ></h3>
+                <div
+                  class="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500"
+                >
+                  <span
+                    class="rounded bg-ink-700 px-1.5 py-0.5 font-mono text-[10px] text-accent-300"
+                    x-text="v.code"
+                  ></span>
+                  <span x-text="v.episode"></span>
+                </div>
+                <div class="mt-2 flex flex-wrap gap-1">
+                  <template x-for="g in (v.genres || []).slice(0,2)" :key="g">
+                    <span
+                      class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
+                      x-text="g"
+                    ></span>
+                  </template>
+                  <span
+                    x-show="(v.genres?.length || 0) > 2"
+                    class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
+                    x-text="`+${v.genres.length - 2}`"
+                  ></span>
+                </div>
+              </div>
+            </article>
+          </template>
+        </div>
+
+        <!-- empty state -->
+        <div
+          x-show="!loading && items.length === 0"
+          class="flex flex-col items-center justify-center py-24 text-center"
+        >
+          <div
+            class="grid h-16 w-16 place-items-center rounded-2xl bg-ink-800 text-slate-500"
+          >
+            <i data-lucide="ghost" class="h-8 w-8"></i>
+          </div>
+          <h3 class="mt-4 text-lg font-semibold text-slate-300">No results</h3>
+          <p class="mt-1 max-w-sm text-sm text-slate-500">
+            Try removing some filters, or rephrase your query.
+          </p>
+          <button
+            @click="clearFilters()"
+            class="mt-4 rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/5"
+          >
+            Clear filters
+          </button>
+        </div>
+
+        <!-- load more / sentinel -->
+        <div
+          x-show="items.length > 0"
+          class="mt-8 flex flex-col items-center gap-4"
+        >
+          <button
+            x-show="!exhausted"
+            @click="loadMore()"
+            :disabled="loading"
+            class="flex items-center gap-2 rounded-xl border border-white/10 bg-ink-800 px-5 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-accent-500/40 hover:bg-ink-700 disabled:opacity-50"
+          >
+            <template x-if="loading"
+              ><i data-lucide="loader-2" class="h-4 w-4 animate-spin"></i
+            ></template>
+            <template x-if="!loading"
+              ><i data-lucide="chevron-down" class="h-4 w-4"></i
+            ></template>
+            <span x-text="loading ? 'Loading…' : 'Load more'"></span>
+          </button>
+          <p x-show="exhausted" class="text-xs text-slate-600">
+            — you've reached the end —
+          </p>
+        </div>
+
+        <!-- intersection sentinel -->
+        <div x-ref="sentinel" class="h-1"></div>
+      </section>
+    </div>
+
+    <!-- ═══════════════════ DETAIL MODAL ═══════════════════ -->
+    <div
+      x-show="detail.open"
+      x-cloak
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 modal-backdrop"
+      @click.self="closeDetail()"
+      x-transition.opacity
+    >
+      <div
+        class="relative w-full max-w-3xl overflow-hidden rounded-2xl border border-white/10 bg-ink-900 shadow-2xl"
+        x-transition.scale.origin.center
+      >
+        <button
+          @click="closeDetail()"
+          class="absolute right-3 top-3 z-10 grid h-9 w-9 place-items-center rounded-full bg-ink-950/80 text-slate-300 backdrop-blur transition hover:bg-rose-500/30 hover:text-rose-300"
+        >
+          <i data-lucide="x" class="h-5 w-5"></i>
+        </button>
+
+        <template x-if="detail.loading">
+          <div class="aspect-video skeleton"></div>
+        </template>
+
+        <template x-if="detail.video">
+          <div>
+            <!-- media -->
+            <div class="aspect-video bg-black">
+              <template x-if="detail.video.preview">
+                <video
+                  :src="detail.video.preview"
+                  :poster="detail.video.thumbnail"
+                  controls
+                  autoplay
+                  muted
+                  playsinline
+                  class="h-full w-full object-contain"
+                ></video>
+              </template>
+              <template x-if="!detail.video.preview">
+                <img
+                  :src="detail.video.thumbnail"
+                  class="h-full w-full object-contain"
+                />
+              </template>
+            </div>
+
+            <!-- meta -->
+            <div class="max-h-[50vh] overflow-y-auto p-5">
+              <div class="mb-2 flex items-center gap-2 text-xs text-slate-500">
+                <span
+                  class="rounded bg-ink-800 px-2 py-0.5 font-mono text-accent-300"
+                  x-text="detail.video.code"
+                ></span>
+                <span x-text="detail.video.episode"></span>
+                <span
+                  x-show="detail.video.release_date"
+                  x-text="'· ' + detail.video.release_date?.slice(0,10)"
+                ></span>
+              </div>
+              <h2
+                class="text-xl font-bold text-slate-100"
+                x-text="detail.video.title || '(untitled)'"
+              ></h2>
+
+              <div class="mt-3 flex flex-wrap gap-1.5">
+                <template x-for="g in (detail.video.genres || [])" :key="g">
+                  <span
+                    @click="closeDetail(); filters.genres=[g]; refetch()"
+                    class="cursor-pointer rounded-full border border-white/10 bg-ink-800 px-2.5 py-0.5 text-[11px] text-slate-400 transition hover:border-accent-500/40 hover:text-accent-300"
+                    x-text="g"
+                  ></span>
+                </template>
+              </div>
+
+              <p
+                x-show="detail.video.details"
+                class="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-slate-400"
+                x-text="detail.video.details"
+              ></p>
+
+              <div class="mt-5 flex flex-wrap gap-2">
+                <a
+                  :href="detail.video.url"
+                  target="_blank"
+                  rel="noopener"
+                  class="flex items-center gap-1.5 rounded-lg bg-accent-500 px-4 py-2 text-sm font-bold text-ink-950 transition hover:bg-accent-400"
+                >
+                  <i data-lucide="external-link" class="h-4 w-4"></i> Open
+                  source
+                </a>
+                <button
+                  @click="findSimilar(detail.video.id)"
+                  class="flex items-center gap-1.5 rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/5"
+                >
+                  <i data-lucide="orbit" class="h-4 w-4"></i> Find similar
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ═══════════════════ TOASTS ═══════════════════ -->
+    <div
+      class="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2"
+    >
+      <template x-for="t in toasts" :key="t.id">
+        <div
+          class="pointer-events-auto flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm shadow-lg backdrop-blur-md"
+          :class="{
+           'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
+           'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
+           'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
+         }"
+          x-transition
+        >
+          <i
+            :data-lucide="t.type === 'error' ? 'alert-circle' : t.type === 'success' ? 'check-circle-2' : 'info'"
+            class="mt-0.5 h-4 w-4 shrink-0"
+          ></i>
+          <span x-text="t.msg"></span>
+        </div>
+      </template>
+    </div>
+
+    <script>
+      function app() {
+        const API = "http://localhost:9001";
+
+        return {
+          // ── state ──
+          mode: "browse", // 'search' | 'similar' | 'browse'
+          query: "",
+          lastQuery: "",
+          items: [],
+          cursor: null,
+          page: 0,
+          exhausted: false,
+          loading: false,
+          online: true,
+          lastTook: null,
+          filtersOpen: false,
+
+          filters: {
+            code: "",
+            from: "",
+            to: "",
+            genresMode: "any",
+            genres: [],
+          },
+          facets: { genres: [], years: [], codes: [] },
+
+          detail: { open: false, loading: false, video: null },
+          similarOf: null,
+          toasts: [],
+
+          // ── lifecycle ──
+          boot() {
+            this.hydrateFromURL();
+            this.refreshIcons();
+            this.$nextTick(() => this.refreshIcons());
+
+            this.fetchFacets();
+            this.refetch();
+
+            // keyboard
+            document.addEventListener("keydown", (e) => {
+              if (e.key === "Escape") this.closeDetail();
+              if (
+                e.key === "/" &&
+                !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)
+              ) {
+                e.preventDefault();
+                this.$refs.searchInput.focus();
+              }
+            });
+
+            // infinite scroll
+            new IntersectionObserver(
+              (entries) => {
+                if (
+                  entries[0].isIntersecting &&
+                  !this.exhausted &&
+                  !this.loading &&
+                  this.items.length
+                ) {
+                  this.loadMore();
+                }
+              },
+              { rootMargin: "400px" },
+            ).observe(this.$refs.sentinel);
+
+            // re-render lucide icons whenever Alpine updates
+            this.$watch("items", () =>
+              this.$nextTick(() => this.refreshIcons()),
+            );
+            this.$watch("detail.open", () =>
+              this.$nextTick(() => this.refreshIcons()),
+            );
+          },
+
+          refreshIcons() {
+            if (window.lucide) lucide.createIcons();
+          },
+
+          // ── URL sync ──
+          hydrateFromURL() {
+            const p = new URLSearchParams(location.search);
+            this.mode = p.get("mode") || (p.get("q") ? "search" : "browse");
+            this.query = p.get("q") || "";
+            this.lastQuery = this.query;
+            this.filters.code = p.get("code") || "";
+            this.filters.from = p.get("from") || "";
+            this.filters.to = p.get("to") || "";
+            this.filters.genresMode = p.get("gmode") || "any";
+            this.filters.genres = (p.get("genres") || "")
+              .split(",")
+              .filter(Boolean);
+            this.similarOf = p.get("sim") || null;
+          },
+          syncURL() {
+            const p = new URLSearchParams();
+            if (this.mode === "search" && this.lastQuery)
+              p.set("q", this.lastQuery);
+            if (this.mode === "browse") p.set("mode", "browse");
+            if (this.mode === "similar" && this.similarOf) {
+              p.set("mode", "similar");
+              p.set("sim", this.similarOf);
+            }
+            if (this.filters.code) p.set("code", this.filters.code);
+            if (this.filters.from) p.set("from", this.filters.from);
+            if (this.filters.to) p.set("to", this.filters.to);
+            if (this.filters.genresMode !== "any")
+              p.set("gmode", this.filters.genresMode);
+            if (this.filters.genres.length)
+              p.set("genres", this.filters.genres.join(","));
+            history.replaceState(null, "", `${location.pathname}?${p}`);
+          },
+
+          // ── actions ──
+          onQueryInput() {
+            clearTimeout(this._deb);
+            this._deb = setTimeout(() => {
+              if (this.query.trim()) this.doSearch();
+            }, 400);
+          },
+          doSearch() {
+            const q = this.query.trim();
+            if (!q) return;
+            this.mode = "search";
+            this.lastQuery = q;
+            this.similarOf = null;
+            this.syncURL();
+            this.refetch();
+          },
+          doBrowse() {
+            this.mode = "browse";
+            this.similarOf = null;
+            this.syncURL();
+            this.refetch();
+          },
+          findSimilar(id) {
+            this.closeDetail();
+            this.mode = "similar";
+            this.similarOf = id;
+            this.syncURL();
+            this.refetch();
+          },
+          toggleGenre(name) {
+            const i = this.filters.genres.indexOf(name);
+            if (i >= 0) this.filters.genres.splice(i, 1);
+            else this.filters.genres.push(name);
+            this.syncURL();
+            this.refetch();
+          },
+          pickYear(year) {
+            this.filters.from = `${year}-01-01`;
+            this.filters.to = `${year}-12-31`;
+            this.syncURL();
+            this.refetch();
+          },
+          clearFilters() {
+            this.filters = {
+              code: "",
+              from: "",
+              to: "",
+              genresMode: "any",
+              genres: [],
+            };
+            this.syncURL();
+            this.refetch();
+          },
+          recentYears() {
+            return this.facets.years
+              .filter((y) => y.year >= 2000)
+              .slice(-10)
+              .reverse();
+          },
+
+          // ── fetching ──
+          refetch() {
+            this.items = [];
+            this.cursor = null;
+            this.page = 0;
+            this.exhausted = false;
+            this.fetchPage({ reset: true });
+          },
+          loadMore() {
+            if (!this.exhausted) this.fetchPage();
+          },
+
+          async fetchPage({ reset = false } = {}) {
+            if (this.loading) return;
+            this.loading = true;
+            try {
+              const params = this.buildParams(reset);
+              if (!params) return;
+
+              const res = await fetch(`${API}${params.path}`, {
+                method: params.method,
+                headers: params.body
+                  ? { "Content-Type": "application/json" }
+                  : undefined,
+                body: params.body ? JSON.stringify(params.body) : undefined,
+              });
+              this.online = true;
+              if (!res.ok) {
+                const txt = await res.text();
+                throw new Error(`${res.status}: ${txt}`);
+              }
+              const page = await res.json();
+
+              if (reset) {
+                this.items = [];
+                this.cursor = null;
+                this.page = 0;
+                this.exhausted = false;
+              }
+              this.items.push(...page.items);
+              this.cursor = page.next_cursor;
+              this.exhausted = !page.has_more;
+              this.lastTook = page.took_ms ?? null;
+              if (this.mode === "browse") this.page += 1;
+              this.$nextTick(() => this.refreshIcons());
+            } catch (e) {
+              this.online = false;
+              this.toast("error", e.message);
+            } finally {
+              this.loading = false;
+            }
+          },
+
+          buildParams(reset) {
+            if (this.mode === "search") {
+              if (!this.lastQuery) {
+                this.toast("info", "Type something to search");
+                return null;
+              }
+              return {
+                path: "/search",
+                method: "POST",
+                body: {
+                  query: this.lastQuery,
+                  limit: 20,
+                  cursor: reset ? null : this.cursor,
+                  code: this.filters.code || null,
+                  genres: this.filters.genres.length
+                    ? this.filters.genres
+                    : null,
+                  genres_mode: this.filters.genresMode,
+                  min_release_date: this.filters.from
+                    ? new Date(this.filters.from + "T00:00:00Z").toISOString()
+                    : null,
+                  max_release_date: this.filters.to
+                    ? new Date(this.filters.to + "T23:59:59Z").toISOString()
+                    : null,
+                },
+              };
+            }
+            if (this.mode === "similar") {
+              return {
+                path: "/similar",
+                method: "POST",
+                body: {
+                  video_id: this.similarOf,
+                  limit: 20,
+                  cursor: reset ? null : this.cursor,
+                  genres: this.filters.genres.length
+                    ? this.filters.genres
+                    : null,
+                  genres_mode: this.filters.genresMode,
+                },
+              };
+            }
+            // browse
+            const p = new URLSearchParams();
+            p.set("limit", "20");
+            p.set("offset", reset ? "0" : String(this.page * 20));
+            if (this.filters.code) p.set("code", this.filters.code);
+            this.filters.genres.forEach((g) => p.append("genres", g));
+            return { path: `/browse?${p}`, method: "GET" };
+          },
+
+          async fetchFacets() {
+            try {
+              const r = await fetch(`${API}/facets`);
+              this.facets = await r.json();
+            } catch {
+              /* ignore */
+            }
+          },
+
+          // ── detail modal ──
+          async openDetail(id) {
+            this.detail = { open: true, loading: true, video: null };
+            this.$nextTick(() => this.refreshIcons());
+            try {
+              const r = await fetch(`${API}/videos/${encodeURIComponent(id)}`);
+              if (!r.ok) throw new Error(`Failed to load ${id}`);
+              this.detail.video = await r.json();
+            } catch (e) {
+              this.toast("error", e.message);
+              this.closeDetail();
+            } finally {
+              this.detail.loading = false;
+              this.$nextTick(() => this.refreshIcons());
+            }
+          },
+          closeDetail() {
+            this.detail = { open: false, loading: false, video: null };
+          },
+
+          // ── toasts ──
+          toast(type, msg) {
+            const id = Math.random().toString(36).slice(2);
+            this.toasts.push({ id, type, msg });
+            setTimeout(() => {
+              this.toasts = this.toasts.filter((t) => t.id !== id);
+            }, 4000);
+            this.$nextTick(() => this.refreshIcons());
+          },
+        };
+      }
+    </script>
+  </body>
+</html>
