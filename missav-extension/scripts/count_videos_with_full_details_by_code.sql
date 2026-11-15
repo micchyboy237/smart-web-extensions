@@ -1,6 +1,6 @@
 SELECT
     COUNT(*) FILTER (WHERE release_date IS NOT NULL) AS sprd_with_release_date,
-    COUNT(*) AS total_sprd_videos,
+    COUNT(*) AS total_videos,
     ROUND(
         100.0 * COUNT(*) FILTER (WHERE release_date IS NOT NULL)
         / NULLIF(COUNT(*), 0),
