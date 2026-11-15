@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-12T21:11:56.477977
+Generated: 2026-11-16T05:44:05.811188
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -12,7 +12,7 @@ Tables: videos
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.videos (45284 rows)
+### Table: public.videos (49316 rows)
 ```sql
 CREATE TABLE "public"."videos" (
     "id" text NOT NULL,
@@ -61,20 +61,20 @@ CREATE TABLE "public"."videos" (
 ### Table: videos
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | text | 45284 | 0.0% |
-| `embedding` | vector(768) | 43184 | 0.0% |
-| `url` | text | 45284 | 0.0% |
+| `id` | text | 49316 | 0.0% |
+| `embedding` | vector(768) | 47486 | 0.0% |
+| `url` | text | 49316 | 0.0% |
 | `code` | text | 3199 | 0.0% |
 | `episode` | text | 3412 | 0.0% |
-| `video_id` | text | 45089 | 0.0% |
-| `title` | text | 40340 | 0.0% |
-| `thumbnail` | text | 45238 | 0.0% |
-| `preview` | text | 45238 | 0.0% |
-| `details` | text | 1898 | 95.09% |
-| `release_date` | timestamp with time zone | 1945 | 94.52% |
-| `created_at` | timestamp with time zone | 46 | 0.0% |
-| `updated_at` | timestamp with time zone | 46 | 0.0% |
-| `genres` | text[] | 1799 | 94.54% |
+| `video_id` | text | 46381 | 0.0% |
+| `title` | text | 42774 | 0.0% |
+| `thumbnail` | text | 49271 | 0.0% |
+| `preview` | text | 49269 | 0.0% |
+| `details` | text | 6539 | 81.31% |
+| `release_date` | timestamp with time zone | 5766 | 80.14% |
+| `created_at` | timestamp with time zone | 4078 | 0.0% |
+| `updated_at` | timestamp with time zone | 8348 | 0.0% |
+| `genres` | text[] | 6298 | 80.15% |
 
 ## SAMPLE DATA
 --------------------------------------------------------------------------------
@@ -82,9 +82,9 @@ CREATE TABLE "public"."videos" (
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-63v9uv | [0.026671855,0.045126542,-0.047170874,0.0030154632… | https://missav.ws/dm2/en/mdyd-948-english-subtitle | mdyd | 948 | mdyd-948-english-subtitle | Invitation of a mannequin Nanami Hirose | https://fourhoi.com/mdyd-948-english-subtitle/cove… | https://fourhoi.com/mdyd-948-english-subtitle/prev… | A shock runs to Nanami, a married woman who lived… | 2014-09-07 12:00:28+08 | 2026-11-12 13:11:18.760873+08 | 2026-11-12 13:11:18.760873+08 | {"English subtitle","Mature Woman",Wife,Individual… |
-| jav-1wxbsic | [0.07953843,0.058681436,-0.016839162,0.02315939,-0… | https://missav.ws/en/sprd-1245-english-subtitle | sprd | 1245 | sprd-1245-english-subtitle | Mother Fucking Creampie Mother Karasuma Madoka Fir… | https://fourhoi.com/sprd-1245-english-subtitle/cov… | https://fourhoi.com/sprd-1245-english-subtitle/pre… | After my father's funeral, I was too busy to go ho… | 2020-01-30 11:00:46+08 | 2026-11-12 13:11:18.760873+08 | 2026-11-12 13:11:18.760873+08 | {"English subtitle","Mature Woman",Mother,Incest,I… |
-| jav-9xlnmg | [0.0266506,0.019135771,-0.01263857,0.01504007,0.00… | https://missav.ws/dm80/en/mdyd-819 | mdyd | 819 | mdyd-819 | I was raped by my husband's best friend ● I felt l… | https://fourhoi.com/mdyd-819/cover-t.jpg | https://fourhoi.com/mdyd-819/preview.mp4 | Eriko, who lives with her husband, has the same af… | 2013-08-08 12:00:56+08 | 2026-11-12 13:11:18.760873+08 | 2026-11-12 13:11:18.760873+08 | {Humiliation,"Mature Woman",Wife,Adultery,Individu… |
+| jav-1u1ocek | [0.041967575,-0.029361734,-0.01981194,0.02144055,0… | https://missav.ws/dm13/en/nwf-254 | nwf | 254 | nwf-254 | NWF-254 play Mother's Beautiful Ass Misa Arisawa -… | https://fourhoi.com/nwf-254/cover-n.jpg | https://fourhoi.com/nwf-254/preview.mp4 | Uncontrollable to the mother, intense and intense… | 2009-04-15 12:00:35+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 00:39:49.141965+08 | {Mother,Incest,"Butt Fetish",Individual,Ride,Exclu… |
+| jav-118mqvo | [0.012843765,0.011284435,-0.016049515,0.06853018,0… | https://missav.ws/dm2/en/juc-729-uncensored-leak | juc | 729 | juc-729 | JUC-729 Slave Wife: I Want to Please You... Miwako… | https://fourhoi.com/juc-729-uncensored-leak/cover-… | https://fourhoi.com/juc-729-uncensored-leak/previe… | The Yamamotos are a happy couple with a good relat… | 2012-01-21 11:00:37+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 02:18:23.837862+08 | {"Uncensored leak",Humiliation,Shame,"Mature Woman… |
+| jav-1037ybs | [0.0053802263,0.04983669,0.0008176448,0.00915786,0… | https://missav.ws/dm33/en/sprd-669 | sprd | 669 | sprd-669 | SPRD-669 Mother-in-law, much better than my wife .… | https://fourhoi.com/sprd-669/cover-n.jpg | https://fourhoi.com/sprd-669/preview.mp4 | The husband who decided to live with his mother-in… | 2013-08-12 12:00:37+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 01:52:00.817143+08 | {Stepmother,"Mature Woman",Individual,Hd} |
 
 ## QUERY GUIDANCE FOR DYNAMIC POSTGRESQL QUERIES
 --------------------------------------------------------------------------------
