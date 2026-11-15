@@ -23,7 +23,11 @@ from typing import List, Literal, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from jet.adapters.llama_cpp.config import EMBED_MODEL
+from jet.adapters.llama_cpp.config import (
+    EMBED_DOC_PREFIX,
+    EMBED_MODEL,
+    EMBED_QUERY_PREFIX,
+)
 from jet.adapters.llama_cpp.embed_utils import embed, shutdown_embed_pool
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
@@ -155,6 +159,33 @@ class FacetsResponse(BaseModel):
     years: List[dict]  # [{year, count}]
 
 
+class VideoIngestItem(BaseModel):
+    id: str
+    url: str
+    code: str
+    episode: str
+    video_id: str
+    title: Optional[str] = None
+    thumbnail: Optional[str] = None
+    preview: Optional[str] = None
+    details: Optional[str] = None
+    release_date: Optional[datetime] = None
+    genres: Optional[List[str]] = None
+
+
+class IngestRequest(BaseModel):
+    items: List[VideoIngestItem] = Field(..., min_length=1, max_length=500)
+    # When True, existing rows are updated. When False, existing rows raise 409.
+    upsert: bool = True
+
+
+class IngestResponse(BaseModel):
+    inserted: int
+    updated: int
+    skipped: int
+    took_ms: float
+
+
 # --------------------------------------------------------------------------- #
 # Cursor helpers
 # --------------------------------------------------------------------------- #
@@ -196,7 +227,13 @@ def decode_cursor(cursor: str, fp: str) -> Tuple[float, str]:
 def _embed_query(text: str) -> tuple:
     logger.info("Embedding query (cache miss): %r", text)
     return tuple(
-        embed(text=text, model=EMBED_MODEL, return_format="list", show_progress=False)
+        embed(
+            text=text,
+            model=EMBED_MODEL,
+            return_format="list",
+            show_progress=False,
+            prefix=EMBED_QUERY_PREFIX,
+        )
     )
 
 
@@ -568,6 +605,180 @@ def health():
     with pool.connection() as conn:
         conn.execute("SELECT 1").fetchone()
     return {"ok": True, "db_ms": (time.perf_counter() - t0) * 1000}
+
+
+# --------------------------------------------------------------------------- #
+# /ingest
+# --------------------------------------------------------------------------- #
+
+
+def _embed_text_for(item: VideoIngestItem) -> Optional[str]:
+    txt = item.embed_text or item.title or item.details
+    if not txt:
+        return None
+    return txt
+
+
+def _embed_item(item: VideoIngestItem) -> Optional[List[float]]:
+    if item.embedding is not None:
+        return item.embedding
+    txt = _embed_text_for(item)
+    if not txt:
+        return None
+    # Reuse the same cached embedder used by /search
+    return list(_embed_query(txt))
+
+
+def _format_for_embedding(item: VideoIngestItem) -> Optional[str]:
+    """Build the embedding text exactly as migrate_chroma_to_postgres.py does.
+    Returns None if there is nothing meaningful to embed.
+    """
+    parts: List[str] = []
+    if item.title:
+        parts.append(item.title)
+    if item.details:
+        parts.append(item.details)
+    if item.code:
+        parts.append(f"Series: {item.code}")
+    if item.episode:
+        parts.append(f"Episode: {item.episode}")
+    if item.genres:
+        parts.append(f"Genres: {', '.join(item.genres)}")
+    text = " | ".join(parts).strip()
+    return text or None
+
+
+# Columns in the exact order used by the INSERT below.
+_INGEST_COLS = [
+    "id",
+    "url",
+    "code",
+    "episode",
+    "video_id",
+    "title",
+    "thumbnail",
+    "preview",
+    "details",
+    "release_date",
+    "genres",
+    "embedding",
+]
+
+
+@app.post("/ingest", response_model=IngestResponse)
+def ingest(req: IngestRequest) -> IngestResponse:
+    """Insert or upsert rows into public.videos.
+
+    Embeddings are ALWAYS regenerated server-side from the item fields using
+    the same format as the ChromaDB migration script, so ingested rows are
+    comparable with migrated rows for semantic search.
+    """
+    t0 = time.perf_counter()
+    inserted = updated = skipped = 0
+
+    # 1) Build embedding texts (skip items with nothing to embed)
+    embeddable: List[Tuple[int, VideoIngestItem, str]] = []
+    for idx, item in enumerate(req.items):
+        text = _format_for_embedding(item)
+        if text is None:
+            skipped += 1
+            continue
+        embeddable.append((idx, item, text))
+
+    if not embeddable:
+        return IngestResponse(
+            inserted=0,
+            updated=0,
+            skipped=skipped,
+            took_ms=(time.perf_counter() - t0) * 1000,
+        )
+
+    # 2) Generate embeddings in one batched call (pooled + prefix-aware)
+    texts = [t for _, _, t in embeddable]
+    logger.info("Generating embeddings for %d ingest items...", len(texts))
+    embeddings = embed(texts, return_format="list", prefix=EMBED_DOC_PREFIX)
+
+    # 3) Build DB rows in original order
+    rows: List[tuple] = []
+    for (_, item, _), emb in zip(embeddable, embeddings):
+        rows.append(
+            (
+                item.id,
+                item.url,
+                item.code,
+                item.episode,
+                item.video_id,
+                item.title,
+                item.thumbnail,
+                item.preview,
+                item.details,
+                item.release_date,
+                item.genres,
+                emb,
+            )
+        )
+
+    placeholders = ", ".join(
+        "(" + ", ".join(["%s"] * len(_INGEST_COLS)) + ")" for _ in rows
+    )
+    flat_params: List = [v for r in rows for v in r]
+
+    on_conflict = (
+        f"""ON CONFLICT (id) DO UPDATE SET
+            url          = EXCLUDED.url,
+            code         = EXCLUDED.code,
+            episode      = EXCLUDED.episode,
+            video_id     = EXCLUDED.video_id,
+            title        = COALESCE(EXCLUDED.title,       videos.title),
+            thumbnail    = COALESCE(EXCLUDED.thumbnail,   videos.thumbnail),
+            preview      = COALESCE(EXCLUDED.preview,     videos.preview),
+            details      = COALESCE(EXCLUDED.details,     videos.details),
+            release_date = COALESCE(EXCLUDED.release_date, videos.release_date),
+            genres       = COALESCE(EXCLUDED.genres,      videos.genres),
+            embedding    = EXCLUDED.embedding,
+            updated_at   = now()
+        RETURNING (xmax = 0) AS inserted"""
+        if req.upsert
+        else "ON CONFLICT (id) DO NOTHING RETURNING false AS inserted"
+    )
+    # NOTE: embedding is always overwritten (EXCLUDED.embedding, not COALESCE)
+    # because it's regenerated from the current payload — never stale.
+
+    sql = f"""
+        INSERT INTO public.videos ({", ".join(_INGEST_COLS)})
+        VALUES {placeholders}
+        {on_conflict}
+    """
+
+    try:
+        with pool.connection() as conn:
+            register_vector(conn)
+            with conn.transaction():
+                cur = conn.execute(sql, flat_params)
+                for row in cur.fetchall():
+                    if row["inserted"]:
+                        inserted += 1
+                    else:
+                        updated += 1
+                skipped += len(rows) - inserted - updated
+    except Exception as e:
+        logger.exception("Ingest failed")
+        raise HTTPException(500, f"Ingest failed: {e}")
+
+    took = (time.perf_counter() - t0) * 1000
+    logger.info(
+        "ingest ok ins=%d upd=%d skip=%d %.1fms",
+        inserted,
+        updated,
+        skipped,
+        took,
+    )
+    return IngestResponse(
+        inserted=inserted,
+        updated=updated,
+        skipped=skipped,
+        took_ms=took,
+    )
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ Migration Script: ChromaDB -> PostgreSQL (missav_db1)
 Optimized for large datasets using chunked processing and bulk ingestion.
 """
 
+import json
 import re
 import sys
 from datetime import datetime
@@ -97,12 +98,28 @@ def flatten_and_clean_record(record: dict) -> dict:
     cleaned_release_date = parse_release_date(raw_release_date)
 
     genres = meta.get("genres")
-    # Ensure genres is a list or None, not a string representation of a list
-    if isinstance(genres, str):
-        try:
-            genres = json.loads(genres)
-        except:
-            genres = [genres]
+    if genres is None:
+        genres = None
+    elif isinstance(genres, str):
+        stripped = genres.strip()
+        if stripped == "":
+            genres = None
+        else:
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, list):
+                    genres = [str(g) for g in parsed]
+                elif parsed is None:
+                    genres = None
+                else:
+                    genres = [str(parsed)]
+            except json.JSONDecodeError:
+                # Not JSON — treat as a comma-separated list fallback
+                genres = [g.strip() for g in stripped.split(",") if g.strip()] or None
+    elif isinstance(genres, list):
+        genres = [str(g) for g in genres]
+    else:
+        genres = None
 
     return {
         "id": record["id"],
@@ -115,7 +132,7 @@ def flatten_and_clean_record(record: dict) -> dict:
         "preview": clean_value(meta.get("preview")),
         "details": clean_value(meta.get("details")),
         "release_date": cleaned_release_date,
-        "genres": genres if isinstance(genres, list) else None,
+        "genres": genres,
     }
 
 
@@ -155,7 +172,7 @@ def migrate(limit: int = None):
             "preview": "TEXT",
             "details": "TEXT",
             "release_date": "TIMESTAMPTZ",
-            "genres": "JSONB",
+            "genres": "TEXT[]",
         }
 
         pg_client.create_vector_table(
@@ -258,11 +275,14 @@ def migrate(limit: int = None):
     try:
         logger.info("Creating HNSW index for Cosine similarity...")
         pg_client.create_index(TABLE_NAME, metric="cosine", method="hnsw")
-
         logger.info("Creating Full-Text Search index...")
         pg_client.create_fts_index(TABLE_NAME, column_name="title")
+        logger.info("Creating GIN index on genres...")
+        pg_client.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_videos_genres_gin "
+            f"ON public.{TABLE_NAME} USING gin (genres)"
+        )
         logger.success("Indexes created successfully.")
-
     except Exception as e:
         logger.error(f"Error creating indexes: {e}")
 
