@@ -185,3 +185,21 @@ input:checked + .slider:before {
 .pto-reaction-btn:hover {
   background: #1a4a8a;
 }
+
+/* Video item styles */
+.pto-video-item {
+  margin-bottom: 8px;
+  padding: 8px;
+  background: #16213e;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.pto-video-item:hover {
+  background: #1a2744;
+}
+
+.pto-video-item img {
+  max-height: 80px;
+  object-fit: cover;
+}

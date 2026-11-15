@@ -373,6 +373,10 @@
         <h4>📖 Opened Thread</h4>
         <div class="pto-thread-info">
           <div class="pto-section">
+            <h5>🎥 Videos Detected</h5>
+            <div class="pto-video-list"></div>
+          </div>
+          <div class="pto-section">
             <h5>BBCode Blocks</h5>
             <div class="pto-bbcode-list"></div>
           </div>
@@ -484,7 +488,11 @@
     updateStatus("Analyzing thread content...");
 
     try {
+      // Get reaction info (includes video detection now)
       const reactionInfo = await getReactionInfo();
+
+      // ✅ NEW: Extract and display video information
+      updateVideoInfo(panel, reactionInfo);
 
       updateBbCodeBlocks(panel, null);
       updateReactionInfo(panel, reactionInfo);
@@ -497,7 +505,7 @@
 
       showReactionButtons(panel, reactionsToShow, reactionInfo.currentReaction);
 
-      // ✅ NEW: Auto-trigger first reaction if enabled and not already reacted
+      // Auto-trigger first reaction if enabled
       if (
         autoTriggerReaction &&
         !reactionInfo.hasReaction &&
@@ -509,10 +517,9 @@
         );
         updateStatus(`Auto-triggering: ${firstReaction.title}...`);
 
-        // Small delay to ensure UI is ready
         await sleep(500);
         await triggerReaction(firstReaction.href, firstReaction.id);
-        return; // Exit early - triggerReaction will re-analyze
+        return;
       }
 
       // Update status
@@ -595,7 +602,6 @@
   }
 
   async function getReactionInfo() {
-    // Find the main post element
     const mainPost =
       document.querySelector(".js-post:first-of-type") ||
       document.querySelector(".message:first-of-type");
@@ -603,16 +609,59 @@
     let currentReaction = null;
     let availableReactions = [];
     let requiredReactions = [];
+
+    // ✅ NEW: Video detection
+    let videoDetails = [];
+    const videoElements = document.querySelectorAll("video");
+    const hasVideoElement = videoElements.length > 0;
+
     log(`🔍 [THREAD-ANALYSIS] Main post element found: ${!!mainPost}`);
+    log(`🎥 [THREAD-ANALYSIS] Found ${videoElements.length} video elements`);
+
+    // Extract video details
+    videoElements.forEach((video, index) => {
+      const src =
+        video.src || video.querySelector("source")?.src || "Unknown source";
+      const poster = video.poster || "";
+      const duration = video.duration || 0;
+      const width = video.videoWidth || 0;
+      const height = video.videoHeight || 0;
+
+      // Try to find parent container for context
+      const parentBlock =
+        video.closest(".bbCodeBlock") ||
+        video.closest(".message-body") ||
+        video.parentElement;
+      const context = parentBlock
+        ? parentBlock.classList.contains("bbCodeBlock")
+          ? "BBCode Block"
+          : "Message Body"
+        : "Unknown";
+
+      videoDetails.push({
+        index: index + 1,
+        src: src.substring(0, 100), // Truncate long URLs
+        poster: poster,
+        duration: duration,
+        dimensions: `${width}x${height}`,
+        context: context,
+        element: video,
+      });
+    });
+
     if (!mainPost) {
       return {
         hasReaction,
         currentReaction,
         availableReactions,
         requiredReactions,
+        hasVideo: hasVideoElement,
+        videoCount: videoElements.length,
+        videoDetails: videoDetails,
       };
     }
-    // --- Check if user has already reacted ---
+
+    // Check if user has already reacted
     const reactedButton = mainPost.querySelector("a.reaction.has-reaction");
     if (reactedButton) {
       hasReaction = true;
@@ -624,15 +673,14 @@
         `✅ [THREAD-ANALYSIS] Existing reaction detected: ID=${currentReaction.id}`,
       );
     }
-    // ✅ FIX: Try to find ANY reaction button (reacted or not) to trigger tooltip
-    // First try non-reacted buttons, then fall back to reacted button
+
+    // Find tooltip or fallback to action bar
     let triggerBtn = mainPost.querySelector("a.reaction:not(.has-reaction)");
     if (!triggerBtn && reactedButton) {
-      // If user has reacted, use the reacted button to trigger tooltip
       triggerBtn = reactedButton;
       log(`ℹ️ [THREAD-ANALYSIS] Using reacted button to trigger tooltip`);
     }
-    // --- Find Tooltip with Dynamic Logic ---
+
     const reactTooltip = await findReactTooltipDynamic(triggerBtn, 5000);
     if (reactTooltip) {
       const reactionLinks = reactTooltip.querySelectorAll("a.reaction");
@@ -651,11 +699,9 @@
         `ℹ️ [THREAD-ANALYSIS] Scraped ${availableReactions.length} reactions from tooltip`,
       );
     } else {
-      // ⚠️ FALLBACK: If tooltip fails, try to get data from visible action bar buttons
       logWarn(
         `⚠️ [THREAD-ANALYSIS] Tooltip failed. Falling back to action bar scraping.`,
       );
-      // ✅ FIX: Get ALL reaction buttons (both reacted and non-reacted)
       const actionBarBtns = mainPost.querySelectorAll(
         ".actionBar-action--reaction.reaction",
       );
@@ -665,7 +711,6 @@
           availableReactions.push({
             id: btn.dataset.reactionId,
             title: img.alt,
-            // Construct URL manually as fallback
             href:
               btn.href ||
               `${window.location.origin}/posts/${btn.dataset.checkHidePostId}/react?reaction_id=${btn.dataset.reactionId}`,
@@ -677,7 +722,8 @@
         `ℹ️ [THREAD-ANALYSIS] Fallback scraped ${availableReactions.length} reactions from action bar`,
       );
     }
-    // --- Get Hidden Content Requirements ---
+
+    // Get hidden content requirements
     const mainArticle = document.querySelector(".message--article");
     if (mainArticle) {
       const hiddenBlocks = mainArticle.querySelectorAll(
@@ -706,18 +752,66 @@
         );
       }
     }
+
     if (requiredReactions.length === 0 && availableReactions.length > 0) {
       requiredReactions = [...availableReactions];
     }
+
     log(
-      `📊 [THREAD-ANALYSIS] Summary: hasReaction=${hasReaction}, required=${requiredReactions.length}, available=${availableReactions.length}`,
+      `📊 [THREAD-ANALYSIS] Summary: hasReaction=${hasReaction}, videos=${videoDetails.length}, required=${requiredReactions.length}, available=${availableReactions.length}`,
     );
+
     return {
       hasReaction,
       currentReaction,
       availableReactions,
       requiredReactions,
+      hasVideo: hasVideoElement,
+      videoCount: videoElements.length,
+      videoDetails: videoDetails,
     };
+  }
+
+  function updateVideoInfo(panel, reactionInfo) {
+    const container = panel.querySelector(".pto-video-list");
+    if (!container) return;
+
+    if (!reactionInfo.hasVideo || reactionInfo.videoCount === 0) {
+      container.innerHTML =
+        '<p style="color:#aaa;font-size:12px;">No videos detected</p>';
+      return;
+    }
+
+    let html = "";
+    reactionInfo.videoDetails.forEach((video, index) => {
+      // Format duration
+      const minutes = Math.floor(video.duration / 60);
+      const seconds = Math.floor(video.duration % 60);
+      const durationStr =
+        video.duration > 0
+          ? `${minutes}:${seconds.toString().padStart(2, "0")}`
+          : "Unknown";
+
+      html += `
+        <div class="pto-video-item" style="margin-bottom:8px;padding:8px;background:#16213e;border-radius:4px;border-left: 3px solid #4caf50;">
+          <div style="font-size:11px;color:#4caf50;margin-bottom:4px;font-weight:bold;">
+            🎥 Video #${video.index}
+          </div>
+          <div style="font-size:10px;color:#ffd700;margin-bottom:4px;">
+            📍 Location: ${escapeHtml(video.context)}
+          </div>
+          <div style="font-size:10px;color:#aaa;margin-bottom:4px;">
+            ⏱️ Duration: ${durationStr} | 📐 Size: ${video.dimensions}
+          </div>
+          <div style="font-size:9px;color:#888;word-break:break-all;line-height:1.3;">
+            🔗 ${escapeHtml(video.src)}
+          </div>
+          ${video.poster ? `<div style="margin-top:6px;"><img src="${escapeHtml(video.poster)}" style="max-width:100%;border-radius:3px;cursor:pointer;" onclick="window.open('${escapeHtml(video.src)}', '_blank')" title="Click to open video"></div>` : ""}
+        </div>
+      `;
+    });
+
+    container.innerHTML = html;
   }
 
   function updateBbCodeBlocks(panel, bbCodeBlocks) {
