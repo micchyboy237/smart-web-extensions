@@ -15,7 +15,7 @@ const DEFAULT_STATE = {
   jsWaitTime: 5000,
   pageDelay: 1000,
   tabOpenDelay: 500,
-  maxConcurrentTabs: 10,
+  maxConcurrentTabs: 20,
 };
 
 let processingState = { ...DEFAULT_STATE };
