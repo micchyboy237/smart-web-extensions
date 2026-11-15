@@ -432,6 +432,23 @@
 
           <!-- active filter pills -->
           <div class="flex flex-wrap items-center gap-1.5">
+            <!-- FIX: sort selector (browse mode only) -->
+            <label
+              x-show="mode === 'browse'"
+              class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/80 px-2.5 py-1 text-[11px] font-medium text-slate-400"
+              title="Sort order"
+            >
+              <i data-lucide="arrow-up-down" class="h-3 w-3"></i>
+              <select
+                x-model="sort"
+                @change="refetch()"
+                class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
+              >
+                <option value="release_date">Newest release</option>
+                <option value="created_at">Recently added</option>
+              </select>
+            </label>
+
             <template x-for="g in filters.genres" :key="g">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-accent-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-accent-300"
@@ -574,16 +591,16 @@
                   <span x-text="v.episode"></span>
                 </div>
                 <div class="mt-2 flex flex-wrap gap-1">
-                  <template x-for="g in (v.genres || []).slice(0,2)" :key="g">
+                  <template x-for="g in (v.genres ?? []).slice(0, 2)" :key="g">
                     <span
                       class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
                       x-text="g"
                     ></span>
                   </template>
                   <span
-                    x-show="(v.genres?.length || 0) > 2"
+                    x-show="(v.genres?.length ?? 0) > 2"
                     class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
-                    x-text="`+${v.genres.length - 2}`"
+                    x-text="`+${(v.genres?.length ?? 0) - 2}`"
                   ></span>
                 </div>
               </div>
@@ -782,6 +799,7 @@
           page: 0,
           exhausted: false,
           loading: false,
+          sort: "release_date",
           online: true,
           lastTook: null,
           filtersOpen: false,
@@ -798,13 +816,13 @@
           detail: { open: false, loading: false, video: null },
           similarOf: null,
           toasts: [],
+          _gen: 0,
 
           // ── lifecycle ──
           boot() {
             this.hydrateFromURL();
             this.refreshIcons();
             this.$nextTick(() => this.refreshIcons());
-
             this.fetchFacets();
             this.refetch();
 
@@ -820,8 +838,8 @@
               }
             });
 
-            // infinite scroll
-            new IntersectionObserver(
+            // infinite scroll — also re-fire when the sentinel is already in view
+            const io = new IntersectionObserver(
               (entries) => {
                 if (
                   entries[0].isIntersecting &&
@@ -833,12 +851,27 @@
                 }
               },
               { rootMargin: "400px" },
-            ).observe(this.$refs.sentinel);
-
-            // re-render lucide icons whenever Alpine updates
-            this.$watch("items", () =>
-              this.$nextTick(() => this.refreshIcons()),
             );
+            io.observe(this.$refs.sentinel);
+
+            // FIX: IntersectionObserver only fires on *transition*. If a short page
+            // loads and the sentinel is already inside the viewport, it never fires
+            // again → "stuck" behavior. Re-check on scroll and after every items change.
+            const checkSentinel = () => {
+              const el = this.$refs.sentinel;
+              if (!el || this.exhausted || this.loading || !this.items.length)
+                return;
+              const rect = el.getBoundingClientRect();
+              if (rect.top < window.innerHeight + 400) this.loadMore();
+            };
+            window.addEventListener("scroll", checkSentinel, { passive: true });
+
+            this.$watch("items", () => {
+              this.$nextTick(() => {
+                this.refreshIcons();
+                checkSentinel(); // <-- NEW
+              });
+            });
             this.$watch("detail.open", () =>
               this.$nextTick(() => this.refreshIcons()),
             );
@@ -862,7 +895,9 @@
               .split(",")
               .filter(Boolean);
             this.similarOf = p.get("sim") || null;
+            this.sort = p.get("sort") || "release_date"; // <-- NEW
           },
+
           syncURL() {
             const p = new URLSearchParams();
             if (this.mode === "search" && this.lastQuery)
@@ -879,6 +914,9 @@
               p.set("gmode", this.filters.genresMode);
             if (this.filters.genres.length)
               p.set("genres", this.filters.genres.join(","));
+            if (this.mode === "browse" && this.sort !== "release_date")
+              // <-- NEW
+              p.set("sort", this.sort);
             history.replaceState(null, "", `${location.pathname}?${p}`);
           },
 
@@ -948,15 +986,19 @@
             this.cursor = null;
             this.page = 0;
             this.exhausted = false;
+            this._gen++; // <-- invalidate any in-flight page
             this.fetchPage({ reset: true });
           },
+
           loadMore() {
-            if (!this.exhausted) this.fetchPage();
+            if (!this.exhausted && !this.loading) this.fetchPage();
           },
 
           async fetchPage({ reset = false } = {}) {
             if (this.loading) return;
             this.loading = true;
+            const gen = ++this._gen; // <-- capture generation
+
             try {
               const params = this.buildParams(reset);
               if (!params) return;
@@ -968,12 +1010,18 @@
                   : undefined,
                 body: params.body ? JSON.stringify(params.body) : undefined,
               });
+
+              // FIX: drop stale responses (filter changed, refetch fired, etc.)
+              if (gen !== this._gen) return;
+
               this.online = true;
               if (!res.ok) {
                 const txt = await res.text();
                 throw new Error(`${res.status}: ${txt}`);
               }
+
               const page = await res.json();
+              if (gen !== this._gen) return; // <-- re-check after JSON parse
 
               if (reset) {
                 this.items = [];
@@ -981,17 +1029,22 @@
                 this.page = 0;
                 this.exhausted = false;
               }
+
               this.items.push(...page.items);
               this.cursor = page.next_cursor;
-              this.exhausted = !page.has_more;
+
+              // FIX: treat "has_more but no cursor" as exhausted (defensive)
+              this.exhausted = !page.has_more || !page.next_cursor;
+
               this.lastTook = page.took_ms ?? null;
               if (this.mode === "browse") this.page += 1;
               this.$nextTick(() => this.refreshIcons());
             } catch (e) {
+              if (gen !== this._gen) return; // <-- ignore stale errors
               this.online = false;
               this.toast("error", e.message);
             } finally {
-              this.loading = false;
+              if (gen === this._gen) this.loading = false;
             }
           },
 
@@ -1042,6 +1095,7 @@
             p.set("limit", "20");
             p.set("offset", reset ? "0" : String(this.page * 20));
             if (this.filters.code) p.set("code", this.filters.code);
+            if (this.sort) p.set("sort", this.sort); // <-- NEW
             this.filters.genres.forEach((g) => p.append("genres", g));
             return { path: `/browse?${p}`, method: "GET" };
           },
