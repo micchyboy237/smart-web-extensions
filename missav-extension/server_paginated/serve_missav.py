@@ -495,6 +495,7 @@ def browse(
     offset: int = Query(0, ge=0, le=100_000),
     genre: Optional[str] = None,
     genres: Optional[List[str]] = Query(None),
+    genres_mode: Literal["any", "all"] = "any",
     code: Optional[str] = None,
     sort: Literal["release_date", "created_at"] = "release_date",
 ):
@@ -505,7 +506,8 @@ def browse(
         conds.append("%(genre)s = ANY(genres)")
         params["genre"] = genre
     if genres:
-        conds.append("genres && %(genres)s::text[]")
+        op = "@>" if genres_mode == "all" else "&&"
+        conds.append(f"genres {op} %(genres)s::text[]")
         params["genres"] = genres
     if code:
         conds.append("code = %(code)s")

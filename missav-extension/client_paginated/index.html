@@ -1095,7 +1095,8 @@
             p.set("limit", "20");
             p.set("offset", reset ? "0" : String(this.page * 20));
             if (this.filters.code) p.set("code", this.filters.code);
-            if (this.sort) p.set("sort", this.sort); // <-- NEW
+            if (this.sort) p.set("sort", this.sort);
+            p.set("genres_mode", this.filters.genresMode);
             this.filters.genres.forEach((g) => p.append("genres", g));
             return { path: `/browse?${p}`, method: "GET" };
           },
