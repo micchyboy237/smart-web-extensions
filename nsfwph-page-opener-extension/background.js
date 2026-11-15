@@ -188,21 +188,32 @@ async function checkAndCloseIfReacted(tabId, url) {
       log("ℹ️ [AUTO-CLOSE] Skipping reaction check: Not a thread/post URL");
       return;
     }
+
     log(`🔍 [AUTO-CLOSE] Injecting reaction check into tab ${tabId}...`);
+
+    // Get settings including auto-reaction flag
+    const settings = await chrome.storage.local.get([
+      "pto_autoCloseIfReacted",
+      "pto_autoTriggerReaction",
+      "pto_daysBackFilter",
+    ]);
+
+    const shouldAutoClose = settings.pto_autoCloseIfReacted;
+    const shouldAutoReact = settings.pto_autoTriggerReaction;
+
+    // Initial check
     const results = await chrome.scripting.executeScript({
       target: { tabId: tabId },
       func: () => {
-        // ✅ NEW: Extract thread timestamp from the page
         let threadTimestamp = null;
         const timeElement = document.querySelector("time[data-timestamp]");
         if (timeElement && timeElement.dataset.timestamp) {
           threadTimestamp = parseInt(timeElement.dataset.timestamp, 10);
         }
 
-        // Check for video elements (global is usually fine for videos)
         const videoElements = document.querySelectorAll("video");
         const hasVideoElement = videoElements.length > 0;
-        // Scope bbCodeBlock check to .message--article
+
         const mainArticle = document.querySelector(".message--article");
         let hasBbCodeBlock = false;
         let bbCodeBlockCount = 0;
@@ -211,7 +222,7 @@ async function checkAndCloseIfReacted(tabId, url) {
           bbCodeBlockCount = blocks.length;
           hasBbCodeBlock = bbCodeBlockCount > 0;
         }
-        // Scope to main post for reaction check (keep existing logic or refine similarly)
+
         const mainPost =
           document.querySelector(".js-post:first-of-type") ||
           document.querySelector(".message:first-of-type");
@@ -229,22 +240,24 @@ async function checkAndCloseIfReacted(tabId, url) {
             }
           }
         }
+
         return {
-          threadTimestamp: threadTimestamp, // ✅ NEW: Return timestamp
+          threadTimestamp: threadTimestamp,
           hasReaction: hasReaction,
           hasVideo: hasVideoElement,
           videoCount: videoElements.length,
-          hasBbCodeBlock: hasBbCodeBlock, // Now strictly from .message--article
+          hasBbCodeBlock: hasBbCodeBlock,
           bbCodeBlockCount: bbCodeBlockCount,
           pageTitle: document.title,
         };
       },
     });
+
     if (results && results[0] && results[0].result) {
       const checkResult = results[0].result;
-      // ✅ ADD: Log all detection results before decision
+
       log(`📋 [AUTO-CLOSE] Detection results for tab ${tabId}:`, {
-        threadTimestamp: checkResult.threadTimestamp, // ✅ NEW: Log timestamp
+        threadTimestamp: checkResult.threadTimestamp,
         hasReaction: checkResult.hasReaction,
         hasVideo: checkResult.hasVideo,
         videoCount: checkResult.videoCount,
@@ -253,9 +266,8 @@ async function checkAndCloseIfReacted(tabId, url) {
         pageTitle: checkResult.pageTitle,
       });
 
-      // ✅ NEW: Check 0 - Date Filter
+      // Date filter check
       if (checkResult.threadTimestamp) {
-        const settings = await chrome.storage.local.get(["pto_daysBackFilter"]);
         const daysBack = settings.pto_daysBackFilter || 0;
         if (daysBack > 0) {
           const now = Date.now() / 1000;
@@ -265,40 +277,111 @@ async function checkAndCloseIfReacted(tabId, url) {
               `🚫 [AUTO-CLOSE] DECISION: CLOSE | Reason: FILTERED_BY_DATE (older than ${daysBack} days) | Timestamp: ${checkResult.threadTimestamp} | Cutoff: ${cutoffTime} | Tab: ${tabId}`,
             );
             chrome.tabs.remove(tabId);
-            return; // Exit early - no need to check other conditions
+            return;
           }
         }
       }
 
-      // Decision logic with explicit branch logging:
-      // 1. If has reaction: ALWAYS close
+      // If has reaction: close
       if (checkResult.hasReaction) {
         log(
           `🚫 [AUTO-CLOSE] DECISION: CLOSE | Reason: HAS_REACTION | Tab: ${tabId}`,
         );
         chrome.tabs.remove(tabId);
       }
-      // 2. If NO reaction AND has video: Keep open
+      // If no reaction but auto-react enabled: wait and re-check
+      else if (shouldAutoReact && !checkResult.hasReaction) {
+        log(
+          `⏳ [AUTO-CLOSE] Auto-reaction enabled but no reaction yet. Waiting 2s before re-check... | Tab: ${tabId}`,
+        );
+
+        // Wait for auto-reaction to complete, then re-check
+        setTimeout(async () => {
+          try {
+            const reCheckResults = await chrome.scripting.executeScript({
+              target: { tabId: tabId },
+              func: () => {
+                const mainPost =
+                  document.querySelector(".js-post:first-of-type") ||
+                  document.querySelector(".message:first-of-type");
+                let hasReaction = false;
+                if (mainPost) {
+                  if (mainPost.querySelector("a.reaction.has-reaction")) {
+                    hasReaction = true;
+                  }
+                }
+
+                const videoElements = document.querySelectorAll("video");
+                const hasVideoElement = videoElements.length > 0;
+
+                const mainArticle = document.querySelector(".message--article");
+                let hasBbCodeBlock = false;
+                if (mainArticle) {
+                  const blocks = mainArticle.querySelectorAll(".bbCodeBlock");
+                  hasBbCodeBlock = blocks.length > 0;
+                }
+
+                return {
+                  hasReaction: hasReaction,
+                  hasVideo: hasVideoElement,
+                  hasBbCodeBlock: hasBbCodeBlock,
+                };
+              },
+            });
+
+            if (
+              reCheckResults &&
+              reCheckResults[0] &&
+              reCheckResults[0].result
+            ) {
+              const reCheck = reCheckResults[0].result;
+
+              if (reCheck.hasReaction) {
+                log(
+                  `🚫 [AUTO-CLOSE] DECISION: CLOSE | Reason: HAS_REACTION (after auto-react) | Tab: ${tabId}`,
+                );
+                chrome.tabs.remove(tabId);
+              } else if (reCheck.hasVideo) {
+                log(
+                  `✅ [AUTO-CLOSE] DECISION: KEEP_OPEN | Reason: HAS_VIDEO (no reaction even after auto-react) | Tab: ${tabId}`,
+                );
+              } else if (reCheck.hasBbCodeBlock) {
+                log(
+                  `✅ [AUTO-CLOSE] DECISION: KEEP_OPEN | Reason: HAS_BBCODE_BLOCK (no reaction even after auto-react) | Tab: ${tabId}`,
+                );
+              } else {
+                log(
+                  `🚫 [AUTO-CLOSE] DECISION: CLOSE | Reason: EMPTY_PAGE (no reaction, no video, no bbCode) | Tab: ${tabId}`,
+                );
+                chrome.tabs.remove(tabId);
+              }
+            }
+          } catch (e) {
+            logError(
+              `💥 [AUTO-CLOSE] Error during re-check for tab ${tabId}:`,
+              e.message,
+            );
+          }
+        }, 2000); // Wait 2 seconds for reaction to apply
+
+        return; // Exit early - will re-check later
+      }
+      // Standard decision logic (when auto-react is disabled)
       else if (checkResult.hasVideo) {
         log(
           `✅ [AUTO-CLOSE] DECISION: KEEP_OPEN | Reason: HAS_VIDEO (${checkResult.videoCount}) | Tab: ${tabId}`,
         );
-      }
-      // 3. If NO reaction AND no video BUT has bbCodeBlock: Keep open
-      else if (checkResult.hasBbCodeBlock) {
+      } else if (checkResult.hasBbCodeBlock) {
         log(
           `✅ [AUTO-CLOSE] DECISION: KEEP_OPEN | Reason: HAS_BBCODE_BLOCK (${checkResult.bbCodeBlockCount}) | Tab: ${tabId}`,
         );
-      }
-      // 4. If NO reaction AND no video AND no bbCodeBlock: Close
-      else {
+      } else {
         log(
           `🚫 [AUTO-CLOSE] DECISION: CLOSE | Reason: EMPTY_PAGE (no reaction, no video, no bbCode) | Tab: ${tabId}`,
         );
         chrome.tabs.remove(tabId);
       }
     } else {
-      // ✅ ADD: Log when script execution returns nothing
       logWarn(
         `⚠️ [AUTO-CLOSE] Script returned no results for tab ${tabId}. Keeping open as safety fallback.`,
       );

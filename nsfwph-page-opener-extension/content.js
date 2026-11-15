@@ -167,13 +167,14 @@
   let skippedDuplicates = 0;
   let skippedExcluded = 0;
   let skippedByDate = 0;
-  let targetCount = 10; // Default
-  let useTargetLimit = false; // Default
-  let autoCloseIfReacted = false; // Default
+  let targetCount = 10;
+  let useTargetLimit = false;
+  let autoCloseIfReacted = false;
   let currentStrategy = null;
   let hasProcessedDataList = false;
   let currentPanelType = "structured";
-  let daysBackFilter = 0; // Default
+  let daysBackFilter = 0;
+  let autoTriggerReaction = false;
 
   // ============================================================
   // STORAGE HELPERS (Consolidated to chrome.storage.local)
@@ -189,15 +190,15 @@
         "pto_targetCount",
         "pto_daysBackFilter",
         "pto_autoCloseIfReacted",
+        "pto_autoTriggerReaction", // ✅ NEW
       ]);
-
       useTargetLimit = result.pto_useTargetLimit ?? false;
       targetCount = result.pto_targetCount ?? 10;
       daysBackFilter = result.pto_daysBackFilter ?? 0;
       autoCloseIfReacted = result.pto_autoCloseIfReacted ?? false;
-
+      autoTriggerReaction = result.pto_autoTriggerReaction ?? false; // ✅ NEW
       log(
-        `📂 Loaded settings: limit=${useTargetLimit}, count=${targetCount}, days=${daysBackFilter}, autoclose=${autoCloseIfReacted}`,
+        `📂 Loaded settings: limit=${useTargetLimit}, count=${targetCount}, days=${daysBackFilter}, autoclose=${autoCloseIfReacted}, autoReaction=${autoTriggerReaction}`,
       );
     } catch (e) {
       logWarn("Failed to load settings:", e);
@@ -214,6 +215,7 @@
         pto_targetCount: targetCount,
         pto_daysBackFilter: daysBackFilter,
         pto_autoCloseIfReacted: autoCloseIfReacted,
+        pto_autoTriggerReaction: autoTriggerReaction, // ✅ NEW
       });
       log(`💾 Saved settings to chrome.storage.local`);
     } catch (e) {
@@ -366,8 +368,6 @@
   }
 
   async function loadThreadsPanelHTML() {
-    // In production, this would fetch from panel-threads.html
-    // For now, we'll use inline HTML
     return `
       <div class="pto-panel-content">
         <h4>📖 Opened Thread</h4>
@@ -381,6 +381,13 @@
             <div class="pto-reaction-info"></div>
             <div class="pto-reaction-actions"></div>
           </div>
+        </div>
+        <div class="pto-row">
+          <label>Auto-Trigger First Reaction:</label>
+          <label class="switch">
+            <input type="checkbox" class="pto-auto-reaction-toggle" ${autoTriggerReaction ? "checked" : ""}>
+            <span class="slider"></span>
+          </label>
         </div>
         <div class="pto-row">
           <span class="pto-status">Analyzing thread...</span>
@@ -443,28 +450,71 @@
       logError("Failed to analyze thread:", err);
       updateStatus("Error analyzing thread");
     });
+
+    // ✅ NEW: Auto-reaction toggle listener
+    const autoReactionToggle = panel.querySelector(".pto-auto-reaction-toggle");
+    if (autoReactionToggle) {
+      autoReactionToggle.addEventListener("change", async (e) => {
+        autoTriggerReaction = e.target.checked;
+        log(
+          `🔄 Auto-trigger reaction: ${autoTriggerReaction ? "ENABLED" : "DISABLED"}`,
+        );
+        await savePanelSettings();
+
+        // If enabled and no reaction yet, trigger immediately
+        if (autoTriggerReaction) {
+          const reactionInfo = await getReactionInfo();
+          if (
+            !reactionInfo.hasReaction &&
+            reactionInfo.requiredReactions.length > 0
+          ) {
+            const firstReaction = reactionInfo.requiredReactions[0];
+            log(`🎯 Auto-triggering first reaction: ${firstReaction.title}`);
+            await triggerReaction(firstReaction.href, firstReaction.id);
+          }
+        }
+      });
+    }
   }
 
   // ============================================================
   // THREADS PANEL FUNCTIONALITY
   // ============================================================
   async function analyzeThreadContent(panel) {
-    // 1. Set initial status
     updateStatus("Analyzing thread content...");
+
     try {
-      // 2. Perform the heavy lifting (includes the 3s tooltip wait)
       const reactionInfo = await getReactionInfo();
-      // 3. Render the UI components
-      updateBbCodeBlocks(panel, null); // ✅ This is already correct - no changes needed
+
+      updateBbCodeBlocks(panel, null);
       updateReactionInfo(panel, reactionInfo);
-      // ✅ FIX: Only show reactions that are required by remaining hidden blocks
-      // Changed from reactionInfo.availableReactions to reactionInfo.requiredReactions
+
       const reactionsToShow = reactionInfo.hasReaction
         ? reactionInfo.requiredReactions.filter(
             (r) => r.id !== reactionInfo.currentReaction.id,
           )
         : reactionInfo.requiredReactions;
+
       showReactionButtons(panel, reactionsToShow, reactionInfo.currentReaction);
+
+      // ✅ NEW: Auto-trigger first reaction if enabled and not already reacted
+      if (
+        autoTriggerReaction &&
+        !reactionInfo.hasReaction &&
+        reactionInfo.requiredReactions.length > 0
+      ) {
+        const firstReaction = reactionInfo.requiredReactions[0];
+        log(
+          `🎯 [AUTO-REACT] Triggering first reaction: ${firstReaction.title}`,
+        );
+        updateStatus(`Auto-triggering: ${firstReaction.title}...`);
+
+        // Small delay to ensure UI is ready
+        await sleep(500);
+        await triggerReaction(firstReaction.href, firstReaction.id);
+        return; // Exit early - triggerReaction will re-analyze
+      }
+
       // Update status
       if (reactionInfo.hasReaction) {
         updateStatus(`Ready (Reacted: ${reactionInfo.currentReaction.title})`);
