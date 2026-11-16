@@ -4,7 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>MissAV Explorer</title>
-
     <!-- Tailwind (JIT via CDN) -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -33,7 +32,6 @@
         },
       };
     </script>
-
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -41,111 +39,16 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-
     <!-- Alpine.js -->
     <script
       defer
       src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"
     ></script>
-
     <!-- Lucide icons -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 
-    <style>
-      html {
-        scroll-behavior: smooth;
-      }
-      body {
-        font-feature-settings: "cv02", "cv03", "cv04", "cv11";
-      }
-
-      /* custom scrollbar */
-      ::-webkit-scrollbar {
-        width: 10px;
-        height: 10px;
-      }
-      ::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      ::-webkit-scrollbar-thumb {
-        background: #293241;
-        border-radius: 8px;
-      }
-      ::-webkit-scrollbar-thumb:hover {
-        background: #3b4658;
-      }
-
-      /* film-grain background */
-      .bg-grain::before {
-        content: "";
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        z-index: 0;
-        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence baseFrequency='.9' numOctaves='2'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .04 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-        opacity: 0.35;
-        mix-blend-mode: overlay;
-      }
-
-      /* skeleton shimmer */
-      .skeleton {
-        background: linear-gradient(
-          90deg,
-          #1d2430 0%,
-          #293241 50%,
-          #1d2430 100%
-        );
-        background-size: 200% 100%;
-        animation: shimmer 1.4s infinite;
-      }
-      @keyframes shimmer {
-        0% {
-          background-position: 200% 0;
-        }
-        100% {
-          background-position: -200% 0;
-        }
-      }
-
-      /* fade-in-up card */
-      .card-enter {
-        animation: cardEnter 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-      }
-      @keyframes cardEnter {
-        from {
-          opacity: 0;
-          transform: translateY(10px) scale(0.985);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0) scale(1);
-        }
-      }
-
-      /* modal backdrop */
-      .modal-backdrop {
-        backdrop-filter: blur(6px);
-        background: rgba(5, 7, 12, 0.72);
-      }
-
-      [x-cloak] {
-        display: none !important;
-      }
-
-      /* line-clamp helper (Tailwind CDN includes it, but explicit for safety) */
-      .line-clamp-2 {
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
-      .line-clamp-3 {
-        display: -webkit-box;
-        -webkit-line-clamp: 3;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
-    </style>
+    <!-- Custom Styles -->
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body
     class="bg-ink-950 text-slate-200 min-h-screen bg-grain antialiased"
@@ -171,7 +74,6 @@
             MissAV<span class="text-accent-400">.</span>Explorer
           </span>
         </a>
-
         <!-- search -->
         <form
           @submit.prevent="doSearch()"
@@ -209,7 +111,6 @@
             <i data-lucide="layout-grid" class="h-4 w-4"></i> Browse
           </button>
         </form>
-
         <!-- right status -->
         <div class="hidden items-center gap-2 md:flex">
           <span
@@ -223,7 +124,6 @@
             <span x-text="online ? 'live' : 'offline'"></span>
           </span>
         </div>
-
         <!-- mobile filters trigger -->
         <button
           @click="filtersOpen = !filtersOpen"
@@ -233,7 +133,6 @@
         </button>
       </div>
     </header>
-
     <!-- ═══════════════════ MAIN LAYOUT ═══════════════════ -->
     <div
       class="relative z-10 mx-auto flex max-w-[1600px] gap-6 px-4 py-6 md:px-6"
@@ -259,7 +158,6 @@
               <i data-lucide="x" class="h-5 w-5"></i>
             </button>
           </div>
-
           <!-- code -->
           <label class="mb-4 block">
             <span class="mb-1.5 block text-xs font-medium text-slate-500"
@@ -272,13 +170,22 @@
               ></i>
               <input
                 x-model="filters.code"
-                @change="refetch()"
+                @change="
+        filters.code = filters.code
+          .split(',')
+          .map(c => c.trim().toLowerCase())
+          .filter(Boolean)
+          .join(', ');
+        refetch();
+      "
                 placeholder="mdyd, sprd…"
                 class="w-full rounded-lg border border-white/10 bg-ink-800 py-2 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-accent-500/60 focus:outline-none"
               />
             </div>
+            <span class="mt-1 block text-[10px] text-slate-600">
+              Comma-separated = match any series
+            </span>
           </label>
-
           <!-- date range -->
           <div class="mb-4">
             <span
@@ -302,7 +209,6 @@
               />
             </div>
           </div>
-
           <!-- genres mode toggle -->
           <div class="mb-4">
             <span
@@ -329,7 +235,6 @@
               </button>
             </div>
           </div>
-
           <!-- genres chips -->
           <div class="mb-4">
             <span
@@ -356,7 +261,6 @@
               </template>
             </div>
           </div>
-
           <!-- year quick-pick -->
           <div class="mb-4">
             <span
@@ -378,7 +282,6 @@
               </template>
             </div>
           </div>
-
           <button
             @click="clearFilters()"
             class="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/10 py-2 text-xs font-semibold text-slate-400 transition hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300"
@@ -388,7 +291,6 @@
           </button>
         </div>
       </aside>
-
       <!-- ─── Results ─── -->
       <section class="min-w-0 flex-1">
         <!-- result header -->
@@ -429,14 +331,15 @@
               ></span>
             </p>
           </div>
-
           <!-- active filter pills -->
           <div class="flex flex-wrap items-center gap-1.5">
-            <!-- FIX: sort selector (browse mode only) -->
-            <label
-              x-show="mode === 'browse'"
+            <!-- Sort & Order selector (browse + search; hidden for similar) -->
+            <div
+              x-show="mode === 'browse' || mode === 'search'"
               class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/80 px-2.5 py-1 text-[11px] font-medium text-slate-400"
-              title="Sort order"
+              :title="mode === 'browse'
+  ? 'Sort order'
+  : 'Search sort order — choosing \'Newest release\' hides videos without a release date'"
             >
               <i data-lucide="arrow-up-down" class="h-3 w-3"></i>
               <select
@@ -444,10 +347,23 @@
                 @change="refetch()"
                 class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
               >
+                <!-- Similarity option only meaningful in search mode -->
+                <option value="similarity" x-show="mode === 'search'">
+                  Most similar
+                </option>
                 <option value="release_date">Newest release</option>
                 <option value="created_at">Recently added</option>
               </select>
-            </label>
+              <span class="text-slate-600">|</span>
+              <select
+                x-model="order"
+                @change="refetch()"
+                class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
+              >
+                <option value="desc">Desc</option>
+                <option value="asc">Asc</option>
+              </select>
+            </div>
 
             <template x-for="g in filters.genres" :key="g">
               <span
@@ -492,7 +408,6 @@
             </template>
           </div>
         </div>
-
         <!-- skeleton on first load -->
         <div
           x-show="items.length === 0 && loading"
@@ -514,7 +429,6 @@
             </div>
           </template>
         </div>
-
         <!-- cards grid -->
         <div
           x-show="items.length > 0"
@@ -538,7 +452,6 @@
                 <div
                   class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
                 ></div>
-
                 <!-- similarity badge -->
                 <div
                   x-show="v.similarity != null"
@@ -547,14 +460,12 @@
                   <i data-lucide="target" class="h-3 w-3"></i>
                   <span x-text="(v.similarity * 100).toFixed(0) + '%'"></span>
                 </div>
-
                 <!-- year badge -->
                 <div
                   x-show="v.release_date"
                   class="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-slate-300 backdrop-blur"
                   x-text="v.release_date?.slice(0,4)"
                 ></div>
-
                 <!-- hover overlay actions -->
                 <div
                   class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
@@ -573,7 +484,6 @@
                   </button>
                 </div>
               </div>
-
               <!-- body -->
               <div class="p-3">
                 <h3
@@ -607,7 +517,6 @@
             </article>
           </template>
         </div>
-
         <!-- empty state -->
         <div
           x-show="!loading && items.length === 0"
@@ -629,7 +538,6 @@
             Clear filters
           </button>
         </div>
-
         <!-- load more / sentinel -->
         <div
           x-show="items.length > 0"
@@ -653,12 +561,10 @@
             — you've reached the end —
           </p>
         </div>
-
         <!-- intersection sentinel -->
         <div x-ref="sentinel" class="h-1"></div>
       </section>
     </div>
-
     <!-- ═══════════════════ DETAIL MODAL ═══════════════════ -->
     <div
       x-show="detail.open"
@@ -677,11 +583,9 @@
         >
           <i data-lucide="x" class="h-5 w-5"></i>
         </button>
-
         <template x-if="detail.loading">
           <div class="aspect-video skeleton"></div>
         </template>
-
         <template x-if="detail.video">
           <div>
             <!-- media -->
@@ -704,7 +608,6 @@
                 />
               </template>
             </div>
-
             <!-- meta -->
             <div class="max-h-[50vh] overflow-y-auto p-5">
               <div class="mb-2 flex items-center gap-2 text-xs text-slate-500">
@@ -722,7 +625,6 @@
                 class="text-xl font-bold text-slate-100"
                 x-text="detail.video.title || '(untitled)'"
               ></h2>
-
               <div class="mt-3 flex flex-wrap gap-1.5">
                 <template x-for="g in (detail.video.genres || [])" :key="g">
                   <span
@@ -732,13 +634,11 @@
                   ></span>
                 </template>
               </div>
-
               <p
                 x-show="detail.video.details"
                 class="mt-4 whitespace-pre-wrap text-sm leading-relaxed text-slate-400"
                 x-text="detail.video.details"
               ></p>
-
               <div class="mt-5 flex flex-wrap gap-2">
                 <a
                   :href="detail.video.url"
@@ -761,7 +661,6 @@
         </template>
       </div>
     </div>
-
     <!-- ═══════════════════ TOASTS ═══════════════════ -->
     <div
       class="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2"
@@ -785,362 +684,7 @@
       </template>
     </div>
 
-    <script>
-      function app() {
-        const API = "http://localhost:9001";
-
-        return {
-          // ── state ──
-          mode: "browse", // 'search' | 'similar' | 'browse'
-          query: "",
-          lastQuery: "",
-          items: [],
-          cursor: null,
-          page: 0,
-          exhausted: false,
-          loading: false,
-          sort: "release_date",
-          online: true,
-          lastTook: null,
-          filtersOpen: false,
-
-          filters: {
-            code: "",
-            from: "",
-            to: "",
-            genresMode: "any",
-            genres: [],
-          },
-          facets: { genres: [], years: [], codes: [] },
-
-          detail: { open: false, loading: false, video: null },
-          similarOf: null,
-          toasts: [],
-          _gen: 0,
-
-          // ── lifecycle ──
-          boot() {
-            this.hydrateFromURL();
-            this.refreshIcons();
-            this.$nextTick(() => this.refreshIcons());
-            this.fetchFacets();
-            this.refetch();
-
-            // keyboard
-            document.addEventListener("keydown", (e) => {
-              if (e.key === "Escape") this.closeDetail();
-              if (
-                e.key === "/" &&
-                !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)
-              ) {
-                e.preventDefault();
-                this.$refs.searchInput.focus();
-              }
-            });
-
-            // infinite scroll — also re-fire when the sentinel is already in view
-            const io = new IntersectionObserver(
-              (entries) => {
-                if (
-                  entries[0].isIntersecting &&
-                  !this.exhausted &&
-                  !this.loading &&
-                  this.items.length
-                ) {
-                  this.loadMore();
-                }
-              },
-              { rootMargin: "400px" },
-            );
-            io.observe(this.$refs.sentinel);
-
-            // FIX: IntersectionObserver only fires on *transition*. If a short page
-            // loads and the sentinel is already inside the viewport, it never fires
-            // again → "stuck" behavior. Re-check on scroll and after every items change.
-            const checkSentinel = () => {
-              const el = this.$refs.sentinel;
-              if (!el || this.exhausted || this.loading || !this.items.length)
-                return;
-              const rect = el.getBoundingClientRect();
-              if (rect.top < window.innerHeight + 400) this.loadMore();
-            };
-            window.addEventListener("scroll", checkSentinel, { passive: true });
-
-            this.$watch("items", () => {
-              this.$nextTick(() => {
-                this.refreshIcons();
-                checkSentinel(); // <-- NEW
-              });
-            });
-            this.$watch("detail.open", () =>
-              this.$nextTick(() => this.refreshIcons()),
-            );
-          },
-
-          refreshIcons() {
-            if (window.lucide) lucide.createIcons();
-          },
-
-          // ── URL sync ──
-          hydrateFromURL() {
-            const p = new URLSearchParams(location.search);
-            this.mode = p.get("mode") || (p.get("q") ? "search" : "browse");
-            this.query = p.get("q") || "";
-            this.lastQuery = this.query;
-            this.filters.code = p.get("code") || "";
-            this.filters.from = p.get("from") || "";
-            this.filters.to = p.get("to") || "";
-            this.filters.genresMode = p.get("gmode") || "any";
-            this.filters.genres = (p.get("genres") || "")
-              .split(",")
-              .filter(Boolean);
-            this.similarOf = p.get("sim") || null;
-            this.sort = p.get("sort") || "release_date"; // <-- NEW
-          },
-
-          syncURL() {
-            const p = new URLSearchParams();
-            if (this.mode === "search" && this.lastQuery)
-              p.set("q", this.lastQuery);
-            if (this.mode === "browse") p.set("mode", "browse");
-            if (this.mode === "similar" && this.similarOf) {
-              p.set("mode", "similar");
-              p.set("sim", this.similarOf);
-            }
-            if (this.filters.code) p.set("code", this.filters.code);
-            if (this.filters.from) p.set("from", this.filters.from);
-            if (this.filters.to) p.set("to", this.filters.to);
-            if (this.filters.genresMode !== "any")
-              p.set("gmode", this.filters.genresMode);
-            if (this.filters.genres.length)
-              p.set("genres", this.filters.genres.join(","));
-            if (this.mode === "browse" && this.sort !== "release_date")
-              // <-- NEW
-              p.set("sort", this.sort);
-            history.replaceState(null, "", `${location.pathname}?${p}`);
-          },
-
-          // ── actions ──
-          onQueryInput() {
-            clearTimeout(this._deb);
-            this._deb = setTimeout(() => {
-              if (this.query.trim()) this.doSearch();
-            }, 400);
-          },
-          doSearch() {
-            const q = this.query.trim();
-            if (!q) return;
-            this.mode = "search";
-            this.lastQuery = q;
-            this.similarOf = null;
-            this.syncURL();
-            this.refetch();
-          },
-          doBrowse() {
-            this.mode = "browse";
-            this.similarOf = null;
-            this.syncURL();
-            this.refetch();
-          },
-          findSimilar(id) {
-            this.closeDetail();
-            this.mode = "similar";
-            this.similarOf = id;
-            this.syncURL();
-            this.refetch();
-          },
-          toggleGenre(name) {
-            const i = this.filters.genres.indexOf(name);
-            if (i >= 0) this.filters.genres.splice(i, 1);
-            else this.filters.genres.push(name);
-            this.syncURL();
-            this.refetch();
-          },
-          pickYear(year) {
-            this.filters.from = `${year}-01-01`;
-            this.filters.to = `${year}-12-31`;
-            this.syncURL();
-            this.refetch();
-          },
-          clearFilters() {
-            this.filters = {
-              code: "",
-              from: "",
-              to: "",
-              genresMode: "any",
-              genres: [],
-            };
-            this.syncURL();
-            this.refetch();
-          },
-          recentYears() {
-            return this.facets.years
-              .filter((y) => y.year >= 2000)
-              .slice(-10)
-              .reverse();
-          },
-
-          // ── fetching ──
-          refetch() {
-            this.items = [];
-            this.cursor = null;
-            this.page = 0;
-            this.exhausted = false;
-            this._gen++; // <-- invalidate any in-flight page
-            this.fetchPage({ reset: true });
-          },
-
-          loadMore() {
-            if (!this.exhausted && !this.loading) this.fetchPage();
-          },
-
-          async fetchPage({ reset = false } = {}) {
-            if (this.loading) return;
-            this.loading = true;
-            const gen = ++this._gen; // <-- capture generation
-
-            try {
-              const params = this.buildParams(reset);
-              if (!params) return;
-
-              const res = await fetch(`${API}${params.path}`, {
-                method: params.method,
-                headers: params.body
-                  ? { "Content-Type": "application/json" }
-                  : undefined,
-                body: params.body ? JSON.stringify(params.body) : undefined,
-              });
-
-              // FIX: drop stale responses (filter changed, refetch fired, etc.)
-              if (gen !== this._gen) return;
-
-              this.online = true;
-              if (!res.ok) {
-                const txt = await res.text();
-                throw new Error(`${res.status}: ${txt}`);
-              }
-
-              const page = await res.json();
-              if (gen !== this._gen) return; // <-- re-check after JSON parse
-
-              if (reset) {
-                this.items = [];
-                this.cursor = null;
-                this.page = 0;
-                this.exhausted = false;
-              }
-
-              this.items.push(...page.items);
-              this.cursor = page.next_cursor;
-
-              // FIX: treat "has_more but no cursor" as exhausted (defensive)
-              this.exhausted = !page.has_more || !page.next_cursor;
-
-              this.lastTook = page.took_ms ?? null;
-              if (this.mode === "browse") this.page += 1;
-              this.$nextTick(() => this.refreshIcons());
-            } catch (e) {
-              if (gen !== this._gen) return; // <-- ignore stale errors
-              this.online = false;
-              this.toast("error", e.message);
-            } finally {
-              if (gen === this._gen) this.loading = false;
-            }
-          },
-
-          buildParams(reset) {
-            if (this.mode === "search") {
-              if (!this.lastQuery) {
-                this.toast("info", "Type something to search");
-                return null;
-              }
-              return {
-                path: "/search",
-                method: "POST",
-                body: {
-                  query: this.lastQuery,
-                  limit: 20,
-                  cursor: reset ? null : this.cursor,
-                  code: this.filters.code || null,
-                  genres: this.filters.genres.length
-                    ? this.filters.genres
-                    : null,
-                  genres_mode: this.filters.genresMode,
-                  min_release_date: this.filters.from
-                    ? new Date(this.filters.from + "T00:00:00Z").toISOString()
-                    : null,
-                  max_release_date: this.filters.to
-                    ? new Date(this.filters.to + "T23:59:59Z").toISOString()
-                    : null,
-                },
-              };
-            }
-            if (this.mode === "similar") {
-              return {
-                path: "/similar",
-                method: "POST",
-                body: {
-                  video_id: this.similarOf,
-                  limit: 20,
-                  cursor: reset ? null : this.cursor,
-                  genres: this.filters.genres.length
-                    ? this.filters.genres
-                    : null,
-                  genres_mode: this.filters.genresMode,
-                },
-              };
-            }
-            // browse
-            const p = new URLSearchParams();
-            p.set("limit", "20");
-            p.set("offset", reset ? "0" : String(this.page * 20));
-            if (this.filters.code) p.set("code", this.filters.code);
-            if (this.sort) p.set("sort", this.sort);
-            p.set("genres_mode", this.filters.genresMode);
-            this.filters.genres.forEach((g) => p.append("genres", g));
-            return { path: `/browse?${p}`, method: "GET" };
-          },
-
-          async fetchFacets() {
-            try {
-              const r = await fetch(`${API}/facets`);
-              this.facets = await r.json();
-            } catch {
-              /* ignore */
-            }
-          },
-
-          // ── detail modal ──
-          async openDetail(id) {
-            this.detail = { open: true, loading: true, video: null };
-            this.$nextTick(() => this.refreshIcons());
-            try {
-              const r = await fetch(`${API}/videos/${encodeURIComponent(id)}`);
-              if (!r.ok) throw new Error(`Failed to load ${id}`);
-              this.detail.video = await r.json();
-            } catch (e) {
-              this.toast("error", e.message);
-              this.closeDetail();
-            } finally {
-              this.detail.loading = false;
-              this.$nextTick(() => this.refreshIcons());
-            }
-          },
-          closeDetail() {
-            this.detail = { open: false, loading: false, video: null };
-          },
-
-          // ── toasts ──
-          toast(type, msg) {
-            const id = Math.random().toString(36).slice(2);
-            this.toasts.push({ id, type, msg });
-            setTimeout(() => {
-              this.toasts = this.toasts.filter((t) => t.id !== id);
-            }, 4000);
-            this.$nextTick(() => this.refreshIcons());
-          },
-        };
-      }
-    </script>
+    <!-- App Logic -->
+    <script src="app.js"></script>
   </body>
 </html>

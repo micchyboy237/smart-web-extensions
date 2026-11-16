@@ -19,7 +19,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from functools import lru_cache
-from typing import List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Tuple, Union
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -90,38 +90,41 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Video Semantic Search", lifespan=lifespan)
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten for production
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Unified type for genre and code inputs
+GenreCodeInput = Optional[Union[str, List[str]]]
 
-# --------------------------------------------------------------------------- #
-# Models
-# --------------------------------------------------------------------------- #
+
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1)
     limit: int = Field(20, ge=1, le=100)
     cursor: Optional[str] = None
-    genre: Optional[str] = None
-    genres: Optional[List[str]] = None
+    genre: GenreCodeInput = None
     genres_mode: Literal["any", "all"] = "any"
     min_release_date: Optional[datetime] = None
     max_release_date: Optional[datetime] = None
-    code: Optional[str] = None
+    code: GenreCodeInput = None
     min_similarity: Optional[float] = Field(None, ge=0.0, le=1.0)
+    sort: Literal["release_date", "created_at", "similarity"] = "similarity"
+    order: Literal["asc", "desc"] = "desc"
 
 
 class SimilarRequest(BaseModel):
     video_id: str
     limit: int = Field(20, ge=1, le=100)
     cursor: Optional[str] = None
-    genres: Optional[List[str]] = None
+    genre: GenreCodeInput = None
     genres_mode: Literal["any", "all"] = "any"
+    code: GenreCodeInput = None
+    sort: Literal["release_date", "created_at", "similarity"] = "similarity"
+    order: Literal["asc", "desc"] = "desc"
 
 
 class HybridRequest(BaseModel):
@@ -129,7 +132,10 @@ class HybridRequest(BaseModel):
     limit: int = Field(20, ge=1, le=100)
     min_release_date: Optional[datetime] = None
     max_release_date: Optional[datetime] = None
-    genres: Optional[List[str]] = None
+    genre: GenreCodeInput = None
+    code: GenreCodeInput = None
+    sort: Literal["release_date", "created_at"] = "release_date"
+    order: Literal["asc", "desc"] = "desc"
 
 
 class VideoItem(BaseModel):
@@ -154,9 +160,9 @@ class SearchResponse(BaseModel):
 
 
 class FacetsResponse(BaseModel):
-    genres: List[dict]  # [{name, count}]
-    codes: List[dict]  # [{code, count}]
-    years: List[dict]  # [{year, count}]
+    genres: List[dict]
+    codes: List[dict]
+    years: List[dict]
 
 
 class VideoIngestItem(BaseModel):
@@ -175,7 +181,6 @@ class VideoIngestItem(BaseModel):
 
 class IngestRequest(BaseModel):
     items: List[VideoIngestItem] = Field(..., min_length=1, max_length=500)
-    # When True, existing rows are updated. When False, existing rows raise 409.
     upsert: bool = True
 
 
@@ -186,23 +191,34 @@ class IngestResponse(BaseModel):
     took_ms: float
 
 
-# --------------------------------------------------------------------------- #
-# Cursor helpers
-# --------------------------------------------------------------------------- #
-def _fingerprint(req: SearchRequest) -> str:
-    genre_str = sorted(req.genres) if req.genres else req.genre
-    filter_str = "|".join(
-        str(x)
-        for x in [
-            req.query,
-            genre_str,
-            req.genres_mode,
-            req.code,
-            req.min_release_date,
-            req.max_release_date,
-            req.min_similarity,
-        ]
-    )
+def _fingerprint(req: Union[SearchRequest, SimilarRequest, HybridRequest]) -> str:
+    # Normalize genre for fingerprinting
+    genre_val = req.genre
+    if isinstance(genre_val, list):
+        genre_str = sorted(genre_val)
+    else:
+        genre_str = genre_val
+
+    # Normalize code for fingerprinting
+    code_val = req.code if hasattr(req, "code") else None
+    if isinstance(code_val, list):
+        code_str = sorted(code_val)
+    else:
+        code_str = code_val
+
+    filter_parts = [
+        getattr(req, "query", ""),
+        genre_str,
+        getattr(req, "genres_mode", "any"),
+        code_str,
+        getattr(req, "min_release_date", None),
+        getattr(req, "max_release_date", None),
+        getattr(req, "min_similarity", None),
+        getattr(req, "sort", None),
+        getattr(req, "order", None),
+    ]
+
+    filter_str = "|".join(str(x) for x in filter_parts)
     return hashlib.sha256(filter_str.encode()).hexdigest()[:12]
 
 
@@ -255,17 +271,34 @@ def _row_to_item(r: dict, similarity: Optional[float] = None) -> VideoItem:
     )
 
 
+def _normalize_list_input(val: GenreCodeInput) -> Optional[List[str]]:
+    """Converts Optional[str] | Optional[List[str]] to Optional[List[str]]"""
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return [val]
+    return val
+
+
 def _apply_filters(req, params: dict, conds: List[str]) -> None:
-    if req.genre:
-        conds.append("%(genre)s = ANY(genres)")
-        params["genre"] = req.genre
-    if req.genres:
-        op = "@>" if getattr(req, "genres_mode", "any") == "all" else "&&"
+    # Handle unified genre parameter
+    genre_list = _normalize_list_input(getattr(req, "genre", None))
+    if genre_list:
+        mode = getattr(req, "genres_mode", "any")
+        op = "@>" if mode == "all" else "&&"
         conds.append(f"genres {op} %(genres)s::text[]")
-        params["genres"] = req.genres
-    if getattr(req, "code", None):
-        conds.append("code = %(code)s")
-        params["code"] = req.code
+        params["genres"] = genre_list
+
+    # Handle unified code parameter
+    code_list = _normalize_list_input(getattr(req, "code", None))
+    if code_list:
+        if len(code_list) == 1:
+            conds.append("code = %(code)s")
+            params["code"] = code_list[0]
+        else:
+            conds.append("code = ANY(%(codes)s)")
+            params["codes"] = code_list
+
     if getattr(req, "min_release_date", None):
         conds.append("release_date >= %(min_release_date)s")
         params["min_release_date"] = req.min_release_date
@@ -274,14 +307,45 @@ def _apply_filters(req, params: dict, conds: List[str]) -> None:
         params["max_release_date"] = req.max_release_date
 
 
-# --------------------------------------------------------------------------- #
-# /search
-# --------------------------------------------------------------------------- #
+def _build_order_clause(
+    sort_col: str,
+    order_dir: str,
+    has_distance: bool = False,
+    distance_sql: str = "distance",
+) -> str:
+    """
+    Builds a safe ORDER BY clause.
+
+    PostgreSQL forbids using a SELECT-list output alias inside an expression
+    (e.g. `CASE WHEN TRUE THEN distance END` raises:
+        column "distance" does not exist).
+    So for similarity sorts we substitute the raw distance expression
+    (e.g. `(embedding <=> %(emb)s::vector)`) instead of the alias `distance`.
+    """
+    safe_cols = {
+        "release_date": "release_date",
+        "created_at": "created_at",
+    }
+
+    if sort_col == "similarity":
+        # Use the raw expression, never the alias.
+        col = distance_sql
+        # Cosine distance: smaller = closer. So "closest first" (user-facing
+        # desc) maps to SQL ASC, and vice versa.
+        actual_dir = "ASC" if order_dir == "desc" else "DESC"
+    else:
+        col = safe_cols.get(sort_col, "release_date")
+        actual_dir = order_dir.upper()
+
+    return f"ORDER BY {col} {actual_dir}, id ASC"
+
+
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest) -> SearchResponse:
     t0 = time.perf_counter()
     fp = _fingerprint(req)
     position = decode_cursor(req.cursor, fp) if req.cursor else None
+
     emb = list(_embed_query(req.query))
 
     params: dict = {"emb": emb, "limit": req.limit + 1}
@@ -300,16 +364,28 @@ def search(req: SearchRequest) -> SearchResponse:
         conds.append("(embedding <=> %(emb)s::vector) <= %(max_dist)s")
         params["max_dist"] = 1.0 - req.min_similarity
 
+    if req.sort == "release_date":
+        conds.append("release_date IS NOT NULL")
+
     where_sql = " AND ".join(conds) if conds else "TRUE"
+
+    order_clause = _build_order_clause(
+        req.sort,
+        req.order,
+        has_distance=True,
+        distance_sql="(embedding <=> %(emb)s::vector)",
+    )
+
     sql = f"""
         SELECT id, title, details, url, code, episode, release_date, genres,
                thumbnail, preview,
                embedding <=> %(emb)s::vector AS distance
         FROM public.videos
         WHERE {where_sql}
-        ORDER BY embedding <=> %(emb)s::vector, id
+        {order_clause}
         LIMIT %(limit)s
     """
+
     try:
         with pool.connection() as conn:
             if ITERATIVE_SCAN_MODE:
@@ -329,6 +405,7 @@ def search(req: SearchRequest) -> SearchResponse:
     )
     took = (time.perf_counter() - t0) * 1000
     logger.info("search ok n=%d more=%s %.1fms", len(rows), has_more, took)
+
     return SearchResponse(
         items=[_row_to_item(r) for r in rows],
         next_cursor=next_cursor,
@@ -337,12 +414,10 @@ def search(req: SearchRequest) -> SearchResponse:
     )
 
 
-# --------------------------------------------------------------------------- #
-# /similar
-# --------------------------------------------------------------------------- #
 @app.post("/similar", response_model=SearchResponse)
 def similar(req: SimilarRequest) -> SearchResponse:
     t0 = time.perf_counter()
+
     with pool.connection() as conn:
         src = conn.execute(
             "SELECT embedding FROM public.videos WHERE id = %s", (req.video_id,)
@@ -351,12 +426,18 @@ def similar(req: SimilarRequest) -> SearchResponse:
         raise HTTPException(404, "Source video or embedding not found")
 
     emb = list(src["embedding"])
-    # Reuse cursor machinery with a synthetic SearchRequest fingerprint.
-    synthetic = SearchRequest(
-        query=f"__similar__:{req.video_id}",
-        genres=req.genres,
-        genres_mode=req.genres_mode,
-    )
+
+    class SyntheticReq:
+        def __init__(self, source_req):
+            self.genre = source_req.genre
+            self.genres_mode = source_req.genres_mode
+            self.code = source_req.code
+            self.min_release_date = None
+            self.max_release_date = None
+            self.sort = source_req.sort
+            self.order = source_req.order
+
+    synthetic = SyntheticReq(req)
     fp = _fingerprint(synthetic)
     position = decode_cursor(req.cursor, fp) if req.cursor else None
 
@@ -371,15 +452,27 @@ def similar(req: SimilarRequest) -> SearchResponse:
         )
         params["last_dist"], params["last_id"] = position
 
+    if req.sort == "release_date":
+        conds.append("release_date IS NOT NULL")
+
     where_sql = " AND ".join(conds)
+
+    order_clause = _build_order_clause(
+        req.sort,
+        req.order,
+        has_distance=True,
+        distance_sql="(embedding <=> %(emb)s::vector)",
+    )
+
     sql = f"""
         SELECT id, title, details, url, code, episode, release_date, genres,
                thumbnail, preview, embedding <=> %(emb)s::vector AS distance
         FROM public.videos
         WHERE {where_sql}
-        ORDER BY embedding <=> %(emb)s::vector, id
+        {order_clause}
         LIMIT %(limit)s
     """
+
     with pool.connection() as conn:
         if ITERATIVE_SCAN_MODE:
             conn.execute(f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}")
@@ -394,6 +487,7 @@ def similar(req: SimilarRequest) -> SearchResponse:
         else None
     )
     took = (time.perf_counter() - t0) * 1000
+
     return SearchResponse(
         items=[_row_to_item(r) for r in rows],
         next_cursor=next_cursor,
@@ -402,44 +496,46 @@ def similar(req: SimilarRequest) -> SearchResponse:
     )
 
 
-# --------------------------------------------------------------------------- #
-# /hybrid  (FTS + vector reciprocal rank fusion)
-# --------------------------------------------------------------------------- #
 @app.post("/hybrid", response_model=SearchResponse)
 def hybrid(req: HybridRequest) -> SearchResponse:
     t0 = time.perf_counter()
     emb = list(_embed_query(req.query))
-    k = 60  # RRF constant
+    k = 60
     cand = req.limit * 4
 
+    # Vector Search Part
     vec_params: dict = {"emb": emb, "limit": cand}
     vec_conds: List[str] = []
-    if req.genres:
-        vec_conds.append("genres && %(genres)s::text[]")
-        vec_params["genres"] = req.genres
-    if req.min_release_date:
-        vec_conds.append("release_date >= %(min_release_date)s")
-        vec_params["min_release_date"] = req.min_release_date
-    if req.max_release_date:
-        vec_conds.append("release_date <= %(max_release_date)s")
-        vec_params["max_release_date"] = req.max_release_date
+
+    # Apply filters to vector search
+    class VecReq:
+        def __init__(self, source_req):
+            self.genre = source_req.genre
+            self.genres_mode = "any"  # Hybrid usually uses any for broader recall
+            self.code = source_req.code
+            self.min_release_date = source_req.min_release_date
+            self.max_release_date = source_req.max_release_date
+
+    vec_req = VecReq(req)
+    _apply_filters(vec_req, vec_params, vec_conds)
+
     vec_where = " AND ".join(vec_conds) if vec_conds else "TRUE"
 
+    # FTS Search Part
     fts_params: dict = {"q": req.query, "limit": cand}
     fts_conds = [
         "title IS NOT NULL",
         "to_tsvector('english', title) @@ plainto_tsquery('english', %(q)s)",
     ]
-    if req.genres:
-        fts_conds.append("genres && %(genres)s::text[]")
-        fts_params["genres"] = req.genres
-    if req.min_release_date:
-        fts_conds.append("release_date >= %(min_release_date)s")
-        fts_params["min_release_date"] = req.min_release_date
-    if req.max_release_date:
-        fts_conds.append("release_date <= %(max_release_date)s")
-        fts_params["max_release_date"] = req.max_release_date
+
+    # Apply filters to FTS search
+    _apply_filters(vec_req, fts_params, fts_conds)
+
     fts_where = " AND ".join(fts_conds)
+
+    # Determine sort for final ranking?
+    # Hybrid usually ranks by RRF score, but we can sort the candidates before RRF if needed.
+    # For simplicity, we keep the internal sorts as default (distance/rank) and let RRF handle final order.
 
     with pool.connection() as conn:
         conn.execute(f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}")
@@ -473,63 +569,71 @@ def hybrid(req: HybridRequest) -> SearchResponse:
 
     scores: dict = {}
     by_id: dict = {}
+
     for rank, r in enumerate(vec_rows):
         scores[r["id"]] = scores.get(r["id"], 0) + 1.0 / (k + rank)
         by_id[r["id"]] = r
+
     for rank, r in enumerate(fts_rows):
         scores[r["id"]] = scores.get(r["id"], 0) + 1.0 / (k + rank)
         by_id.setdefault(r["id"], r)
 
     ordered = sorted(scores.items(), key=lambda kv: -kv[1])[: req.limit]
     items = [_row_to_item(by_id[v_id], similarity=None) for v_id, _ in ordered]
+
     took = (time.perf_counter() - t0) * 1000
     return SearchResponse(items=items, next_cursor=None, has_more=False, took_ms=took)
 
 
-# --------------------------------------------------------------------------- #
-# /browse   (no embedding required)
-# --------------------------------------------------------------------------- #
 @app.get("/browse", response_model=SearchResponse)
 def browse(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0, le=100_000),
-    genre: Optional[str] = None,
-    genres: Optional[List[str]] = Query(None),
+    genre: GenreCodeInput = None,
     genres_mode: Literal["any", "all"] = "any",
-    code: Optional[str] = None,
+    code: GenreCodeInput = None,
     sort: Literal["release_date", "created_at"] = "release_date",
+    order: Literal["asc", "desc"] = "desc",
 ):
     t0 = time.perf_counter()
-    params: dict = {"limit": limit, "offset": offset}
+
+    class BrowseReq:
+        def __init__(self):
+            self.genre = genre
+            self.genres_mode = genres_mode
+            self.code = code
+            self.min_release_date = None
+            self.max_release_date = None
+
+    req_obj = BrowseReq()
+    params: dict = {"limit": limit + 1, "offset": offset}
     conds: List[str] = []
-    if genre:
-        conds.append("%(genre)s = ANY(genres)")
-        params["genre"] = genre
-    if genres:
-        op = "@>" if genres_mode == "all" else "&&"
-        conds.append(f"genres {op} %(genres)s::text[]")
-        params["genres"] = genres
-    if code:
-        conds.append("code = %(code)s")
-        params["code"] = code
+    _apply_filters(req_obj, params, conds)
+
+    if sort == "release_date":
+        conds.append("release_date IS NOT NULL")
+
     where_sql = " AND ".join(conds) if conds else "TRUE"
 
-    # fetch one extra to compute has_more
-    params["limit"] = limit + 1
+    # No embedding here — sort is date-only.
+    order_clause = _build_order_clause(sort, order)
+
     sql = f"""
         SELECT id, title, details, url, code, episode, release_date, genres,
                thumbnail, preview
         FROM public.videos
         WHERE {where_sql}
-        ORDER BY {sort} DESC NULLS LAST, id
+        {order_clause}
         LIMIT %(limit)s OFFSET %(offset)s
     """
+
     with pool.connection() as conn:
         rows = conn.execute(sql, params).fetchall()
 
     has_more = len(rows) > limit
     rows = rows[:limit]
     took = (time.perf_counter() - t0) * 1000
+
     return SearchResponse(
         items=[_row_to_item(r, similarity=None) for r in rows],
         next_cursor=str(offset + limit) if has_more else None,
@@ -538,9 +642,6 @@ def browse(
     )
 
 
-# --------------------------------------------------------------------------- #
-# /videos/{id}
-# --------------------------------------------------------------------------- #
 @app.get("/videos/{video_id}", response_model=VideoItem)
 def get_video(video_id: str):
     with pool.connection() as conn:
@@ -557,9 +658,6 @@ def get_video(video_id: str):
     return _row_to_item(r, similarity=None)
 
 
-# --------------------------------------------------------------------------- #
-# /facets
-# --------------------------------------------------------------------------- #
 @app.get("/facets", response_model=FacetsResponse)
 def facets(top_genres: int = 60, top_codes: int = 40):
     with pool.connection() as conn:
@@ -573,7 +671,6 @@ def facets(top_genres: int = 60, top_codes: int = 40):
         """,
             (top_genres,),
         ).fetchall()
-
         codes = conn.execute(
             """
             SELECT code, COUNT(*)::int AS count
@@ -582,7 +679,6 @@ def facets(top_genres: int = 60, top_codes: int = 40):
         """,
             (top_codes,),
         ).fetchall()
-
         years = conn.execute("""
             SELECT EXTRACT(YEAR FROM release_date)::int AS year,
                    COUNT(*)::int AS count
@@ -590,7 +686,6 @@ def facets(top_genres: int = 60, top_codes: int = 40):
             WHERE release_date IS NOT NULL
             GROUP BY 1 ORDER BY 1
         """).fetchall()
-
     return FacetsResponse(
         genres=[{"name": r["name"], "count": r["count"]} for r in genres],
         codes=[{"code": r["code"], "count": r["count"]} for r in codes],
@@ -598,9 +693,25 @@ def facets(top_genres: int = 60, top_codes: int = 40):
     )
 
 
-# --------------------------------------------------------------------------- #
-# /health
-# --------------------------------------------------------------------------- #
+@app.get("/facets/codes")
+def facets_codes():
+    with pool.connection() as conn:
+        codes = conn.execute(
+            """
+            SELECT code, COUNT(*)::int AS count
+            FROM public.videos 
+            WHERE code IS NOT NULL
+            GROUP BY code 
+            ORDER BY count DESC
+        """
+        ).fetchall()
+
+    return {
+        "code_count": len(codes),
+        "codes": [{"code": r["code"], "count": r["count"]} for r in codes],
+    }
+
+
 @app.get("/health")
 def health():
     t0 = time.perf_counter()
@@ -609,26 +720,11 @@ def health():
     return {"ok": True, "db_ms": (time.perf_counter() - t0) * 1000}
 
 
-# --------------------------------------------------------------------------- #
-# /ingest
-# --------------------------------------------------------------------------- #
-
-
 def _embed_text_for(item: VideoIngestItem) -> Optional[str]:
-    txt = item.embed_text or item.title or item.details
+    txt = item.title or item.details
     if not txt:
         return None
     return txt
-
-
-def _embed_item(item: VideoIngestItem) -> Optional[List[float]]:
-    if item.embedding is not None:
-        return item.embedding
-    txt = _embed_text_for(item)
-    if not txt:
-        return None
-    # Reuse the same cached embedder used by /search
-    return list(_embed_query(txt))
 
 
 def _format_for_embedding(item: VideoIngestItem) -> Optional[str]:
@@ -650,7 +746,6 @@ def _format_for_embedding(item: VideoIngestItem) -> Optional[str]:
     return text or None
 
 
-# Columns in the exact order used by the INSERT below.
 _INGEST_COLS = [
     "id",
     "url",
@@ -670,16 +765,14 @@ _INGEST_COLS = [
 @app.post("/ingest", response_model=IngestResponse)
 def ingest(req: IngestRequest) -> IngestResponse:
     """Insert or upsert rows into public.videos.
-
     Embeddings are ALWAYS regenerated server-side from the item fields using
     the same format as the ChromaDB migration script, so ingested rows are
     comparable with migrated rows for semantic search.
     """
     t0 = time.perf_counter()
     inserted = updated = skipped = 0
-
-    # 1) Build embedding texts (skip items with nothing to embed)
     embeddable: List[Tuple[int, VideoIngestItem, str]] = []
+
     for idx, item in enumerate(req.items):
         text = _format_for_embedding(item)
         if text is None:
@@ -695,12 +788,10 @@ def ingest(req: IngestRequest) -> IngestResponse:
             took_ms=(time.perf_counter() - t0) * 1000,
         )
 
-    # 2) Generate embeddings in one batched call (pooled + prefix-aware)
     texts = [t for _, _, t in embeddable]
     logger.info("Generating embeddings for %d ingest items...", len(texts))
     embeddings = embed(texts, return_format="list", prefix=EMBED_DOC_PREFIX)
 
-    # 3) Build DB rows in original order
     rows: List[tuple] = []
     for (_, item, _), emb in zip(embeddable, embeddings):
         rows.append(
@@ -743,8 +834,6 @@ def ingest(req: IngestRequest) -> IngestResponse:
         if req.upsert
         else "ON CONFLICT (id) DO NOTHING RETURNING false AS inserted"
     )
-    # NOTE: embedding is always overwritten (EXCLUDED.embedding, not COALESCE)
-    # because it's regenerated from the current payload — never stale.
 
     sql = f"""
         INSERT INTO public.videos ({", ".join(_INGEST_COLS)})
