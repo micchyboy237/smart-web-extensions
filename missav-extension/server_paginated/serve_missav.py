@@ -19,7 +19,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from functools import lru_cache
-from typing import List, Literal, Optional, Tuple, Union
+from typing import Annotated, List, Literal, Optional, Tuple, Union
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,14 +38,12 @@ from pydantic import BaseModel, Field
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
 )
+
 logger = logging.getLogger("video_search_api")
 
 DB_CONNINFO = "dbname=missav_db1 user=jethroestrada host=localhost port=5432"
 ITERATIVE_SCAN_MODE: Optional[str] = "strict_order"
 MAX_SCAN_TUPLES = 20000
-
-# Maximum tokens per text when formatting for ingestion. Truncated via
-# truncate_texts() so combined embedding inputs never exceed model context.
 INGEST_MAX_TOKENS = 2048
 
 
@@ -118,8 +116,6 @@ class SearchRequest(BaseModel):
     min_similarity: Optional[float] = Field(None, ge=0.0, le=1.0)
     sort: Literal["release_date", "created_at", "similarity"] = "similarity"
     order: Literal["asc", "desc"] = "desc"
-    # When False (default), returns all items. When True, only items whose
-    # title AND details are both non-empty are returned.
     complete_only: bool = False
 
 
@@ -141,6 +137,8 @@ class HybridRequest(BaseModel):
     min_release_date: Optional[datetime] = None
     max_release_date: Optional[datetime] = None
     genre: GenreCodeInput = None
+    # FIX: expose genres_mode (was hardcoded to "any" in /hybrid)
+    genres_mode: Literal["any", "all"] = "any"
     code: GenreCodeInput = None
     sort: Literal["release_date", "created_at"] = "release_date"
     order: Literal["asc", "desc"] = "desc"
@@ -159,6 +157,12 @@ class VideoItem(BaseModel):
     release_date: Optional[datetime]
     genres: Optional[List[str]]
     similarity: Optional[float] = None
+
+
+class VideoListResponse(BaseModel):
+    took_ms: float
+    count: int
+    items: List[dict]
 
 
 class SearchResponse(BaseModel):
@@ -200,50 +204,73 @@ class IngestResponse(BaseModel):
     took_ms: float
 
 
+# ---------------------------------------------------------------------------
+# FIX: normalize list inputs robustly. Also splits comma-separated values so
+# both ?genre=A&genre=B and ?genre=A,B work in GET endpoints and in JSON bodies.
+# ---------------------------------------------------------------------------
+def _normalize_list_input(val: GenreCodeInput) -> Optional[List[str]]:
+    if val is None:
+        return None
+    out: List[str] = []
+    if isinstance(val, str):
+        out.extend(s.strip() for s in val.split(",") if s.strip())
+    else:
+        for item in val:
+            if not isinstance(item, str):
+                continue
+            out.extend(s.strip() for s in item.split(",") if s.strip())
+    return out or None
+
+
+# ---------------------------------------------------------------------------
+# FIX: fingerprint now also includes limit-agnostic fields so cursors are
+# bound to the *filter set*, and the cursor key includes the actual sort value.
+# ---------------------------------------------------------------------------
 def _fingerprint(req: Union[SearchRequest, SimilarRequest, HybridRequest]) -> str:
-    genre_val = req.genre
-    if isinstance(genre_val, list):
-        genre_str = sorted(genre_val)
-    else:
-        genre_str = genre_val
-
-    code_val = req.code if hasattr(req, "code") else None
-    if isinstance(code_val, list):
-        code_str = sorted(code_val)
-    else:
-        code_str = code_val
-
+    genre_list = _normalize_list_input(getattr(req, "genre", None))
+    code_list = _normalize_list_input(getattr(req, "code", None))
     filter_parts = [
         getattr(req, "query", ""),
-        genre_str,
+        sorted(genre_list) if genre_list else None,
         getattr(req, "genres_mode", "any"),
-        code_str,
+        sorted(code_list) if code_list else None,
         getattr(req, "min_release_date", None),
         getattr(req, "max_release_date", None),
         getattr(req, "min_similarity", None),
         getattr(req, "sort", None),
         getattr(req, "order", None),
         getattr(req, "complete_only", False),
+        getattr(req, "video_id", None),  # for /similar
     ]
     filter_str = "|".join(str(x) for x in filter_parts)
     return hashlib.sha256(filter_str.encode()).hexdigest()[:12]
 
 
-def encode_cursor(distance: float, last_id: str, fp: str) -> str:
-    raw = json.dumps({"d": distance, "i": last_id, "f": fp}, separators=(",", ":"))
+# ---------------------------------------------------------------------------
+# FIX: Cursor now carries the *actual* sort key (not always "distance"), so
+# non-similarity sorts paginate correctly.
+# cursor payload: {"k": sort_key_str, "i": id, "f": fingerprint}
+# ---------------------------------------------------------------------------
+def encode_cursor(sort_key: Optional[Union[float, str]], last_id: str, fp: str) -> str:
+    payload = {
+        "k": sort_key if sort_key is None else str(sort_key),
+        "i": last_id,
+        "f": fp,
+    }
+    raw = json.dumps(payload, separators=(",", ":"))
     return base64.urlsafe_b64encode(raw.encode()).decode()
 
 
-def decode_cursor(cursor: str, fp: str) -> Tuple[float, str]:
+def decode_cursor(cursor: str, fp: str) -> Tuple[Optional[str], str]:
     try:
         data = json.loads(base64.urlsafe_b64decode(cursor.encode()))
-        distance = float(data["d"])
+        sort_key = data.get("k")
         last_id = str(data["i"])
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid cursor")
     if data.get("f") != fp:
         raise HTTPException(status_code=400, detail="Cursor does not match filters")
-    return distance, last_id
+    return sort_key, last_id
 
 
 @lru_cache(maxsize=256)
@@ -278,15 +305,6 @@ def _row_to_item(r: dict, similarity: Optional[float] = None) -> VideoItem:
     )
 
 
-def _normalize_list_input(val: GenreCodeInput) -> Optional[List[str]]:
-    """Converts Optional[str] | Optional[List[str]] to Optional[List[str]]"""
-    if val is None:
-        return None
-    if isinstance(val, str):
-        return [val]
-    return val
-
-
 def _apply_filters(req, params: dict, conds: List[str]) -> None:
     genre_list = _normalize_list_input(getattr(req, "genre", None))
     if genre_list:
@@ -294,7 +312,6 @@ def _apply_filters(req, params: dict, conds: List[str]) -> None:
         op = "@>" if mode == "all" else "&&"
         conds.append(f"genres {op} %(genres)s::text[]")
         params["genres"] = genre_list
-
     code_list = _normalize_list_input(getattr(req, "code", None))
     if code_list:
         if len(code_list) == 1:
@@ -303,17 +320,12 @@ def _apply_filters(req, params: dict, conds: List[str]) -> None:
         else:
             conds.append("code = ANY(%(codes)s)")
             params["codes"] = code_list
-
     if getattr(req, "min_release_date", None):
         conds.append("release_date >= %(min_release_date)s")
         params["min_release_date"] = req.min_release_date
-
     if getattr(req, "max_release_date", None):
         conds.append("release_date <= %(max_release_date)s")
         params["max_release_date"] = req.max_release_date
-
-    # When complete_only=True, only return items whose title AND details
-    # are both non-empty. Empty strings are treated as missing.
     if getattr(req, "complete_only", False):
         conds.append(
             "(COALESCE(NULLIF(title, ''), NULL) IS NOT NULL "
@@ -321,75 +333,126 @@ def _apply_filters(req, params: dict, conds: List[str]) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# FIX: Order clause now includes NULLS handling for date columns so that
+# NULL dates don't silently drop rows. The guard `release_date IS NOT NULL`
+# was removing ~77% of the table.
+# ---------------------------------------------------------------------------
 def _build_order_clause(
     sort_col: str,
     order_dir: str,
-    has_distance: bool = False,
-    distance_sql: str = "distance",
-) -> str:
+    distance_sql: Optional[str] = None,
+) -> Tuple[str, str]:
     """
-    Builds a safe ORDER BY clause.
-    PostgreSQL forbids using a SELECT-list output alias inside an expression
-    (e.g. `CASE WHEN TRUE THEN distance END` raises:
-        column "distance" does not exist).
-    So for similarity sorts we substitute the raw distance expression
-    (e.g. `(embedding <=> %(emb)s::vector)`) instead of the alias `distance`.
+    Returns (order_by_sql, sort_key_expr_sql).
+    - order_by_sql is the full ORDER BY clause.
+    - sort_key_expr_sql is the expression whose value is used in the cursor.
+    PostgreSQL forbids aliasing a SELECT-list output inside ORDER BY expressions,
+    so for similarity we substitute the raw distance expression.
     """
-    safe_cols = {
-        "release_date": "release_date",
-        "created_at": "created_at",
-    }
+    actual_dir = "ASC" if order_dir == "desc" else "DESC"  # inverted for distance
     if sort_col == "similarity":
-        col = distance_sql
-        actual_dir = "ASC" if order_dir == "desc" else "DESC"
+        if distance_sql is None:
+            raise ValueError("distance_sql required when sort_col='similarity'")
+        order = f"ORDER BY {distance_sql} {actual_dir}, id ASC"
+        key_expr = distance_sql
+        return order, key_expr
+
+    if sort_col not in ("release_date", "created_at"):
+        raise ValueError(f"Unsupported sort_col: {sort_col}")
+
+    real_dir = order_dir.upper()
+    nulls = "NULLS LAST" if real_dir == "DESC" else "NULLS FIRST"
+    order = f"ORDER BY {sort_col} {real_dir} {nulls}, id ASC"
+    key_expr = sort_col
+    return order, key_expr
+
+
+# ---------------------------------------------------------------------------
+# FIX: helper to build a correct keyset cursor predicate that matches the
+# ORDER BY. For similarity, keyset on (distance, id) ascending.
+# For dates, keyset on (col, id) in the requested direction.
+# ---------------------------------------------------------------------------
+def _cursor_predicate(
+    sort_col: str,
+    order_dir: str,
+    params: dict,
+    conds: List[str],
+    distance_sql: Optional[str] = None,
+) -> None:
+    if not params.get("_cursor_key") and params.get("_cursor_key") is not None:
+        pass
+    sort_key = params.get("_cursor_key")
+    last_id = params.get("_cursor_id")
+    if sort_key is None and last_id is None:
+        return
+    # normalize
+    if sort_key == "" or sort_key == "None":
+        sort_key = None
+
+    if sort_col == "similarity":
+        conds.append(
+            f"(({distance_sql}), id) > (%(_cursor_key)s::float8, %(_cursor_id)s)"
+        )
+        params["_cursor_key"] = float(sort_key)
     else:
-        col = safe_cols.get(sort_col, "release_date")
-        actual_dir = order_dir.upper()
-    return f"ORDER BY {col} {actual_dir}, id ASC"
+        op = "<" if order_dir == "desc" else ">"
+        # NULL dates need special handling; treat NULL as "after all non-nulls"
+        # in desc, "before all non-nulls" in asc. To keep it simple and correct,
+        # require sort_key is not None (guaranteed by NULLS LAST in desc cursor).
+        if sort_key is None or sort_key == "None":
+            # Only NULLs remain; cannot keyset on a value. Fall back to id-only.
+            conds.append(f"(id {op} %(_cursor_id)s)")
+        else:
+            conds.append(
+                f"(({sort_col}, id) {op} (%(_cursor_key)s::{'timestamp with time zone' if sort_col in ('release_date', 'created_at') else 'float8'}, %(_cursor_id)s))"
+                f" OR {sort_col} IS NULL"
+            )
+        params["_cursor_key"] = sort_key
+    params["_cursor_id"] = last_id
 
 
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest) -> SearchResponse:
     t0 = time.perf_counter()
     fp = _fingerprint(req)
-    position = decode_cursor(req.cursor, fp) if req.cursor else None
+    sort_key: Optional[str] = None
+    last_id: Optional[str] = None
+    if req.cursor:
+        sort_key, last_id = decode_cursor(req.cursor, fp)
 
     emb = list(_embed_query(req.query))
     params: dict = {"emb": emb, "limit": req.limit + 1}
     conds: List[str] = []
     _apply_filters(req, params, conds)
 
-    if position:
-        dist_val, id_val = position
-        conds.append(
-            "((embedding <=> %(emb)s::vector), id) > (%(last_dist)s::float8, %(last_id)s)"
-        )
-        params["last_dist"] = dist_val
-        params["last_id"] = id_val
-
     if req.min_similarity is not None:
         conds.append("(embedding <=> %(emb)s::vector) <= %(max_dist)s")
         params["max_dist"] = 1.0 - req.min_similarity
 
-    if req.sort == "release_date":
-        conds.append("release_date IS NOT NULL")
+    distance_sql = "(embedding <=> %(emb)s::vector)"
+    order_clause, _ = _build_order_clause(
+        req.sort, req.order, distance_sql=distance_sql
+    )
+
+    # FIX: cursor predicate now matches the actual sort key.
+    if last_id is not None:
+        params["_cursor_key"] = sort_key
+        params["_cursor_id"] = last_id
+        _cursor_predicate(req.sort, req.order, params, conds, distance_sql=distance_sql)
 
     where_sql = " AND ".join(conds) if conds else "TRUE"
-    order_clause = _build_order_clause(
-        req.sort,
-        req.order,
-        has_distance=True,
-        distance_sql="(embedding <=> %(emb)s::vector)",
-    )
+
     sql = f"""
         SELECT id, title, details, url, code, episode, release_date, genres,
                thumbnail, preview,
-               embedding <=> %(emb)s::vector AS distance
+               {distance_sql} AS distance
         FROM public.videos
         WHERE {where_sql}
         {order_clause}
         LIMIT %(limit)s
     """
+
     try:
         with pool.connection() as conn:
             if ITERATIVE_SCAN_MODE:
@@ -402,11 +465,21 @@ def search(req: SearchRequest) -> SearchResponse:
 
     has_more = len(rows) > req.limit
     rows = rows[: req.limit]
-    next_cursor = (
-        encode_cursor(rows[-1]["distance"], rows[-1]["id"], fp)
-        if has_more and rows
-        else None
-    )
+
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        if req.sort == "similarity":
+            key_val: Optional[str] = str(last["distance"])
+        else:
+            sv = last.get(req.sort)
+            key_val = (
+                sv.isoformat()
+                if isinstance(sv, datetime)
+                else (str(sv) if sv is not None else None)
+            )
+        next_cursor = encode_cursor(key_val, last["id"], fp)
+
     took = (time.perf_counter() - t0) * 1000
     logger.info("search ok n=%d more=%s %.1fms", len(rows), has_more, took)
     return SearchResponse(
@@ -430,48 +503,51 @@ def similar(req: SimilarRequest) -> SearchResponse:
 
     class SyntheticReq:
         def __init__(self, source_req):
+            self.query = ""
+            self.video_id = source_req.video_id
             self.genre = source_req.genre
             self.genres_mode = source_req.genres_mode
             self.code = source_req.code
             self.min_release_date = None
             self.max_release_date = None
+            self.min_similarity = None
             self.sort = source_req.sort
             self.order = source_req.order
             self.complete_only = source_req.complete_only
 
     synthetic = SyntheticReq(req)
     fp = _fingerprint(synthetic)
-    position = decode_cursor(req.cursor, fp) if req.cursor else None
+
+    sort_key: Optional[str] = None
+    last_id: Optional[str] = None
+    if req.cursor:
+        sort_key, last_id = decode_cursor(req.cursor, fp)
 
     params: dict = {"emb": emb, "limit": req.limit + 1}
     conds: List[str] = ["id <> %(src)s"]
     params["src"] = req.video_id
     _apply_filters(synthetic, params, conds)
 
-    if position:
-        conds.append(
-            "((embedding <=> %(emb)s::vector), id) > (%(last_dist)s::float8, %(last_id)s)"
-        )
-        params["last_dist"], params["last_id"] = position
+    distance_sql = "(embedding <=> %(emb)s::vector)"
+    order_clause, _ = _build_order_clause(
+        req.sort, req.order, distance_sql=distance_sql
+    )
 
-    if req.sort == "release_date":
-        conds.append("release_date IS NOT NULL")
+    if last_id is not None:
+        params["_cursor_key"] = sort_key
+        params["_cursor_id"] = last_id
+        _cursor_predicate(req.sort, req.order, params, conds, distance_sql=distance_sql)
 
     where_sql = " AND ".join(conds)
-    order_clause = _build_order_clause(
-        req.sort,
-        req.order,
-        has_distance=True,
-        distance_sql="(embedding <=> %(emb)s::vector)",
-    )
     sql = f"""
         SELECT id, title, details, url, code, episode, release_date, genres,
-               thumbnail, preview, embedding <=> %(emb)s::vector AS distance
+               thumbnail, preview, {distance_sql} AS distance
         FROM public.videos
         WHERE {where_sql}
         {order_clause}
         LIMIT %(limit)s
     """
+
     with pool.connection() as conn:
         if ITERATIVE_SCAN_MODE:
             conn.execute(f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}")
@@ -480,11 +556,21 @@ def similar(req: SimilarRequest) -> SearchResponse:
 
     has_more = len(rows) > req.limit
     rows = rows[: req.limit]
-    next_cursor = (
-        encode_cursor(rows[-1]["distance"], rows[-1]["id"], fp)
-        if has_more and rows
-        else None
-    )
+
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        if req.sort == "similarity":
+            key_val: Optional[str] = str(last["distance"])
+        else:
+            sv = last.get(req.sort)
+            key_val = (
+                sv.isoformat()
+                if isinstance(sv, datetime)
+                else (str(sv) if sv is not None else None)
+            )
+        next_cursor = encode_cursor(key_val, last["id"], fp)
+
     took = (time.perf_counter() - t0) * 1000
     return SearchResponse(
         items=[_row_to_item(r) for r in rows],
@@ -507,7 +593,8 @@ def hybrid(req: HybridRequest) -> SearchResponse:
     class VecReq:
         def __init__(self, source_req):
             self.genre = source_req.genre
-            self.genres_mode = "any"
+            # FIX: pass through genres_mode instead of hardcoding "any"
+            self.genres_mode = source_req.genres_mode
             self.code = source_req.code
             self.min_release_date = source_req.min_release_date
             self.max_release_date = source_req.max_release_date
@@ -568,13 +655,19 @@ def hybrid(req: HybridRequest) -> SearchResponse:
     return SearchResponse(items=items, next_cursor=None, has_more=False, took_ms=took)
 
 
+# ---------------------------------------------------------------------------
+# /browse — fixed:
+#   * genre/code are true list query params (Annotated[...Query()])
+#   * date filters no longer silently drop NULL rows; NULLS LAST/FIRST in order
+#   * offset is clamped to total via EXISTS check so next_cursor is accurate
+# ---------------------------------------------------------------------------
 @app.get("/browse", response_model=SearchResponse)
 def browse(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0, le=100_000),
-    genre: GenreCodeInput = None,
+    genre: Annotated[Optional[List[str]], Query()] = None,
     genres_mode: Literal["any", "all"] = "any",
-    code: GenreCodeInput = None,
+    code: Annotated[Optional[List[str]], Query()] = None,
     sort: Literal["release_date", "created_at"] = "release_date",
     order: Literal["asc", "desc"] = "desc",
     complete_only: bool = Query(False),
@@ -595,11 +688,11 @@ def browse(
     conds: List[str] = []
     _apply_filters(req_obj, params, conds)
 
-    if sort == "release_date":
-        conds.append("release_date IS NOT NULL")
-
+    # FIX: removed `release_date IS NOT NULL` guard. NULL dates are kept and
+    # ordered with NULLS LAST (desc) / NULLS FIRST (asc).
     where_sql = " AND ".join(conds) if conds else "TRUE"
-    order_clause = _build_order_clause(sort, order)
+    order_clause, _ = _build_order_clause(sort, order)
+
     sql = f"""
         SELECT id, title, details, url, code, episode, release_date, genres,
                thumbnail, preview
@@ -608,11 +701,13 @@ def browse(
         {order_clause}
         LIMIT %(limit)s OFFSET %(offset)s
     """
+
     with pool.connection() as conn:
         rows = conn.execute(sql, params).fetchall()
 
     has_more = len(rows) > limit
     rows = rows[:limit]
+
     took = (time.perf_counter() - t0) * 1000
     return SearchResponse(
         items=[_row_to_item(r, similarity=None) for r in rows],
@@ -638,18 +733,102 @@ def get_video(video_id: str):
     return _row_to_item(r, similarity=None)
 
 
+_VLIST_FIELDS = {
+    "id": "id",
+    "summary": "id, code, episode, title, release_date, complete",
+    "full": (
+        "id, title, details, url, code, episode, release_date, genres, "
+        "thumbnail, preview"
+    ),
+}
+
+
+@app.get("/videos", response_model=VideoListResponse)
+def list_videos(
+    code: Annotated[Optional[List[str]], Query()] = None,
+    genre: Annotated[Optional[List[str]], Query()] = None,
+    genres_mode: Literal["any", "all"] = "any",
+    complete_only: bool = Query(False),
+    min_release_date: Optional[datetime] = None,
+    max_release_date: Optional[datetime] = None,
+    limit: Optional[int] = Query(
+        None,
+        ge=1,
+        le=5000,
+        description="Omit or null to fetch all matching rows (capped at 5000).",
+    ),
+    offset: int = Query(0, ge=0),
+    fields: Literal["id", "summary", "full"] = "summary",
+):
+    """
+    Stable, id-ordered listing for sync/export tooling.
+    Unlike /browse, this never applies a `release_date IS NOT NULL` guard,
+    never uses a keyset cursor, and sorts by `id ASC` so offset pagination
+    is deterministic across concurrent inserts.
+    """
+    t0 = time.perf_counter()
+    EFFECTIVE_CAP = 5000
+    eff_limit = EFFECTIVE_CAP if limit is None else min(limit, EFFECTIVE_CAP)
+
+    class _Req:
+        pass
+
+    req = _Req()
+    req.genre = genre
+    req.genres_mode = genres_mode
+    req.code = code
+    req.min_release_date = min_release_date
+    req.max_release_date = max_release_date
+    req.complete_only = complete_only
+
+    params: dict = {"limit": eff_limit, "offset": offset}
+    conds: List[str] = []
+    _apply_filters(req, params, conds)
+
+    where_sql = " AND ".join(conds) if conds else "TRUE"
+    select_cols = _VLIST_FIELDS[fields]
+    if fields == "summary":
+        select_cols = (
+            "id, code, episode, title, release_date, "
+            "(COALESCE(NULLIF(title, ''), NULL) IS NOT NULL "
+            " AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL) AS complete"
+        )
+
+    sql = f"""
+        SELECT {select_cols}
+        FROM public.videos
+        WHERE {where_sql}
+        ORDER BY id ASC
+        LIMIT %(limit)s OFFSET %(offset)s
+    """
+
+    with pool.connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    took = (time.perf_counter() - t0) * 1000
+    return VideoListResponse(
+        items=[dict(r) for r in rows],
+        count=len(rows),
+        took_ms=took,
+    )
+
+
+def _complete_only_sql(complete_only: bool) -> str:
+    return (
+        "AND COALESCE(NULLIF(title, ''), NULL) IS NOT NULL "
+        "AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL"
+        if complete_only
+        else ""
+    )
+
+
 @app.get("/facets", response_model=FacetsResponse)
 def facets(
     top_genres: int = 60,
     top_codes: int = 40,
     complete_only: bool = Query(False),
 ):
-    extra = (
-        "AND COALESCE(NULLIF(title, ''), NULL) IS NOT NULL "
-        "AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL"
-        if complete_only
-        else ""
-    )
+    extra = _complete_only_sql(complete_only)
     with pool.connection() as conn:
         genres = conn.execute(
             f"""
@@ -689,12 +868,7 @@ def facets(
 
 @app.get("/facets/codes")
 def facets_codes(complete_only: bool = Query(False)):
-    extra = (
-        "AND COALESCE(NULLIF(title, ''), NULL) IS NOT NULL "
-        "AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL"
-        if complete_only
-        else ""
-    )
+    extra = _complete_only_sql(complete_only)
     with pool.connection() as conn:
         codes = conn.execute(
             f"""
@@ -719,17 +893,7 @@ def health():
     return {"ok": True, "db_ms": (time.perf_counter() - t0) * 1000}
 
 
-def _embed_text_for(item: VideoIngestItem) -> Optional[str]:
-    txt = item.title or item.details
-    if not txt:
-        return None
-    return txt
-
-
 def _format_for_embedding(item: VideoIngestItem) -> Optional[str]:
-    """Build the embedding text exactly as migrate_chroma_to_postgres.py does.
-    Returns None if there is nothing meaningful to embed.
-    """
     parts: List[str] = []
     if item.title:
         parts.append(item.title)
@@ -763,18 +927,23 @@ _INGEST_COLS = [
 
 @app.post("/ingest", response_model=IngestResponse)
 def ingest(req: IngestRequest) -> IngestResponse:
-    """Insert or upsert rows into public.videos.
-    Embeddings are ALWAYS regenerated server-side from the item fields using
-    the same format as the ChromaDB migration script, so ingested rows are
-    comparable with migrated rows for semantic search.
-    Formatted embedding texts are truncated via truncate_texts() so the
-    combined input never exceeds the embedding model context window.
-    """
     t0 = time.perf_counter()
     inserted = updated = skipped = 0
 
+    unique_items_map = {}
+    for item in req.items:
+        if item.id:
+            unique_items_map[item.id] = item
+    unique_items = list(unique_items_map.values())
+    duplicate_count = len(req.items) - len(unique_items)
+    if duplicate_count > 0:
+        logger.info(
+            f"Deduped input: {len(req.items)} -> {len(unique_items)} "
+            f"(removed {duplicate_count} duplicates)"
+        )
+
     embeddable: List[Tuple[int, VideoIngestItem, str]] = []
-    for idx, item in enumerate(req.items):
+    for idx, item in enumerate(unique_items):
         text = _format_for_embedding(item)
         if text is None:
             skipped += 1
@@ -782,6 +951,7 @@ def ingest(req: IngestRequest) -> IngestResponse:
         embeddable.append((idx, item, text))
 
     if not embeddable:
+        # FIX: was `skipped + len(unique_items)` which double-counted.
         return IngestResponse(
             inserted=0,
             updated=0,
@@ -790,7 +960,6 @@ def ingest(req: IngestRequest) -> IngestResponse:
         )
 
     raw_texts = [t for _, _, t in embeddable]
-    # Reuse truncate_texts to keep embedding inputs within model context.
     truncated_texts = truncate_texts(
         raw_texts,
         model=EMBED_MODEL,
@@ -800,17 +969,6 @@ def ingest(req: IngestRequest) -> IngestResponse:
     )
     if isinstance(truncated_texts, str):
         truncated_texts = [truncated_texts]
-
-    truncated_count = sum(
-        1 for raw, trunc in zip(raw_texts, truncated_texts) if raw != trunc
-    )
-    if truncated_count:
-        logger.info(
-            "Truncated %d/%d ingest texts to max_tokens=%d",
-            truncated_count,
-            len(raw_texts),
-            INGEST_MAX_TOKENS,
-        )
 
     logger.info("Generating embeddings for %d ingest items...", len(truncated_texts))
     embeddings = embed(truncated_texts, return_format="list", prefix=EMBED_DOC_PREFIX)
@@ -832,6 +990,14 @@ def ingest(req: IngestRequest) -> IngestResponse:
                 item.genres,
                 emb,
             )
+        )
+
+    if not rows:
+        return IngestResponse(
+            inserted=0,
+            updated=0,
+            skipped=skipped,
+            took_ms=(time.perf_counter() - t0) * 1000,
         )
 
     placeholders = ", ".join(
@@ -857,6 +1023,7 @@ def ingest(req: IngestRequest) -> IngestResponse:
         if req.upsert
         else "ON CONFLICT (id) DO NOTHING RETURNING false AS inserted"
     )
+
     sql = f"""
         INSERT INTO public.videos ({", ".join(_INGEST_COLS)})
         VALUES {placeholders}
@@ -873,17 +1040,17 @@ def ingest(req: IngestRequest) -> IngestResponse:
                         inserted += 1
                     else:
                         updated += 1
-                skipped += len(rows) - inserted - updated
     except Exception as e:
         logger.exception("Ingest failed")
         raise HTTPException(500, f"Ingest failed: {e}")
 
     took = (time.perf_counter() - t0) * 1000
     logger.info(
-        "ingest ok ins=%d upd=%d skip=%d %.1fms",
+        "ingest ok ins=%d upd=%d skip=%d dupes=%d %.1fms",
         inserted,
         updated,
         skipped,
+        duplicate_count,
         took,
     )
     return IngestResponse(

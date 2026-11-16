@@ -1,18 +1,26 @@
 // Jet_Apps/web-extensions/smart-web-extensions/missav-video-opener-extension/background.js
-const LOG_PREFIX = "[MissAV]";
-const SERVER_URL = "http://127.0.0.1:9001/ingest"; // Point to server_paginated
+const LOG_PREFIX = "[MissAV-BG]";
+const SERVER_URL = "http://127.0.0.1:9001";
+const INGEST_ENDPOINT = `${SERVER_URL}/ingest`;
+const MAX_FETCH_PAGES = 20;
+const MAX_RETRIES_PER_VIDEO = 3;
 
 const DEFAULT_STATE = {
   isRunning: false,
   code: null,
   currentPage: 0,
   totalPages: 0,
-  totalVideosOpened: 0,
   totalPagesProcessed: 0,
+  totalVideosOpened: 0,
+  collectedCount: 0,
+  ingestedCount: 0,
+  incompleteCount: 0,
+  pendingIngestCount: 0,
+  lastIngest: null,
   shouldStop: false,
   autoCloseTabs: true,
   openVideos: true,
-  jsWaitTime: 5000,
+  jsWaitTime: 12000, // bumped from 5000 — dm-mirror pages can take >5s
   pageDelay: 1000,
   tabOpenDelay: 500,
   maxConcurrentTabs: 20,
@@ -23,170 +31,230 @@ let videoUrlQueue = [];
 let pageUrlQueue = [];
 let pendingTabCloses = new Map();
 let localActiveTabCount = 0;
+let existingVideoIds = new Set();
+let retryCounts = new Map();
+let lastPendingIdsPreview = [];
+
+const DEBUG = true;
+function log(...args) {
+  if (DEBUG) console.log(LOG_PREFIX, ...args);
+}
+function logState(state, label) {
+  if (!DEBUG) return;
+  console.groupCollapsed(`${LOG_PREFIX} state: ${label}`);
+  console.table({
+    isRunning: state.isRunning,
+    code: state.code,
+    currentPage: state.currentPage,
+    totalPages: state.totalPages,
+    totalPagesProcessed: state.totalPagesProcessed,
+    totalVideosOpened: state.totalVideosOpened,
+    collectedCount: state.collectedCount,
+    ingestedCount: state.ingestedCount,
+    incompleteCount: state.incompleteCount,
+    pendingIngestCount: state.pendingIngestCount,
+    activeTabs: localActiveTabCount,
+    videoQueue: videoUrlQueue.length,
+    pageQueue: pageUrlQueue.length,
+    pendingCloses: pendingTabCloses.size,
+  });
+  console.groupEnd();
+}
 
 async function getProcessingState() {
   return new Promise((resolve) => {
     chrome.storage.local.get(["processingState"], (result) => {
-      processingState = result.processingState || { ...DEFAULT_STATE };
+      processingState = { ...DEFAULT_STATE, ...(result.processingState || {}) };
       resolve(processingState);
     });
   });
 }
 
-async function saveProcessingState(state) {
+async function saveProcessingState(state, reason = "") {
   processingState = state;
+  if (DEBUG && reason) log(`saveProcessingState (${reason})`);
   return new Promise((resolve) => {
-    chrome.storage.local.set({ processingState: state }, () => {
-      console.log(
-        `${LOG_PREFIX} State saved: Running=${state.isRunning}, Pages=${state.totalPagesProcessed}/${state.totalPages}, Videos=${state.totalVideosOpened}`,
-      );
-      resolve();
-    });
+    chrome.storage.local.set({ processingState: state }, () => resolve());
   });
 }
 
 function updateBadge(state) {
   if (state.isRunning) {
-    const text = `${state.totalPagesProcessed}/${state.totalPages || "?"}`;
-    chrome.action.setBadgeText({ text });
+    chrome.action.setBadgeText({
+      text: `${state.totalPagesProcessed}/${state.totalPages || "?"}`,
+    });
     chrome.action.setBadgeBackgroundColor({ color: "#4CAF50" });
   } else {
     chrome.action.setBadgeText({ text: "" });
   }
 }
 
-chrome.runtime.onStartup.addListener(async () => {
-  console.log(`${LOG_PREFIX} Extension started`);
-  localActiveTabCount = 0;
-  updateBadge(await getProcessingState());
-});
-
-chrome.runtime.onInstalled.addListener(async () => {
-  console.log(`${LOG_PREFIX} Extension installed/updated`);
-  localActiveTabCount = 0;
-  updateBadge(await getProcessingState());
-});
-
-// --- Tab Management ---
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (pendingTabCloses.has(tabId)) {
-    if (changeInfo.status === "complete") {
-      const pendingInfo = pendingTabCloses.get(tabId);
-      console.log(
-        `${LOG_PREFIX} Tab ${tabId} loaded (${pendingInfo.type}). Waiting ${pendingInfo.waitTime}ms.`,
-      );
-      setTimeout(() => {
-        console.log(`${LOG_PREFIX} Closing tab ${tabId}`);
-        chrome.tabs
-          .remove(tabId)
-          .catch((err) =>
-            console.error(`${LOG_PREFIX} Failed to close tab:`, err),
-          );
-        pendingTabCloses.delete(tabId);
-        if (localActiveTabCount > 0) localActiveTabCount--;
-        processQueues();
-      }, pendingInfo.waitTime);
-    }
-  }
-});
-
-function getActiveExtensionTabCount() {
-  return localActiveTabCount;
+async function refreshPendingPreview() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["pendingIngestQueue"], (result) => {
+      const queue = result.pendingIngestQueue || [];
+      lastPendingIdsPreview = queue.slice(-8).map((i) => i.id);
+      resolve(queue.length);
+    });
+  });
 }
 
-// --- Unified Queue Processor ---
+async function fetchExistingVideoIds(code) {
+  if (!code) return new Set();
+  log(`fetchExistingVideoIds code=${code} …`);
+  const ids = new Set();
+  const limit = 5000;
+  let offset = 0,
+    pageCount = 0;
+  while (pageCount < MAX_FETCH_PAGES) {
+    const url =
+      `${SERVER_URL}/videos?code=${encodeURIComponent(code)}` +
+      `&complete_only=true&fields=id&limit=${limit}&offset=${offset}`;
+    let data;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        log(`fetchExistingVideoIds: HTTP ${res.status}`);
+        break;
+      }
+      data = await res.json();
+    } catch (err) {
+      log(`fetchExistingVideoIds: fetch failed`, err);
+      break;
+    }
+    if (!data.items || data.items.length === 0) break;
+    for (const item of data.items) if (item.id) ids.add(item.id);
+    log(
+      `fetchExistingVideoIds: page ${pageCount} += ${data.items.length} (total ${ids.size})`,
+    );
+    if (data.count < limit) break;
+    offset += limit;
+    pageCount++;
+  }
+  log(`fetchExistingVideoIds: ${ids.size} existing complete IDs for ${code}`);
+  return ids;
+}
+
+// ---------------------------------------------------------------------------
+// Tab lifecycle: only close after jsWaitTime AND log whether the content
+// script in the tab reported anything before closing.
+// ---------------------------------------------------------------------------
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (pendingTabCloses.has(tabId) && changeInfo.status === "complete") {
+    const pendingInfo = pendingTabCloses.get(tabId);
+    log(
+      `tab ${tabId} complete → will close in ${pendingInfo.waitTime}ms (url=${tab?.url || "?"})`,
+    );
+    setTimeout(async () => {
+      // Probe the tab for proof that content_single.js ran.
+      let ran = "unknown";
+      try {
+        const [{ result }] = await chrome.scripting.executeScript({
+          target: { tabId },
+          func: () => ({
+            singleRan: window.__missavSingleRan === true,
+            singleLog: window.__missavSingleLastLog || null,
+            href: location.href,
+          }),
+        });
+        ran = result?.singleRan;
+        log(
+          `tab ${tabId} pre-close: singleRan=${result?.singleRan} last=${result?.singleLog} href=${result?.href}`,
+        );
+      } catch (e) {
+        log(
+          `tab ${tabId} pre-close probe failed (tab may already be gone): ${e?.message}`,
+        );
+      }
+      chrome.tabs.remove(tabId).catch(() => {});
+      pendingTabCloses.delete(tabId);
+      if (localActiveTabCount > 0) localActiveTabCount--;
+      log(
+        `tab ${tabId} closed. activeTabCount=${localActiveTabCount} singleRan=${ran}`,
+      );
+      processQueues();
+    }, pendingInfo.waitTime);
+  }
+});
+
 async function processQueues() {
   const state = await getProcessingState();
-  if (!state.isRunning || state.shouldStop) {
-    console.log(
-      `${LOG_PREFIX} Process queues halted: Running=${state.isRunning}, Stop=${state.shouldStop}`,
-    );
+  if (
+    !state.isRunning &&
+    pageUrlQueue.length === 0 &&
+    videoUrlQueue.length === 0
+  ) {
+    log(`processQueues: not running and queues empty, idle`);
     return;
   }
-
-  const currentTabs = getActiveExtensionTabCount();
-  const capacity = state.maxConcurrentTabs - currentTabs;
-
-  if (capacity <= 0) {
-    console.log(
-      `${LOG_PREFIX} At max capacity (${currentTabs}/${state.maxConcurrentTabs}). Waiting...`,
-    );
+  if (state.shouldStop) {
+    log(`processQueues: shouldStop=true, not launching new tabs`);
     return;
   }
+  const capacity = state.maxConcurrentTabs - localActiveTabCount;
+  if (capacity <= 0) return;
 
-  let urlToOpen = null;
-  let type = "";
-
+  let urlToOpen = null,
+    source = null;
   if (pageUrlQueue.length > 0) {
     urlToOpen = pageUrlQueue.shift();
-    type = "page";
-    console.log(
-      `${LOG_PREFIX} Opening PAGE from queue. Remaining pages: ${pageUrlQueue.length}`,
-    );
+    source = "pageQueue";
   } else if (videoUrlQueue.length > 0) {
     urlToOpen = videoUrlQueue.shift();
-    type = "video";
-    console.log(
-      `${LOG_PREFIX} Opening VIDEO from queue. Remaining videos: ${videoUrlQueue.length}`,
-    );
+    source = "videoQueue";
   }
 
   if (urlToOpen) {
-    console.log(`${LOG_PREFIX} Creating tab for: ${urlToOpen}`);
-    localActiveTabCount++;
-    chrome.tabs.create(
-      {
-        url: urlToOpen,
-        active: false,
-      },
-      (tab) => {
-        if (chrome.runtime.lastError) {
-          console.error(
-            `${LOG_PREFIX} Failed to create tab:`,
-            chrome.runtime.lastError,
-          );
-          if (localActiveTabCount > 0) localActiveTabCount--;
-          setTimeout(processQueues, 100);
-          return;
-        }
-
-        if (state.autoCloseTabs) {
-          pendingTabCloses.set(tab.id, {
-            url: urlToOpen,
-            type: type,
-            createdAt: Date.now(),
-            waitTime: state.jsWaitTime,
-          });
-        }
-        setTimeout(processQueues, state.tabOpenDelay);
-      },
+    log(
+      `processQueues: opening [${source}] ${urlToOpen} (active=${localActiveTabCount + 1})`,
     );
+    localActiveTabCount++;
+    chrome.tabs.create({ url: urlToOpen, active: false }, (tab) => {
+      if (chrome.runtime.lastError) {
+        log(
+          `processQueues: tabs.create error`,
+          chrome.runtime.lastError.message,
+        );
+        if (localActiveTabCount > 0) localActiveTabCount--;
+        setTimeout(processQueues, 100);
+        return;
+      }
+      log(`processQueues: tab ${tab.id} created → ${urlToOpen}`);
+      if (state.autoCloseTabs)
+        pendingTabCloses.set(tab.id, { waitTime: state.jsWaitTime });
+      setTimeout(processQueues, state.tabOpenDelay);
+    });
   } else {
-    console.log(`${LOG_PREFIX} All queues empty. Processing finished.`);
-    if (state.isRunning) {
-      state.isRunning = false;
-      saveProcessingState(state);
-      updateBadge(state);
+    if (localActiveTabCount === 0 && pendingTabCloses.size === 0) {
+      log(`processQueues: all queues empty and no active tabs → stopping`);
+      if (state.isRunning) {
+        state.isRunning = false;
+        await saveProcessingState(state, "queues drained");
+        updateBadge(state);
+        chrome.runtime
+          .sendMessage({ action: "updatePanel", state })
+          .catch(() => {});
+      }
+    } else {
+      log(
+        `processQueues: queues empty but still in flight (tabs=${localActiveTabCount}, pendingCloses=${pendingTabCloses.size})`,
+      );
     }
   }
 }
 
-// --- Message Handling ---
 chrome.action.onClicked.addListener(async (tab) => {
-  console.log(`${LOG_PREFIX} Toolbar icon clicked`);
+  log(`action clicked on tab ${tab.id}`);
   const state = await getProcessingState();
   chrome.tabs
-    .sendMessage(tab.id, {
-      action: "forceShowPanel",
-      state: state,
-    })
-    .catch((e) => {
-      console.warn(`${LOG_PREFIX} Could not send message to show panel:`, e);
-    });
+    .sendMessage(tab.id, { action: "forceShowPanel", state })
+    .catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log(`${LOG_PREFIX} Received message:`, message.action);
+  log(
+    `→ message: ${message?.action} from tab ${sender?.tab?.id} url=${sender?.tab?.url}`,
+  );
   handleMessage(message, sender, sendResponse);
   return true;
 });
@@ -195,149 +263,332 @@ async function handleMessage(message, sender, sendResponse) {
   if (message.action === "toggleState") {
     let state = await getProcessingState();
     if (state.isRunning) {
-      console.log(`${LOG_PREFIX} STOPPING processing via panel...`);
+      log("toggleState: STOP");
       state.isRunning = false;
       state.shouldStop = true;
       videoUrlQueue = [];
       pageUrlQueue = [];
-      await saveProcessingState(state);
+      chrome.storage.local.set({ pendingIngestQueue: [] });
+      await saveProcessingState(state, "toggle stop");
       updateBadge(state);
+      logState(state, "after stop");
       sendResponse({ success: true, isRunning: false });
-    } else {
-      const url = sender.tab ? sender.tab.url : "";
-      const searchMatch = url.match(
-        /\/en\/search\/([a-zA-Z0-9]+)-(\?page=(\d+))?/,
-      );
-      if (!searchMatch) {
-        console.warn(
-          `${LOG_PREFIX} Cannot start: Not on a valid search page. URL: ${url}`,
-        );
-        sendResponse({ success: false, error: "Not on search page" });
-        return;
-      }
-      const code = searchMatch[1];
-      const pageNum = searchMatch[3] ? parseInt(searchMatch[3]) : 1;
-      console.log(
-        `${LOG_PREFIX} STARTING processing for code: ${code}, page: ${pageNum}`,
-      );
-      localActiveTabCount = 0;
-      state = {
-        ...DEFAULT_STATE,
-        isRunning: true,
-        code: code,
-        currentPage: pageNum,
-        shouldStop: false,
-        openVideos: state.openVideos,
-      };
-      videoUrlQueue = [];
-      pageUrlQueue = [];
-      await saveProcessingState(state);
-      updateBadge(state);
-      chrome.tabs.sendMessage(sender.tab.id, {
-        action: "initializeBatchProcess",
-        code: state.code,
-        pageNum: state.currentPage,
-        tabId: sender.tab.id,
-        state: state,
-      });
-      sendResponse({ success: true, isRunning: true });
+      return;
     }
-  } else if (message.action === "updateSettings") {
-    console.log(`${LOG_PREFIX} Updating settings:`, message.updates);
+
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ success: false, error: "No tab context" });
+      return;
+    }
+    const url = sender.tab.url;
+    const searchMatch = url.match(/\/en\/search\/([a-zA-Z0-9]+)-/);
+    if (!searchMatch) {
+      sendResponse({ success: false, error: "Not on search page" });
+      return;
+    }
+    const code = searchMatch[1];
+    const pageMatch = url.match(/[?&]page=(\d+)/);
+    const pageNum = pageMatch ? parseInt(pageMatch[1]) : 1;
+    log(`toggleState: START code=${code} startPage=${pageNum}`);
+
+    localActiveTabCount = 0;
+    retryCounts = new Map();
+    lastPendingIdsPreview = [];
+    existingVideoIds = await fetchExistingVideoIds(code);
+
+    state = {
+      ...DEFAULT_STATE,
+      isRunning: true,
+      code: code,
+      currentPage: pageNum,
+      shouldStop: false,
+      openVideos: state.openVideos,
+    };
+    videoUrlQueue = [];
+    pageUrlQueue = [];
+    chrome.storage.local.set({ pendingIngestQueue: [] });
+    await saveProcessingState(state, "toggle start");
+    updateBadge(state);
+    logState(state, "after start");
+    chrome.tabs.sendMessage(tabId, {
+      action: "initializeBatchProcess",
+      code: state.code,
+      pageNum: state.currentPage,
+      tabId,
+      state,
+    });
+    sendResponse({ success: true, isRunning: true });
+    return;
+  }
+
+  if (message.action === "updateSettings") {
     let state = await getProcessingState();
     state = { ...state, ...message.updates };
-    await saveProcessingState(state);
+    log("updateSettings:", message.updates);
+    await saveProcessingState(state, "updateSettings");
     sendResponse({ success: true, state });
-  } else if (message.action === "setPageQueue") {
-    console.log(`${LOG_PREFIX} RECEIVED setPageQueue message`);
+    return;
+  }
+
+  if (message.action === "setPageQueue") {
     const { pageUrls, totalPages } = message;
     let state = await getProcessingState();
-    console.log(
-      `${LOG_PREFIX} Setting total pages to: ${totalPages}. Queue size: ${pageUrls.length}`,
-    );
     state.totalPages = totalPages;
     const currentPageUrl = `https://missav.ws/en/search/${state.code}-?page=${state.currentPage}`;
-    pageUrlQueue = pageUrls.filter((url) => url !== currentPageUrl);
-    console.log(
-      `${LOG_PREFIX} Queue initialized. Pages to scan: ${pageUrlQueue.length}`,
-    );
-    await saveProcessingState(state);
+    pageUrlQueue = pageUrls.filter((u) => u !== currentPageUrl);
+    log(`setPageQueue: totalPages=${totalPages}, queue=${pageUrlQueue.length}`);
+    await saveProcessingState(state, "setPageQueue");
     updateBadge(state);
-    console.log(`${LOG_PREFIX} Starting queue processing...`);
+    logState(state, "after setPageQueue");
     processQueues();
     sendResponse({ success: true });
-  } else if (message.action === "extractedVideos") {
-    console.log(`${LOG_PREFIX} RECEIVED extractedVideos message`);
-    const { urls, pageNum } = message;
+    return;
+  }
+
+  if (message.action === "extractedVideos") {
+    const { urls, pageNum, metadataList } = message;
     let state = await getProcessingState();
+    log(
+      `extractedVideos: page=${pageNum} urls=${urls.length} metadata=${metadataList.length}`,
+    );
+
+    const incompleteMetadata = metadataList.filter(
+      (item) => !existingVideoIds.has(item.id) && !item.title && !item.details,
+    );
+    const openableUrls = urls.filter(
+      (url, i) =>
+        !existingVideoIds.has(metadataList[i]?.id) && metadataList[i]?.url,
+    );
+    log(
+      `extractedVideos: openable=${openableUrls.length} incomplete=${incompleteMetadata.length} (existingIds=${existingVideoIds.size})`,
+    );
+
     if (state.openVideos) {
-      console.log(
-        `${LOG_PREFIX} Adding ${urls.length} videos from page ${pageNum} to video queue`,
-      );
-      videoUrlQueue.push(...urls);
-      state.totalVideosOpened += urls.length;
-    } else {
-      console.log(
-        `${LOG_PREFIX} Skipping video collection for page ${pageNum} (Setting disabled)`,
+      videoUrlQueue.push(...openableUrls);
+      state.totalVideosOpened += openableUrls.length;
+      log(
+        `extractedVideos: videoQueue=${videoUrlQueue.length}, totalVideosOpened=${state.totalVideosOpened}`,
       );
     }
+
+    if (incompleteMetadata.length > 0) {
+      chrome.storage.local.get(["pendingIngestQueue"], (result) => {
+        let queue = result.pendingIngestQueue || [];
+        const inQueue = new Set(queue.map((i) => i.id));
+        const uniqueNew = incompleteMetadata.filter((i) => !inQueue.has(i.id));
+        if (uniqueNew.length > 0) {
+          queue = [...queue, ...uniqueNew];
+          chrome.storage.local.set({ pendingIngestQueue: queue }, () => {
+            log(
+              `extractedVideos: pendingIngestQueue +${uniqueNew.length} → ${queue.length} [${uniqueNew.map((i) => i.id).join(",")}]`,
+            );
+            state.pendingIngestCount = queue.length;
+            lastPendingIdsPreview = queue.slice(-8).map((i) => i.id);
+          });
+        }
+      });
+    }
+
     state.totalPagesProcessed += 1;
-    await saveProcessingState(state);
+    log(
+      `extractedVideos: totalPagesProcessed → ${state.totalPagesProcessed}/${state.totalPages}`,
+    );
+    await saveProcessingState(state, "extractedVideos");
     updateBadge(state);
-    chrome.tabs
-      .sendMessage(sender.tab.id, {
-        action: "updatePanel",
-        state: state,
-      })
-      .catch(() => {});
+
+    if (sender.tab && sender.tab.id) {
+      chrome.tabs
+        .sendMessage(sender.tab.id, { action: "updatePanel", state })
+        .catch(() => {});
+    }
     processQueues();
     sendResponse({ success: true });
-  } else if (message.action === "getProcessingState") {
-    sendResponse({ state: await getProcessingState() });
-  } else if (message.action === "ingestSingleVideo") {
-    // NEW: Handle ingestion from single video pages
-    console.log(`${LOG_PREFIX} Received single video ingestion request`);
-    ingestVideoToServer(message.data)
-      .then((result) => {
-        console.log(`${LOG_PREFIX} Ingestion successful:`, result);
-        sendResponse({ success: true, result });
-      })
-      .catch((err) => {
-        console.error(`${LOG_PREFIX} Ingestion failed:`, err);
-        sendResponse({ success: false, error: err.message });
+    return;
+  }
+
+  if (message.action === "videoCompleted") {
+    const { metadata } = message;
+    if (!metadata || !metadata.id) {
+      log("videoCompleted: missing metadata");
+      sendResponse({ success: false, error: "No metadata" });
+      return;
+    }
+    log(
+      `videoCompleted: id=${metadata.id} video_id=${metadata.video_id} title="${(metadata.title || "").slice(0, 60)}"`,
+    );
+
+    // Clear retry count since we got data
+    retryCounts.delete(metadata.id);
+
+    chrome.storage.local.get(["pendingIngestQueue"], (result) => {
+      let queue = result.pendingIngestQueue || [];
+
+      // Find the index of the existing item
+      const existingIndex = queue.findIndex((item) => item.id === metadata.id);
+
+      if (existingIndex !== -1) {
+        // UPDATE existing item in place
+        log(`videoCompleted: Updating existing item at index ${existingIndex}`);
+        queue[existingIndex] = { ...queue[existingIndex], ...metadata };
+      } else {
+        // ADD new item if it wasn't in the queue (e.g. opened manually)
+        log(`videoCompleted: Adding new item to queue`);
+        queue.push(metadata);
+      }
+
+      chrome.storage.local.set({ pendingIngestQueue: queue }, async () => {
+        let state = await getProcessingState();
+        state.collectedCount = (state.collectedCount || 0) + 1;
+        state.pendingIngestCount = queue.length;
+
+        // Update preview IDs for UI
+        lastPendingIdsPreview = queue.slice(-8).map((i) => i.id);
+
+        log(
+          `videoCompleted: collectedCount → ${state.collectedCount}, pending → ${queue.length}`,
+        );
+
+        await saveProcessingState(state, "videoCompleted");
+        updateBadge(state);
+
+        // Notify UI to refresh panel if needed
+        chrome.runtime
+          .sendMessage({ action: "updatePanel", state })
+          .catch(() => {});
+
+        sendResponse({ success: true, queueLength: queue.length });
       });
-    return true; // Keep channel open for async response
+    });
+    return true;
+  }
+
+  if (message.action === "markVideoIncomplete") {
+    const { videoId, url } = message;
+    if (!videoId) {
+      sendResponse({ success: false, error: "No videoId" });
+      return;
+    }
+    existingVideoIds.delete(videoId);
+    const retries = (retryCounts.get(videoId) || 0) + 1;
+    retryCounts.set(videoId, retries);
+    log(
+      `markVideoIncomplete: ${videoId} attempt ${retries}/${MAX_RETRIES_PER_VIDEO}`,
+    );
+
+    (async () => {
+      let state = await getProcessingState();
+      state.incompleteCount = (state.incompleteCount || 0) + 1;
+      if (
+        retries < MAX_RETRIES_PER_VIDEO &&
+        url &&
+        state.isRunning &&
+        !state.shouldStop
+      ) {
+        videoUrlQueue.push(url);
+        log(
+          `markVideoIncomplete: re-queued ${videoId} (videoQueue=${videoUrlQueue.length})`,
+        );
+      } else if (retries >= MAX_RETRIES_PER_VIDEO) {
+        log(
+          `markVideoIncomplete: giving up on ${videoId} after ${retries} retries`,
+        );
+      }
+      await saveProcessingState(state, "markVideoIncomplete");
+      updateBadge(state);
+      processQueues();
+      sendResponse({ success: true, retries });
+    })();
+    return true;
+  }
+
+  if (message.action === "getProcessingState") {
+    const state = await getProcessingState();
+    state.pendingIngestCount = await refreshPendingPreview();
+    sendResponse({ state, pendingIds: lastPendingIdsPreview });
+    return;
+  }
+
+  if (message.action === "triggerBatchIngest") {
+    log("triggerBatchIngest: invoked");
+    chrome.storage.local.get(["pendingIngestQueue"], async (result) => {
+      let queue = result.pendingIngestQueue || [];
+      log(`triggerBatchIngest: queue=${queue.length}`);
+
+      if (queue.length === 0) {
+        log("triggerBatchIngest: nothing to ingest");
+        sendResponse({ success: true, inserted: 0, updated: 0, skipped: 0 });
+        return;
+      }
+
+      try {
+        // FIX: Split queue into chunks of 500 to match server max_length
+        const CHUNK_SIZE = 500;
+        let totalInserted = 0;
+        let totalUpdated = 0;
+        let totalSkipped = 0;
+
+        for (let i = 0; i < queue.length; i += CHUNK_SIZE) {
+          const chunk = queue.slice(i, i + CHUNK_SIZE);
+          log(
+            `Processing chunk ${Math.floor(i / CHUNK_SIZE) + 1}, size: ${chunk.length}`,
+          );
+
+          const response = await ingestBatchToServer(chunk);
+
+          totalInserted += response.inserted || 0;
+          totalUpdated += response.updated || 0;
+          totalSkipped += response.skipped || 0;
+        }
+
+        // Clear queue only after all chunks are processed successfully
+        chrome.storage.local.set({ pendingIngestQueue: [] });
+
+        let state = await getProcessingState();
+        state.ingestedCount =
+          (state.ingestedCount || 0) + (totalInserted + totalUpdated);
+        state.pendingIngestCount = 0;
+        state.lastIngest = {
+          inserted: totalInserted,
+          updated: totalUpdated,
+          skipped: totalSkipped,
+          took_ms: 0, // Aggregated time not tracked simply here
+          at: new Date().toISOString(),
+        };
+        lastPendingIdsPreview = [];
+
+        log(`triggerBatchIngest: Finished. Total inserted: ${totalInserted}`);
+        await saveProcessingState(state, "batch ingest");
+        updateBadge(state);
+        chrome.runtime
+          .sendMessage({ action: "updatePanel", state })
+          .catch(() => {});
+
+        sendResponse({
+          success: true,
+          inserted: totalInserted,
+          updated: totalUpdated,
+          skipped: totalSkipped,
+        });
+      } catch (err) {
+        log("triggerBatchIngest: error", err);
+        sendResponse({ success: false, error: err.message });
+      }
+    });
+    return true;
   }
 }
 
-// --- Server Ingestion Logic ---
-async function ingestVideoToServer(videoData) {
-  if (!videoData || !videoData.id) {
-    throw new Error("Invalid video data");
-  }
-
-  const payload = {
-    items: [videoData],
-    upsert: true,
-  };
-
-  try {
-    const response = await fetch(SERVER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Server returned ${response.status}: ${errorText}`);
-    }
-
-    return await response.json();
-  } catch (error) {
-    console.error(`${LOG_PREFIX} Fetch error during ingestion:`, error);
-    throw error;
-  }
+async function ingestBatchToServer(videoDataArray) {
+  const payload = { items: videoDataArray, upsert: true };
+  log(
+    `ingestBatchToServer: POST ${INGEST_ENDPOINT} items=${videoDataArray.length}`,
+  );
+  const response = await fetch(INGEST_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(`Server returned ${response.status}`);
+  return await response.json();
 }
