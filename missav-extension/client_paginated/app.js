@@ -64,7 +64,6 @@ function app() {
       candidateLimit: null, // null = "auto" (server cap)
       minClusterSize: 2, // min_cluster_size (-s)
       epsilon: 0.25, // cluster_selection_epsilon (-e)
-      mmrLambda: null, // null = off; 0.5–0.7 = balanced; 1.0 = off
       candidateSource: "recent", // used only when query is null
     },
 
@@ -163,14 +162,14 @@ function app() {
       // ── Clustered knobs ──
       //
       // URL contract:
-      //   cl     → cluster_candidate_limit. Omitted or empty  ⇒ "auto" (null).
+      //   cl     → cluster_candidate_limit. Omitted or empty ⇒ "auto" (null).
       //   msize  → min_cluster_size.        Omitted ⇒ default (2).
       //   eps    → cluster_selection_epsilon. Omitted ⇒ default (0.25).
-      //   mmr    → mmr_lambda.             Omitted ⇒ off (null).
-      //   src    → candidate_source.       Omitted ⇒ "recent".
+      //   src    → candidate_source.        Omitted ⇒ "recent".
       //
-      // "auto" / "off" are encoded as ABSENCE of the param, so a shared link
-      // without the param reproduces the default behavior.
+      // "auto" is encoded as ABSENCE of `cl` (not as `cl=`), so a shared
+      // link without the param reproduces "use the server cap". An empty
+      // `cl=` value is also treated as auto.
       if (this.mode === "clustered") {
         const clRaw = p.get("cl");
         if (clRaw == null || clRaw === "") {
@@ -194,14 +193,6 @@ function app() {
           if (Number.isFinite(eps)) {
             this.clusterPrefs.epsilon = Math.min(1, Math.max(0, eps));
           }
-        }
-
-        const mmrRaw = p.get("mmr");
-        if (mmrRaw != null && mmrRaw !== "") {
-          const mmr = parseFloat(mmrRaw);
-          this.clusterPrefs.mmrLambda = Number.isFinite(mmr) ? mmr : null;
-        } else {
-          this.clusterPrefs.mmrLambda = null;
         }
 
         const src = p.get("src");
@@ -240,14 +231,6 @@ function app() {
         }
         if (this.clusterPrefs.epsilon !== 0.25) {
           p.set("eps", String(this.clusterPrefs.epsilon));
-        }
-        // MMR is only meaningful in query mode; persist it only when on.
-        if (
-          Number.isFinite(this.clusterPrefs.mmrLambda) &&
-          this.clusterPrefs.mmrLambda > 0 &&
-          this.clusterPrefs.mmrLambda < 1
-        ) {
-          p.set("mmr", String(this.clusterPrefs.mmrLambda));
         }
         if (this.clusterPrefs.candidateSource !== "recent") {
           p.set("src", this.clusterPrefs.candidateSource);
@@ -344,17 +327,14 @@ function app() {
     // Preset helpers used by the preset selector in the header.
     applyClusterPreset(name) {
       const presets = {
-        tight: { minClusterSize: 4, epsilon: 0.15, mmrLambda: 0.7 },
-        balanced: { minClusterSize: 2, epsilon: 0.25, mmrLambda: 0.6 },
-        loose: { minClusterSize: 2, epsilon: 0.45, mmrLambda: 0.6 },
+        tight: { minClusterSize: 4, epsilon: 0.15 },
+        balanced: { minClusterSize: 2, epsilon: 0.25 },
+        loose: { minClusterSize: 2, epsilon: 0.45 },
       };
       const p = presets[name];
       if (!p) return;
       this.clusterPrefs.minClusterSize = p.minClusterSize;
       this.clusterPrefs.epsilon = p.epsilon;
-      // MMR is query-mode only; a preset shouldn't silently flip it on when
-      // there's no query to diversify against.
-      this.clusterPrefs.mmrLambda = this.lastQuery ? p.mmrLambda : null;
       this.applyClusterPrefs();
     },
 
@@ -535,31 +515,26 @@ function app() {
       };
       const q = this.lastQuery?.trim() || null;
 
-      // Auto mode: send `null` so the server uses its cap.
+      // Auto mode: send `null` so the server uses its cap. Sending `100`
+      // (or any other client-invented number) would silently override the
+      // server's much larger default and shrink the pool.
       const limit =
         Number.isFinite(this.clusterPrefs.candidateLimit) &&
         this.clusterPrefs.candidateLimit >= 10
           ? this.clusterPrefs.candidateLimit
           : null;
 
-      // MMR is query-mode only. When there's no query, or λ is off/1.0, send
-      // null so the server skips MMR cleanly. 1.0 == pure relevance == no-op,
-      // so we normalize it to null rather than sending a pointless value.
-      const mmrLambda =
-        q &&
-        Number.isFinite(this.clusterPrefs.mmrLambda) &&
-        this.clusterPrefs.mmrLambda > 0 &&
-        this.clusterPrefs.mmrLambda < 1
-          ? this.clusterPrefs.mmrLambda
-          : null;
-
       return {
+        // Query is optional; server branches on presence.
         query: q,
+
+        // cluster_utils knobs — no n_clusters, no include_noise.
         min_cluster_size: this.clusterPrefs.minClusterSize,
         cluster_selection_epsilon: this.clusterPrefs.epsilon,
-        cluster_candidate_limit: limit,
-        mmr_lambda: mmrLambda,
+        cluster_candidate_limit: limit, // null → server cap
         candidate_source: this.clusterPrefs.candidateSource,
+
+        // Shared filters.
         genre: getGenreParam(),
         genres_mode: this.filters.genresMode,
         code: getCodeParam(),
@@ -569,7 +544,7 @@ function app() {
         max_release_date: this.filters.to
           ? new Date(this.filters.to + "T23:59:59Z").toISOString()
           : null,
-        min_similarity: null,
+        min_similarity: null, // server rejects when query is null
         completion_filter: this.filters.completionFilter,
       };
     },

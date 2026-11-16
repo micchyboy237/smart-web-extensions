@@ -58,7 +58,17 @@ INGEST_MAX_TOKENS = 512
 # /search_clustered caps.
 #
 # `cluster_candidate_limit` is optional in the request. When omitted, the
-# server uses one of these caps depending on whether a query was provided.
+# server uses one of these caps depending on whether a query was provided:
+#
+#   * Query mode: the pool is top-N by cosine distance — the query already
+#     narrows the candidates semantically, so a large cap (default 5000) is
+#     both useful and fast on the HNSW index.
+#
+#   * Query-less mode: the pool is a recent/random sample — a large cap
+#     gives the clusterer more structure to work with, but "recent 50k" is
+#     dominated by the newest ingestion batch and "random 50k" is a full
+#     seq scan. 5000 is a stable, bounded default.
+#
 # Both caps are env-overridable so an operator can tune per deployment
 # without touching code. Explicit `cluster_candidate_limit` values are
 # clamped to the relevant cap (never exceed it), but a client may ask for
@@ -66,25 +76,6 @@ INGEST_MAX_TOKENS = 512
 # --------------------------------------------------------------------------- #
 CLUSTER_CANDIDATE_CAP_QUERY = int(os.getenv("CLUSTER_CANDIDATE_CAP_QUERY", "5000"))
 CLUSTER_CANDIDATE_CAP_BROWSE = int(os.getenv("CLUSTER_CANDIDATE_CAP_BROWSE", "5000"))
-
-# --------------------------------------------------------------------------- #
-# MMR (Maximal Marginal Relevance) — applied per-cluster inside
-# /search_clustered when `mmr_lambda` is provided.
-#
-# MMR re-orders a ranked list so that the top items are both relevant to the
-# query and diverse with respect to each other:
-#
-#   score(item) = λ * sim(item, query) - (1 - λ) * max(sim(item, already_selected))
-#
-# In this endpoint, "already_selected" is scoped to *the same cluster* — MMR
-# only diversifies within a carousel, never across clusters. That is the
-# correct scoping: global MMR before clustering would waste work (the
-# clusterer ignores order) and could distort cluster boundaries.
-#
-# Query-less mode (candidate_source: recent/random) skips MMR, because
-# `similarity` is NULL and there is no relevance term to balance against.
-# --------------------------------------------------------------------------- #
-MMR_TOP_WINDOW = int(os.getenv("CLUSTER_MMR_TOP_WINDOW", "30"))
 
 _PREFIX_RE = re.compile(r"^\s*([A-Za-z0-9]+)-\d+\s*[:\-\u2013\u2014]?\s*")
 
@@ -319,10 +310,6 @@ class IngestResponse(BaseModel):
 # CLUSTER_CANDIDATE_CAP_BROWSE depending on whether a query was provided.
 # Explicit values are clamped to that cap so a client can request fewer
 # candidates (for latency) but never more than the deployment allows.
-#
-# `mmr_lambda` is ALSO optional. When provided (0.0..1.0) AND a query is
-# present, MMR re-orders items *within each cluster* to trade off relevance
-# vs. intra-cluster diversity. Query-less mode ignores it (no relevance term).
 # --------------------------------------------------------------------------- #
 class ClusteredSearchRequest(BaseModel):
     query: Optional[str] = Field(
@@ -372,21 +359,6 @@ class ClusteredSearchRequest(BaseModel):
         description=(
             "Only used when `query` is omitted. 'recent' orders by "
             "release_date/created_at desc; 'random' uses random() ordering."
-        ),
-    )
-
-    # MMR diversity — per-cluster, query mode only.
-    mmr_lambda: Optional[float] = Field(
-        None,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Maximal Marginal Relevance trade-off within each cluster. "
-            "None (default) = no MMR; items stay sorted by (silhouette, "
-            "probability). 1.0 = pure relevance (same as None in practice); "
-            "0.5–0.7 = balanced relevance vs. diversity; 0.0 = pure diversity "
-            "(not recommended). Ignored when `query` is None — there is no "
-            "relevance term to balance against."
         ),
     )
 
@@ -465,13 +437,6 @@ class ClusteredSearchResponse(BaseModel):
             "Effective candidate limit used for this request. Equals the "
             "request's `cluster_candidate_limit` when provided (after "
             "clamping), otherwise the server-side cap for the active mode."
-        ),
-    )
-    mmr_lambda: Optional[float] = Field(
-        None,
-        description=(
-            "Echo of the effective MMR λ. None when MMR was not applied "
-            "(either not requested, or `query` was None)."
         ),
     )
     n_clusters: int = Field(
@@ -703,78 +668,6 @@ def _to_float_list(value) -> List[float]:
     )
 
 
-def _mmr_reorder(
-    items: List[VideoItem],
-    matrix: np.ndarray,
-    row_index_by_id: Dict[str, int],
-    query_emb: np.ndarray,
-    lambda_: float,
-    top_k: int,
-) -> List[VideoItem]:
-    """
-    Maximal Marginal Relevance re-ordering of `items` (one cluster's members).
-
-    Only the first `top_k` positions are MMR-selected; the tail keeps its
-    original order. This bounds cost to O(top_k * n * d) per cluster and
-    ensures the visible carousel (which is the first few cards) gets the
-    diversity benefit without paying for the whole cluster.
-
-    `items` must be the already-sorted cluster members (silhouette,
-    probability) descending. `matrix[row_index_by_id[item.id]]` gives the
-    item's embedding. `query_emb` must be a 1-D L2-normalized vector of the
-    same dimension.
-    """
-    n = len(items)
-    k = min(top_k, n)
-    if k <= 1:
-        return items
-
-    # Embeddings for the top-k window only. The tail is never considered
-    # for selection, so we don't pay to fetch its vectors.
-    window = items[:k]
-    vecs = np.stack([matrix[row_index_by_id[it.id]] for it in window]).astype(
-        np.float32
-    )
-
-    # Normalize defensively — the clusterer normalizes internally, but the
-    # rows we read from Postgres may not be unit-norm, and MMR's cosine
-    # terms require unit vectors.
-    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    vecs = vecs / norms
-
-    q = query_emb.astype(np.float32)
-    qn = np.linalg.norm(q)
-    if qn == 0:
-        return items
-    q = q / qn
-
-    # Relevance term: cosine(item, query).
-    rel = vecs @ q  # shape (k,)
-
-    selected: List[int] = []
-    remaining = list(range(k))
-
-    # First pick: highest relevance (matches MMR's initialization).
-    first = int(np.argmax(rel))
-    selected.append(first)
-    remaining.remove(first)
-
-    while remaining:
-        # Similarity of each remaining item to every already-selected item.
-        sel_vecs = vecs[selected]  # (|S|, d)
-        sims = vecs[remaining] @ sel_vecs.T  # (|R|, |S|)
-        redundancy = sims.max(axis=1)  # max over selected
-        scores = lambda_ * rel[remaining] - (1.0 - lambda_) * redundancy
-        best_local = int(np.argmax(scores))
-        best_global = remaining[best_local]
-        selected.append(best_global)
-        remaining.remove(best_global)
-
-    reordered_window = [window[i] for i in selected]
-    return reordered_window + items[k:]
-
-
 # --------------------------------------------------------------------------- #
 # /search
 # --------------------------------------------------------------------------- #
@@ -858,10 +751,6 @@ def search(req: SearchRequest) -> SearchResponse:
 # Everything else — k selection, HDBSCAN vs Spectral, noise (-1) bucket,
 # probabilities, centroids, consistency scores, silhouettes, and per-item
 # ordering inside a cluster — comes from cluster_utils unchanged.
-#
-# MMR (optional) is applied per-cluster AFTER translation, only when a query
-# is present. It re-orders the top window of each cluster so the visible
-# carousel shows representative-but-distinct items.
 # --------------------------------------------------------------------------- #
 def _resolve_cluster_candidate_limit(req: ClusteredSearchRequest) -> int:
     """
@@ -952,7 +841,6 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
             query=req.query or "",
             total_results=0,
             candidate_limit=limit,
-            mmr_lambda=None,
             n_clusters=0,
             n_noise=0,
             total_misplaced_items=0,
@@ -1000,22 +888,6 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
     # get_detailed_analysis already sorts members by (silhouette, probability)
     # descending, so items within each cluster come out core-first.
     by_id: Dict[str, dict] = {r["id"]: r for r in rows}
-    row_index_by_id: Dict[str, int] = {r["id"]: i for i, r in enumerate(rows)}
-
-    # MMR is applied per cluster, only when a query exists and λ was given.
-    # 1.0 is a no-op in practice (pure relevance = the default order), so we
-    # skip it to avoid pointless work.
-    apply_mmr = (
-        req.mmr_lambda is not None
-        and req.query is not None
-        and req.mmr_lambda < 1.0
-        and matrix.shape[0] > 0
-    )
-    query_emb: Optional[np.ndarray] = None
-    if apply_mmr:
-        query_emb = np.asarray(
-            _to_float_list(_embed_query(req.query)), dtype=np.float32
-        )
 
     clusters: List[ClusterItem] = []
     for cluster_name, info in analysis.items():
@@ -1038,19 +910,6 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
             item.distance_to_centroid = float(dist)
             item.silhouette = float(sil)
             items.append(item)
-
-        # MMR re-orders the top window of this cluster (query mode only).
-        # Items beyond MMR_TOP_WINDOW keep their (silhouette, probability)
-        # order, so the cost stays O(MMR_TOP_WINDOW * n * d) per cluster.
-        if apply_mmr and query_emb is not None and len(items) > 1:
-            items = _mmr_reorder(
-                items,
-                matrix,
-                row_index_by_id,
-                query_emb,
-                req.mmr_lambda,
-                MMR_TOP_WINDOW,
-            )
 
         # Query-dependent cluster field. None when no query was provided.
         centroid_sim = None
@@ -1077,27 +936,23 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
         )
 
     # Cluster ordering: cohesion × size, noise last. Member ordering inside
-    # each cluster is either the default (silhouette, probability) or, when
-    # MMR ran, the per-cluster MMR order.
+    # each cluster is already handled by get_detailed_analysis().
     clusters.sort(key=lambda c: (c.is_noise, -((c.consistency_score or 0.0) * c.size)))
 
-    effective_mmr = req.mmr_lambda if apply_mmr else None
     took = (time.perf_counter() - t0) * 1000
     logger.info(
-        "search_clustered ok query=%s limit=%d rows=%d k=%d noise=%d mmr=%s took=%.1fms",
+        "search_clustered ok query=%s limit=%d rows=%d k=%d noise=%d took=%.1fms",
         bool(req.query),
         limit,
         len(rows),
         summary["summary"]["n_clusters"],
         summary["summary"]["n_noise"],
-        effective_mmr,
         took,
     )
     return ClusteredSearchResponse(
         query=req.query or "",
         total_results=len(rows),
         candidate_limit=limit,
-        mmr_lambda=effective_mmr,
         n_clusters=summary["summary"]["n_clusters"],
         n_noise=summary["summary"]["n_noise"],
         total_misplaced_items=summary["summary"]["total_misplaced_items"],
