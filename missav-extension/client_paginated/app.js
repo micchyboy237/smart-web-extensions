@@ -431,6 +431,20 @@ function app() {
       this.applyClusterPrefs();
     },
 
+    prevClusterPage() {
+      this.clusterPrefs.itemSeed = Math.max(
+        0,
+        (this.clusterPrefs.itemSeed || 0) - 1,
+      );
+      this.applyClusterPrefs();
+    },
+
+    canPrevClusterPage() {
+      return (
+        this.clusterItemsArePaged() && (this.clusterPrefs.itemSeed || 0) > 0
+      );
+    },
+
     // Rotate the per-cluster page. Only meaningful when item_shuffle=true;
     // a no-op otherwise (the server ignores item_seed without item_shuffle).
     nextClusterPage() {

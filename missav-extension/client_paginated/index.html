@@ -672,20 +672,32 @@
                 </div>
               </div>
 
-              <!-- Next-page button — only meaningful when paged -->
+              <!-- Prev and Next page buttons — only meaningful when paged -->
               <template x-if="clusterItemsArePaged()">
-                <button
-                  @click="nextClusterPage()"
-                  class="inline-flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20"
-                  title="Fetch a different page per cluster (item_seed += 1)"
-                >
-                  <i data-lucide="refresh-cw" class="h-3 w-3"></i>
-                  Next page
-                  <span
-                    class="rounded bg-emerald-500/30 px-1 text-[10px]"
-                    x-text="`#${clusterPrefs.itemSeed}`"
-                  ></span>
-                </button>
+                <div class="inline-flex items-center gap-1">
+                  <button
+                    @click="prevClusterPage()"
+                    :disabled="!canPrevClusterPage()"
+                    class="inline-flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                    title="Previous page per cluster (item_seed -= 1)"
+                  >
+                    <i data-lucide="chevron-left" class="h-3 w-3"></i>
+                    Prev
+                  </button>
+
+                  <button
+                    @click="nextClusterPage()"
+                    class="inline-flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20"
+                    title="Fetch a different page per cluster (item_seed += 1)"
+                  >
+                    <i data-lucide="refresh-cw" class="h-3 w-3"></i>
+                    Next page
+                    <span
+                      class="rounded bg-emerald-500/30 px-1 text-[10px]"
+                      x-text="`#${clusterPrefs.itemSeed}`"
+                    ></span>
+                  </button>
+                </div>
               </template>
             </div>
 
