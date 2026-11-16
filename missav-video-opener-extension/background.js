@@ -4,6 +4,9 @@ const SERVER_URL = "http://127.0.0.1:9001";
 const INGEST_ENDPOINT = `${SERVER_URL}/ingest`;
 const MAX_FETCH_PAGES = 20;
 const MAX_RETRIES_PER_VIDEO = 3;
+const INGEST_CHUNK_SIZE = 100; // NEW: auto-ingest threshold + server chunk size
+const INCOMPLETE_QUEUE_KEY = "pendingIncompleteIngestQueue"; // NEW
+const COMPLETE_QUEUE_KEY = "pendingCompleteIngestQueue"; // NEW
 const DEFAULT_STATE = {
   isRunning: false,
   code: null,
@@ -14,7 +17,9 @@ const DEFAULT_STATE = {
   collectedCount: 0,
   ingestedCount: 0,
   incompleteCount: 0,
-  pendingIngestCount: 0,
+  pendingIngestCount: 0, // total = incomplete + complete (kept for UI)
+  pendingIncompleteCount: 0, // NEW
+  pendingCompleteCount: 0, // NEW
   lastIngest: null,
   shouldStop: false,
   autoCloseTabs: true,
@@ -32,6 +37,14 @@ let localActiveTabCount = 0;
 let existingVideoIds = new Set();
 let retryCounts = new Map();
 let lastPendingIdsPreview = [];
+// NEW: serialize all reads/writes to the two queues so concurrent messages
+// (many search-page tabs + video tabs finishing at once) cannot clobber each other.
+let ingestLock = Promise.resolve();
+function withIngestLock(fn) {
+  const run = ingestLock.then(fn, fn);
+  ingestLock = run.catch(() => {});
+  return run;
+}
 const DEBUG = true;
 function log(...args) {
   if (DEBUG) console.log(LOG_PREFIX, ...args);
@@ -50,6 +63,8 @@ function logState(state, label) {
     ingestedCount: state.ingestedCount,
     incompleteCount: state.incompleteCount,
     pendingIngestCount: state.pendingIngestCount,
+    pendingIncompleteCount: state.pendingIncompleteCount,
+    pendingCompleteCount: state.pendingCompleteCount,
     activeTabs: localActiveTabCount,
     videoQueue: videoUrlQueue.length,
     pageQueue: pageUrlQueue.length,
@@ -82,14 +97,141 @@ function updateBadge(state) {
     chrome.action.setBadgeText({ text: "" });
   }
 }
-async function refreshPendingPreview() {
+// ---------- Two-queue helpers ----------
+function _getQueues() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(["pendingIngestQueue"], (result) => {
-      const queue = result.pendingIngestQueue || [];
-      lastPendingIdsPreview = queue.slice(-8).map((i) => i.id);
-      resolve(queue.length);
-    });
+    chrome.storage.local.get(
+      [INCOMPLETE_QUEUE_KEY, COMPLETE_QUEUE_KEY],
+      (r) => {
+        resolve({
+          incomplete: r[INCOMPLETE_QUEUE_KEY] || [],
+          complete: r[COMPLETE_QUEUE_KEY] || [],
+        });
+      },
+    );
   });
+}
+function _setQueues({ incomplete, complete }) {
+  return new Promise((resolve) => {
+    const payload = {};
+    if (incomplete !== undefined) payload[INCOMPLETE_QUEUE_KEY] = incomplete;
+    if (complete !== undefined) payload[COMPLETE_QUEUE_KEY] = complete;
+    chrome.storage.local.set(payload, () => resolve());
+  });
+}
+async function _clearAllQueues() {
+  return _setQueues({ incomplete: [], complete: [] });
+}
+async function _refreshPendingPreview() {
+  const { incomplete, complete } = await _getQueues();
+  // Preview the most-recent 8 from the complete queue (more enriched), then incomplete.
+  const combined = [...complete, ...incomplete];
+  lastPendingIdsPreview = combined.slice(-8).map((i) => i.id);
+  return {
+    pendingIncompleteCount: incomplete.length,
+    pendingCompleteCount: complete.length,
+    pendingIngestCount: incomplete.length + complete.length,
+  };
+}
+async function _syncCountsIntoState(reason = "") {
+  const counts = await _refreshPendingPreview();
+  let state = await getProcessingState();
+  state.pendingIncompleteCount = counts.pendingIncompleteCount;
+  state.pendingCompleteCount = counts.pendingCompleteCount;
+  state.pendingIngestCount = counts.pendingIngestCount;
+  await saveProcessingState(state, reason || "sync counts");
+  updateBadge(state);
+  chrome.runtime.sendMessage({ action: "updatePanel", state }).catch(() => {});
+  return state;
+}
+// ---------- Auto-ingest: drains a single queue in chunks of INGEST_CHUNK_SIZE ----------
+async function _drainQueue(queueKey, label) {
+  return withIngestLock(async () => {
+    const { incomplete, complete } = await _getQueues();
+    const queue = queueKey === INCOMPLETE_QUEUE_KEY ? incomplete : complete;
+    if (queue.length === 0) {
+      log(`_drainQueue(${label}): empty, nothing to do`);
+      return { inserted: 0, updated: 0, skipped: 0, drained: 0 };
+    }
+    log(`_drainQueue(${label}): draining ${queue.length} items`);
+    let inserted = 0,
+      updated = 0,
+      skipped = 0,
+      drained = 0;
+    // Take a stable snapshot; clear the queue up front so concurrent appends
+    // during the POSTs land in the *next* batch, not this one.
+    const batch = queue.slice();
+    if (queueKey === INCOMPLETE_QUEUE_KEY) {
+      await _setQueues({ incomplete: [] });
+    } else {
+      await _setQueues({ complete: [] });
+    }
+    for (let i = 0; i < batch.length; i += INGEST_CHUNK_SIZE) {
+      const chunk = batch.slice(i, i + INGEST_CHUNK_SIZE);
+      log(
+        `_drainQueue(${label}): chunk ${Math.floor(i / INGEST_CHUNK_SIZE) + 1} size=${chunk.length}`,
+      );
+      try {
+        const resp = await ingestBatchToServer(chunk);
+        inserted += resp.inserted || 0;
+        updated += resp.updated || 0;
+        skipped += resp.skipped || 0;
+        drained += chunk.length;
+      } catch (err) {
+        log(
+          `_drainQueue(${label}): chunk failed, re-queueing ${chunk.length} items`,
+          err,
+        );
+        // Re-append failed chunk to the *front* of the queue for retry next drain.
+        const { incomplete: inc2, complete: com2 } = await _getQueues();
+        if (queueKey === INCOMPLETE_QUEUE_KEY) {
+          await _setQueues({ incomplete: [...chunk, ...inc2] });
+        } else {
+          await _setQueues({ complete: [...chunk, ...com2] });
+        }
+        break;
+      }
+    }
+    // Update cumulative counters.
+    let state = await getProcessingState();
+    state.ingestedCount = (state.ingestedCount || 0) + inserted + updated;
+    state.lastIngest = {
+      inserted,
+      updated,
+      skipped,
+      took_ms: 0,
+      at: new Date().toISOString(),
+      queue: label,
+    };
+    await saveProcessingState(state, `drain ${label}`);
+    await _syncCountsIntoState(`after drain ${label}`);
+    log(
+      `_drainQueue(${label}): done ins=${inserted} upd=${updated} skip=${skipped} drained=${drained}`,
+    );
+    return { inserted, updated, skipped, drained };
+  });
+}
+// Threshold check: if either queue is at/over INGEST_CHUNK_SIZE, drain it.
+async function maybeAutoIngest() {
+  const { incomplete, complete } = await _getQueues();
+  if (incomplete.length >= INGEST_CHUNK_SIZE) {
+    log(
+      `maybeAutoIngest: incomplete=${incomplete.length} >= ${INGEST_CHUNK_SIZE} → drain`,
+    );
+    await _drainQueue(INCOMPLETE_QUEUE_KEY, "incomplete");
+  }
+  if (complete.length >= INGEST_CHUNK_SIZE) {
+    log(
+      `maybeAutoIngest: complete=${complete.length} >= ${INGEST_CHUNK_SIZE} → drain`,
+    );
+    await _drainQueue(COMPLETE_QUEUE_KEY, "complete");
+  }
+}
+// Final flush: drain whatever remains in both queues (called at run end).
+async function flushAllQueues() {
+  log("flushAllQueues: final flush of both queues");
+  await _drainQueue(INCOMPLETE_QUEUE_KEY, "incomplete");
+  await _drainQueue(COMPLETE_QUEUE_KEY, "complete");
 }
 async function fetchExistingVideoIds(code) {
   if (!code) return new Set();
@@ -221,63 +363,13 @@ async function processQueues() {
         chrome.runtime
           .sendMessage({ action: "updatePanel", state })
           .catch(() => {});
-        await autoIngestPending();
+        await flushAllQueues(); // NEW: final flush of both queues
       }
     } else {
       log(
         `processQueues: queues empty but still in flight (tabs=${localActiveTabCount}, pendingCloses=${pendingTabCloses.size})`,
       );
     }
-  }
-}
-async function autoIngestPending() {
-  const queue = await new Promise((resolve) => {
-    chrome.storage.local.get(["pendingIngestQueue"], (r) =>
-      resolve(r.pendingIngestQueue || []),
-    );
-  });
-  if (queue.length === 0) {
-    log("autoIngestPending: queue empty, nothing to ingest");
-    return;
-  }
-  try {
-    const CHUNK_SIZE = 500;
-    let totalInserted = 0,
-      totalUpdated = 0,
-      totalSkipped = 0;
-    for (let i = 0; i < queue.length; i += CHUNK_SIZE) {
-      const chunk = queue.slice(i, i + CHUNK_SIZE);
-      log(
-        `autoIngestPending: chunk ${Math.floor(i / CHUNK_SIZE) + 1} size=${chunk.length}`,
-      );
-      const resp = await ingestBatchToServer(chunk);
-      totalInserted += resp.inserted || 0;
-      totalUpdated += resp.updated || 0;
-      totalSkipped += resp.skipped || 0;
-    }
-    chrome.storage.local.set({ pendingIngestQueue: [] });
-    let state = await getProcessingState();
-    state.ingestedCount =
-      (state.ingestedCount || 0) + totalInserted + totalUpdated;
-    state.pendingIngestCount = 0;
-    state.lastIngest = {
-      inserted: totalInserted,
-      updated: totalUpdated,
-      skipped: totalSkipped,
-      took_ms: 0,
-      at: new Date().toISOString(),
-    };
-    lastPendingIdsPreview = [];
-    await saveProcessingState(state, "auto ingest");
-    updateBadge(state);
-    chrome.runtime
-      .sendMessage({ action: "updatePanel", state })
-      .catch(() => {});
-    log(
-      `autoIngestPending: done ins=${totalInserted} upd=${totalUpdated} skip=${totalSkipped}`,
-    );
-  } catch (err) {
-    log("autoIngestPending: error", err);
   }
 }
 chrome.action.onClicked.addListener(async (tab) => {
@@ -303,9 +395,9 @@ async function handleMessage(message, sender, sendResponse) {
       state.shouldStop = true;
       videoUrlQueue = [];
       pageUrlQueue = [];
-      chrome.storage.local.set({ pendingIngestQueue: [] });
+      await _clearAllQueues();
       await saveProcessingState(state, "toggle stop");
-      updateBadge(state);
+      await _syncCountsIntoState("after stop");
       logState(state, "after stop");
       sendResponse({ success: true, isRunning: false });
       return;
@@ -339,9 +431,9 @@ async function handleMessage(message, sender, sendResponse) {
     };
     videoUrlQueue = [];
     pageUrlQueue = [];
-    chrome.storage.local.set({ pendingIngestQueue: [] });
+    await _clearAllQueues();
     await saveProcessingState(state, "toggle start");
-    updateBadge(state);
+    await _syncCountsIntoState("after start");
     logState(state, "after start");
     chrome.tabs.sendMessage(tabId, {
       action: "initializeBatchProcess",
@@ -381,15 +473,14 @@ async function handleMessage(message, sender, sendResponse) {
     log(
       `extractedVideos: page=${pageNum} items=${items.length} (existingIds=${existingVideoIds.size})`,
     );
-    // Filter out videos already complete in DB.
+    // 1) Filter out DB-complete ids.
     const newItems = items.filter(
       (it) => it.id && !existingVideoIds.has(it.id),
     );
-    const skippedExisting = items.length - newItems.length;
     log(
-      `extractedVideos: new=${newItems.length} skippedExisting=${skippedExisting}`,
+      `extractedVideos: new=${newItems.length} skippedExisting=${items.length - newItems.length}`,
     );
-    // Optionally open video tabs for enrichment (only when openVideos is true).
+    // 2) openVideos → enqueue video URLs for enrichment.
     if (state.openVideos && newItems.length > 0) {
       const urls = newItems.map((i) => i.url).filter(Boolean);
       videoUrlQueue.push(...urls);
@@ -398,51 +489,35 @@ async function handleMessage(message, sender, sendResponse) {
         `extractedVideos: videoQueue=${videoUrlQueue.length}, totalVideosOpened=${state.totalVideosOpened}`,
       );
     }
-    // Enqueue incomplete items for ingestion.
+    // 3) Append to INCOMPLETE queue (deduped against existing incomplete AND complete).
     if (newItems.length > 0) {
-      await new Promise((resolve) => {
-        chrome.storage.local.get(["pendingIngestQueue"], (result) => {
-          const queue = result.pendingIngestQueue || [];
-          const inQueue = new Set(queue.map((i) => i.id));
-          const uniqueNew = newItems.filter((i) => !inQueue.has(i.id));
-          if (uniqueNew.length > 0) {
-            const next = [...queue, ...uniqueNew];
-            chrome.storage.local.set({ pendingIngestQueue: next }, () => {
-              log(
-                `extractedVideos: pendingIngestQueue +${uniqueNew.length} → ${next.length} [${uniqueNew.map((i) => i.id).join(",")}]`,
-              );
-              resolve();
-            });
-          } else {
-            resolve();
-          }
-        });
+      await withIngestLock(async () => {
+        const { incomplete, complete } = await _getQueues();
+        const inIncomplete = new Set(incomplete.map((i) => i.id));
+        const inComplete = new Set(complete.map((i) => i.id));
+        const uniqueNew = newItems.filter(
+          (i) => !inIncomplete.has(i.id) && !inComplete.has(i.id),
+        );
+        if (uniqueNew.length > 0) {
+          await _setQueues({ incomplete: [...incomplete, ...uniqueNew] });
+          log(
+            `extractedVideos: incompleteQueue +${uniqueNew.length} → ${incomplete.length + uniqueNew.length}`,
+          );
+        }
       });
     }
-    // Refresh pending count from the real queue.
-    const pendingCount = await new Promise((resolve) => {
-      chrome.storage.local.get(["pendingIngestQueue"], (r) =>
-        resolve((r.pendingIngestQueue || []).length),
-      );
-    });
-    // Live progress update.
+    // 4) Live progress + auto-ingest threshold check.
     state.totalPagesProcessed += 1;
     state.collectedCount = (state.collectedCount || 0) + newItems.length;
-    state.pendingIngestCount = pendingCount;
-    lastPendingIdsPreview = await new Promise((resolve) => {
-      chrome.storage.local.get(["pendingIngestQueue"], (r) => {
-        const q = r.pendingIngestQueue || [];
-        resolve(q.slice(-8).map((i) => i.id));
-      });
-    });
-    log(
-      `extractedVideos: totalPagesProcessed → ${state.totalPagesProcessed}/${state.totalPages}, collected=${state.collectedCount}, pending=${pendingCount}`,
-    );
     await saveProcessingState(state, "extractedVideos");
-    updateBadge(state);
+    await _syncCountsIntoState("after extractedVideos");
+    await maybeAutoIngest();
     if (sender.tab && sender.tab.id) {
       chrome.tabs
-        .sendMessage(sender.tab.id, { action: "updatePanel", state })
+        .sendMessage(sender.tab.id, {
+          action: "updatePanel",
+          state: processingState,
+        })
         .catch(() => {});
     }
     processQueues();
@@ -460,32 +535,35 @@ async function handleMessage(message, sender, sendResponse) {
       `videoCompleted: id=${metadata.id} video_id=${metadata.video_id} title="${(metadata.title || "").slice(0, 60)}"`,
     );
     retryCounts.delete(metadata.id);
-    chrome.storage.local.get(["pendingIngestQueue"], (result) => {
-      let queue = result.pendingIngestQueue || [];
-      const existingIndex = queue.findIndex((item) => item.id === metadata.id);
-      if (existingIndex !== -1) {
-        log(`videoCompleted: Updating existing item at index ${existingIndex}`);
-        queue[existingIndex] = { ...queue[existingIndex], ...metadata };
+    await withIngestLock(async () => {
+      const { incomplete, complete } = await _getQueues();
+      // Remove from incomplete (it's now fully covered by the complete queue).
+      const filteredIncomplete = incomplete.filter((i) => i.id !== metadata.id);
+      const removedFromIncomplete =
+        incomplete.length - filteredIncomplete.length;
+      // Upsert into complete.
+      const idx = complete.findIndex((i) => i.id === metadata.id);
+      let nextComplete;
+      if (idx !== -1) {
+        nextComplete = complete.slice();
+        nextComplete[idx] = { ...complete[idx], ...metadata };
       } else {
-        log(`videoCompleted: Adding new item to queue`);
-        queue.push(metadata);
+        nextComplete = [...complete, metadata];
       }
-      chrome.storage.local.set({ pendingIngestQueue: queue }, async () => {
-        let state = await getProcessingState();
-        state.collectedCount = (state.collectedCount || 0) + 1;
-        state.pendingIngestCount = queue.length;
-        lastPendingIdsPreview = queue.slice(-8).map((i) => i.id);
-        log(
-          `videoCompleted: collectedCount → ${state.collectedCount}, pending → ${queue.length}`,
-        );
-        await saveProcessingState(state, "videoCompleted");
-        updateBadge(state);
-        chrome.runtime
-          .sendMessage({ action: "updatePanel", state })
-          .catch(() => {});
-        sendResponse({ success: true, queueLength: queue.length });
+      await _setQueues({
+        incomplete: filteredIncomplete,
+        complete: nextComplete,
       });
+      log(
+        `videoCompleted: incomplete ${incomplete.length}→${filteredIncomplete.length} (removed=${removedFromIncomplete}), complete ${complete.length}→${nextComplete.length}`,
+      );
     });
+    let state = await getProcessingState();
+    state.collectedCount = (state.collectedCount || 0) + 1;
+    await saveProcessingState(state, "videoCompleted");
+    await _syncCountsIntoState("after videoCompleted");
+    await maybeAutoIngest();
+    sendResponse({ success: true });
     return true;
   }
   if (message.action === "markVideoIncomplete") {
@@ -527,65 +605,28 @@ async function handleMessage(message, sender, sendResponse) {
   }
   if (message.action === "getProcessingState") {
     const state = await getProcessingState();
-    state.pendingIngestCount = await refreshPendingPreview();
+    const counts = await _refreshPendingPreview();
+    state.pendingIncompleteCount = counts.pendingIncompleteCount;
+    state.pendingCompleteCount = counts.pendingCompleteCount;
+    state.pendingIngestCount = counts.pendingIngestCount;
     sendResponse({ state, pendingIds: lastPendingIdsPreview });
     return;
   }
   if (message.action === "triggerBatchIngest") {
-    log("triggerBatchIngest: invoked");
-    chrome.storage.local.get(["pendingIngestQueue"], async (result) => {
-      let queue = result.pendingIngestQueue || [];
-      log(`triggerBatchIngest: queue=${queue.length}`);
-      if (queue.length === 0) {
-        log("triggerBatchIngest: nothing to ingest");
-        sendResponse({ success: true, inserted: 0, updated: 0, skipped: 0 });
-        return;
-      }
-      try {
-        const CHUNK_SIZE = 500;
-        let totalInserted = 0;
-        let totalUpdated = 0;
-        let totalSkipped = 0;
-        for (let i = 0; i < queue.length; i += CHUNK_SIZE) {
-          const chunk = queue.slice(i, i + CHUNK_SIZE);
-          log(
-            `Processing chunk ${Math.floor(i / CHUNK_SIZE) + 1}, size: ${chunk.length}`,
-          );
-          const response = await ingestBatchToServer(chunk);
-          totalInserted += response.inserted || 0;
-          totalUpdated += response.updated || 0;
-          totalSkipped += response.skipped || 0;
-        }
-        chrome.storage.local.set({ pendingIngestQueue: [] });
-        let state = await getProcessingState();
-        state.ingestedCount =
-          (state.ingestedCount || 0) + (totalInserted + totalUpdated);
-        state.pendingIngestCount = 0;
-        state.lastIngest = {
-          inserted: totalInserted,
-          updated: totalUpdated,
-          skipped: totalSkipped,
-          took_ms: 0,
-          at: new Date().toISOString(),
-        };
-        lastPendingIdsPreview = [];
-        log(`triggerBatchIngest: Finished. Total inserted: ${totalInserted}`);
-        await saveProcessingState(state, "batch ingest");
-        updateBadge(state);
-        chrome.runtime
-          .sendMessage({ action: "updatePanel", state })
-          .catch(() => {});
-        sendResponse({
-          success: true,
-          inserted: totalInserted,
-          updated: totalUpdated,
-          skipped: totalSkipped,
-        });
-      } catch (err) {
-        log("triggerBatchIngest: error", err);
-        sendResponse({ success: false, error: err.message });
-      }
-    });
+    log("triggerBatchIngest: invoked → flush both queues");
+    try {
+      await flushAllQueues();
+      const state = await getProcessingState();
+      sendResponse({
+        success: true,
+        inserted: state.lastIngest?.inserted || 0,
+        updated: state.lastIngest?.updated || 0,
+        skipped: state.lastIngest?.skipped || 0,
+      });
+    } catch (err) {
+      log("triggerBatchIngest: error", err);
+      sendResponse({ success: false, error: err.message });
+    }
     return true;
   }
 }

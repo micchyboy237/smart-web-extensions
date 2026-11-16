@@ -7,6 +7,8 @@
   }
   const LOG_PREFIX = "[MissAV-Content]";
   const DEBUG = true;
+  const INCOMPLETE_QUEUE_KEY = "pendingIncompleteIngestQueue";
+  const COMPLETE_QUEUE_KEY = "pendingCompleteIngestQueue";
   function log(...args) {
     if (DEBUG) console.log(LOG_PREFIX, ...args);
   }
@@ -204,15 +206,13 @@
     );
     return { items, urls: items.map((i) => i.url) };
   }
+  // Returns 1 when paginator is absent (single-page result), never 0.
   function getTotalPagesFromDom() {
     const container = document.querySelector(".hidden.md\\:flex");
-    // No paginator in DOM → only one page of results.
     if (!container) {
       log(`getTotalPagesFromDom: no paginator → single page`);
       return 1;
     }
-    // Also require at least one page link inside it, in case the element exists
-    // but is empty/hidden shell.
     const links = container.querySelectorAll('a[href*="page="]');
     if (links.length === 0) {
       log(
@@ -226,7 +226,6 @@
       const m = l.getAttribute("href").match(/[?&]page=(\d+)/);
       if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
     });
-    // The "current" page is the one wrapped in [aria-current="page"].
     const currentEl = container.querySelector('[aria-current="page"]');
     if (currentEl) {
       const t = (currentEl.textContent || "").trim();
@@ -274,7 +273,7 @@
                : ""
            }
          </div>`
-      : `<div style="font-size:11px;color:#666;margin-top:6px;">Pending queue empty</div>`;
+      : `<div style="font-size:11px;color:#666;margin-top:6px;">Pending queues empty</div>`;
     panelElement.innerHTML = `
       <div style="margin-bottom: 12px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
@@ -286,13 +285,15 @@
           <div><strong>Progress:</strong> ${state.totalPagesProcessed} / ${totalPagesDisplay} Pages</div>
           <div><strong>Videos Found:</strong> <span style="color:#4CAF50;">${state.totalVideosOpened}</span></div>
           <div><strong>Collected:</strong> <span style="color:#9C27B0;">${state.collectedCount || 0}</span></div>
-          <div><strong>Pending Ingest:</strong> <span style="color:#FF9800;">${state.pendingIngestCount || 0}</span></div>
+          <div><strong>Pending Incomplete:</strong> <span style="color:#FF9800;">${state.pendingIncompleteCount || 0}</span></div>
+          <div><strong>Pending Complete:</strong> <span style="color:#4CAF50;">${state.pendingCompleteCount || 0}</span></div>
+          <div><strong>Pending Total:</strong> <span style="color:#2196F3;">${state.pendingIngestCount || 0}</span></div>
           <div><strong>Ingested (DB):</strong> <span style="color:#2196F3;">${state.ingestedCount || 0}</span></div>
           <div><strong>Incomplete:</strong> <span style="color:#FF5722;">${state.incompleteCount || 0}</span></div>
           ${
             li
               ? `<div style="font-size:11px;color:#888;margin-top:4px;">
-             Last ingest: +${li.inserted} new, ~${li.updated} upd, ${li.skipped} skip (${Math.round(li.took_ms)}ms)
+             Last ingest [${li.queue || "?"}]: +${li.inserted} new, ~${li.updated} upd, ${li.skipped} skip (${Math.round(li.took_ms)}ms)
           </div>`
               : ""
           }
@@ -354,12 +355,11 @@
   async function initializeBatchProcess(code, startPage) {
     log(`initializeBatchProcess code=${code} startPage=${startPage}`);
     const totalPages = getTotalPagesFromDom(); // always >= 1, never 0/50
-
     if (totalPages <= 1) {
       log(`initializeBatchProcess: single page, no page queue needed`);
       chrome.runtime.sendMessage({
         action: "setPageQueue",
-        pageUrls: [], // no extra tabs
+        pageUrls: [],
         totalPages: 1,
       });
     } else {
@@ -374,7 +374,6 @@
         totalPages,
       });
     }
-
     const { items } = extractVideoMetadataFromSearch(code);
     chrome.runtime.sendMessage({
       action: "extractedVideos",
@@ -385,7 +384,10 @@
   async function fetchPendingPreview() {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: "getProcessingState" }, (resp) => {
-        resolve(resp?.pendingIds || []);
+        resolve({
+          pendingIds: resp?.pendingIds || [],
+          state: resp?.state || null,
+        });
       });
     });
   }
@@ -401,16 +403,17 @@
         dirty = true;
       }
     }
-    if (changes.pendingIngestQueue) dirty = true;
+    if (changes[INCOMPLETE_QUEUE_KEY] || changes[COMPLETE_QUEUE_KEY])
+      dirty = true;
     if (!dirty) return;
     clearTimeout(_panelRefreshTimer);
     _panelRefreshTimer = setTimeout(async () => {
-      const pending = await fetchPendingPreview();
+      const { pendingIds } = await fetchPendingPreview();
       chrome.runtime.sendMessage(
         { action: "getProcessingState" },
         (response) => {
           if (response && response.state) {
-            updatePanelContent(response.state, pending);
+            updatePanelContent(response.state, pendingIds);
           }
         },
       );
