@@ -1,7 +1,6 @@
 // client_paginated/app.js
 function app() {
   const API = "http://localhost:9001";
-
   return {
     // ── state ──
     mode: "browse", // 'search' | 'similar' | 'browse'
@@ -23,14 +22,13 @@ function app() {
       to: "",
       genresMode: "any",
       genres: [],
-      completeOnly: false,
+      completionFilter: "all", // "all" | "complete" | "incomplete"
     },
     facets: { genres: [], years: [], codes: [] },
     detail: { open: false, loading: false, video: null },
     similarOf: null,
     toasts: [],
     _gen: 0,
-
     // ── lifecycle ──
     boot() {
       this.hydrateFromURL();
@@ -38,7 +36,6 @@ function app() {
       this.$nextTick(() => this.refreshIcons());
       this.fetchFacets();
       this.refetch();
-
       // keyboard
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.closeDetail();
@@ -50,7 +47,6 @@ function app() {
           this.$refs.searchInput.focus();
         }
       });
-
       // infinite scroll
       const io = new IntersectionObserver(
         (entries) => {
@@ -66,7 +62,6 @@ function app() {
         { rootMargin: "400px" },
       );
       io.observe(this.$refs.sentinel);
-
       // FIX: IntersectionObserver only fires on *transition*.
       const checkSentinel = () => {
         const el = this.$refs.sentinel;
@@ -75,7 +70,6 @@ function app() {
         if (rect.top < window.innerHeight + 400) this.loadMore();
       };
       window.addEventListener("scroll", checkSentinel, { passive: true });
-
       this.$watch("items", () => {
         this.$nextTick(() => {
           this.refreshIcons();
@@ -86,11 +80,9 @@ function app() {
         this.$nextTick(() => this.refreshIcons()),
       );
     },
-
     refreshIcons() {
       if (window.lucide) lucide.createIcons();
     },
-
     // ── URL sync ──
     hydrateFromURL() {
       const p = new URLSearchParams(location.search);
@@ -102,9 +94,16 @@ function app() {
       this.filters.to = p.get("to") || "";
       this.filters.genresMode = p.get("gmode") || "any";
       this.filters.genres = (p.get("genres") || "").split(",").filter(Boolean);
-      this.filters.completeOnly = p.get("complete") === "1";
-      this.similarOf = p.get("sim") || null;
 
+      // Hydrate completion filter
+      const cf = p.get("cf");
+      if (cf === "complete" || cf === "incomplete") {
+        this.filters.completionFilter = cf;
+      } else {
+        this.filters.completionFilter = "all";
+      }
+
+      this.similarOf = p.get("sim") || null;
       // Similarity is only meaningful for search/similar; browse defaults to
       // release_date so the URL never poisons a browse request with an
       // unsupported sort value.
@@ -119,7 +118,6 @@ function app() {
       }
       this.order = p.get("order") || "desc";
     },
-
     syncURL() {
       const p = new URLSearchParams();
       if (this.mode === "search" && this.lastQuery) p.set("q", this.lastQuery);
@@ -135,14 +133,18 @@ function app() {
         p.set("gmode", this.filters.genresMode);
       if (this.filters.genres.length)
         p.set("genres", this.filters.genres.join(","));
-      if (this.filters.completeOnly) p.set("complete", "1");
+
+      // Sync completion filter
+      if (this.filters.completionFilter !== "all") {
+        p.set("cf", this.filters.completionFilter);
+      }
+
       if (this.mode === "browse") {
         if (this.sort !== "similarity") p.set("sort", this.sort);
         if (this.order !== "desc") p.set("order", this.order);
       }
       history.replaceState(null, "", `${location.pathname}?${p}`);
     },
-
     // ── actions ──
     onQueryInput() {
       clearTimeout(this._deb);
@@ -155,7 +157,6 @@ function app() {
         }
       }, 400);
     },
-
     doSearch() {
       const q = this.query.trim();
       if (!q) {
@@ -177,7 +178,6 @@ function app() {
       this.syncURL();
       this.refetch();
     },
-
     doBrowse() {
       this.mode = "browse";
       this.similarOf = null;
@@ -188,7 +188,6 @@ function app() {
       this.syncURL();
       this.refetch();
     },
-
     findSimilar(id) {
       this.closeDetail();
       this.mode = "similar";
@@ -196,7 +195,6 @@ function app() {
       this.syncURL();
       this.refetch();
     },
-
     toggleGenre(name) {
       const i = this.filters.genres.indexOf(name);
       if (i >= 0) this.filters.genres.splice(i, 1);
@@ -204,20 +202,18 @@ function app() {
       this.syncURL();
       this.refetch();
     },
-
-    toggleCompleteOnly() {
-      this.filters.completeOnly = !this.filters.completeOnly;
+    setCompletionFilter(val) {
+      this.filters.completionFilter = val;
       this.syncURL();
       this.refetch();
+      this.fetchFacets();
     },
-
     pickYear(year) {
       this.filters.from = `${year}-01-01`;
       this.filters.to = `${year}-12-31`;
       this.syncURL();
       this.refetch();
     },
-
     clearFilters() {
       this.filters = {
         code: "",
@@ -225,19 +221,17 @@ function app() {
         to: "",
         genresMode: "any",
         genres: [],
-        completeOnly: false,
+        completionFilter: "all",
       };
       this.syncURL();
       this.refetch();
     },
-
     recentYears() {
       return this.facets.years
         .filter((y) => y.year >= 2000)
         .slice(-10)
         .reverse();
     },
-
     // ── fetching ──
     refetch() {
       this.items = [];
@@ -246,11 +240,9 @@ function app() {
       this.exhausted = false;
       this.fetchPage({ reset: true });
     },
-
     loadMore() {
       if (!this.exhausted && !this.loading) this.fetchPage();
     },
-
     async fetchPage({ reset = false } = {}) {
       // No early-return on loading — gen-check handles cancellation.
       this.loading = true;
@@ -262,7 +254,6 @@ function app() {
           if (gen === this._gen) this.loading = false;
           return;
         }
-
         const res = await fetch(`${API}${params.path}`, {
           method: params.method,
           headers: params.body
@@ -272,14 +263,12 @@ function app() {
         });
         if (gen !== this._gen) return;
         this.online = true;
-
         if (!res.ok) {
           const txt = await res.text();
           throw new Error(`${res.status}: ${txt}`);
         }
         const page = await res.json();
         if (gen !== this._gen) return;
-
         if (reset) {
           this.items = [];
           this.cursor = null;
@@ -300,7 +289,6 @@ function app() {
         if (gen === this._gen) this.loading = false;
       }
     },
-
     buildParams(reset) {
       // Normalize multi-code input: split on commas, trim, lowercase, dedupe.
       // Returns null | string | string[].
@@ -315,14 +303,12 @@ function app() {
         if (unique.length === 0) return null;
         return unique.length === 1 ? unique[0] : unique;
       };
-
       // Normalize genre list: null | string | string[].
       const getGenreParam = () => {
         if (this.filters.genres.length === 0) return null;
         if (this.filters.genres.length === 1) return this.filters.genres[0];
         return this.filters.genres;
       };
-
       // Sort/order is mode-aware:
       //   - browse: user-selected (default release_date)
       //   - search: user-selected if explicitly set, otherwise similarity
@@ -333,12 +319,10 @@ function app() {
         // search
         return this.sort || "similarity";
       };
-
       const orderFor = (mode) => {
         if (mode === "similar") return "desc";
         return this.order || "desc";
       };
-
       if (this.mode === "search") {
         if (!this.lastQuery) {
           // Shouldn't happen once onQueryInput/doSearch are fixed, but be safe:
@@ -366,11 +350,10 @@ function app() {
               : null,
             sort: sortFor("search"),
             order: orderFor("search"),
-            complete_only: this.filters.completeOnly,
+            completion_filter: this.filters.completionFilter,
           },
         };
       }
-
       if (this.mode === "similar") {
         return {
           path: "/similar",
@@ -384,16 +367,14 @@ function app() {
             genres_mode: this.filters.genresMode,
             sort: "similarity",
             order: "desc",
-            complete_only: this.filters.completeOnly,
+            completion_filter: this.filters.completionFilter,
           },
         };
       }
-
       // browse
       const p = new URLSearchParams();
       p.set("limit", "20");
       p.set("offset", reset ? "0" : String(this.page * 20));
-
       const codeVal = getCodeParam();
       if (codeVal) {
         if (Array.isArray(codeVal)) {
@@ -402,7 +383,6 @@ function app() {
           p.set("code", codeVal);
         }
       }
-
       // /browse only accepts release_date | created_at — never send "similarity".
       const browseSort =
         this.sort === "release_date" || this.sort === "created_at"
@@ -412,7 +392,11 @@ function app() {
       // order is safe in both directions for browse
       p.set("order", this.order || "desc");
       p.set("genres_mode", this.filters.genresMode);
-      if (this.filters.completeOnly) p.set("complete_only", "true");
+
+      // Completion filter for browse
+      if (this.filters.completionFilter !== "all") {
+        p.set("completion_filter", this.filters.completionFilter);
+      }
 
       const genreVal = getGenreParam();
       if (genreVal) {
@@ -422,29 +406,22 @@ function app() {
           p.set("genre", genreVal);
         }
       }
-
       return { path: `/browse?${p}`, method: "GET" };
     },
-
     async fetchFacets() {
       try {
         // Reflect the same completeness filter so sidebar counts match
         // the current listing.
-        const qs = this.filters.completeOnly ? "?complete_only=true" : "";
+        let qs = "";
+        if (this.filters.completionFilter !== "all") {
+          qs = `?completion_filter=${this.filters.completionFilter}`;
+        }
         const r = await fetch(`${API}/facets${qs}`);
         this.facets = await r.json();
       } catch {
         /* ignore */
       }
     },
-
-    // Re-fetch facets whenever the completeness toggle flips so the
-    // sidebar counts stay consistent with the visible results.
-    async onCompleteToggle() {
-      this.toggleCompleteOnly();
-      this.fetchFacets();
-    },
-
     // ── detail modal ──
     async openDetail(id) {
       this.detail = { open: true, loading: true, video: null };
@@ -461,11 +438,9 @@ function app() {
         this.$nextTick(() => this.refreshIcons());
       }
     },
-
     closeDetail() {
       this.detail = { open: false, loading: false, video: null };
     },
-
     // ── toasts ──
     toast(type, msg) {
       const id = Math.random().toString(36).slice(2);

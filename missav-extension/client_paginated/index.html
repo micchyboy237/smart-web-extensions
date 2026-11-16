@@ -46,7 +46,6 @@
     ></script>
     <!-- Lucide icons -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-
     <!-- Custom Styles -->
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -186,39 +185,41 @@
               Comma-separated = match any series
             </span>
           </label>
-          <!-- complete-only toggle -->
+
+          <!-- completion filter -->
           <div class="mb-4">
-            <button
-              type="button"
-              @click="onCompleteToggle()"
-              :class="filters.completeOnly
-                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
-                : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
-              class="flex w-full items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition"
-              :title="filters.completeOnly
-                ? 'Showing only videos with a title AND details'
-                : 'Including videos with missing title/details'"
+            <span
+              class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
             >
-              <span
-                class="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border"
-                :class="filters.completeOnly
-                  ? 'border-emerald-400 bg-emerald-500 text-ink-950'
-                  : 'border-white/20 bg-transparent'"
+              <i data-lucide="check-square" class="h-3.5 w-3.5"></i> Data status
+            </span>
+            <div
+              class="flex rounded-lg border border-white/10 bg-ink-800 p-1 text-xs"
+            >
+              <button
+                @click="setCompletionFilter('all')"
+                :class="filters.completionFilter === 'all' ? 'bg-accent-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
+                class="flex-1 rounded-md py-1.5 font-semibold transition"
               >
-                <i
-                  x-show="filters.completeOnly"
-                  data-lucide="check"
-                  class="h-3 w-3"
-                ></i>
-              </span>
-              <span class="min-w-0">
-                <span class="block text-xs font-semibold">Complete only</span>
-                <span class="mt-0.5 block text-[10px] text-slate-500">
-                  Hide videos with a missing/empty title or details
-                </span>
-              </span>
-            </button>
+                All
+              </button>
+              <button
+                @click="setCompletionFilter('complete')"
+                :class="filters.completionFilter === 'complete' ? 'bg-emerald-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
+                class="flex-1 rounded-md py-1.5 font-semibold transition"
+              >
+                Complete
+              </button>
+              <button
+                @click="setCompletionFilter('incomplete')"
+                :class="filters.completionFilter === 'incomplete' ? 'bg-amber-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
+                class="flex-1 rounded-md py-1.5 font-semibold transition"
+              >
+                Incomplete
+              </button>
+            </div>
           </div>
+
           <!-- date range -->
           <div class="mb-4">
             <span
@@ -397,7 +398,6 @@
                 <option value="asc">Asc</option>
               </select>
             </div>
-
             <template x-for="g in filters.genres" :key="g">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-accent-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-accent-300"
@@ -439,14 +439,19 @@
                 </button>
               </span>
             </template>
-            <template x-if="filters.completeOnly">
+
+            <!-- Completion Filter Pill -->
+            <template x-if="filters.completionFilter !== 'all'">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
               >
-                <i data-lucide="check-circle-2" class="h-3 w-3"></i>
-                <span>complete only</span>
+                <i
+                  :data-lucide="filters.completionFilter === 'complete' ? 'check-circle-2' : 'alert-circle'"
+                  class="h-3 w-3"
+                ></i>
+                <span x-text="filters.completionFilter"></span>
                 <button
-                  @click="onCompleteToggle()"
+                  @click="setCompletionFilter('all')"
                   class="rounded-full p-0.5 hover:bg-white/10"
                 >
                   <i data-lucide="x" class="h-3 w-3"></i>
@@ -730,7 +735,6 @@
         </div>
       </template>
     </div>
-
     <!-- App Logic -->
     <script src="app.js"></script>
   </body>
