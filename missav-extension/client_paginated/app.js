@@ -1,6 +1,7 @@
 // client_paginated/app.js
 function app() {
   const API = "http://localhost:9001";
+
   return {
     // ── state ──
     mode: "browse", // 'search' | 'similar' | 'browse'
@@ -22,6 +23,7 @@ function app() {
       to: "",
       genresMode: "any",
       genres: [],
+      completeOnly: false,
     },
     facets: { genres: [], years: [], codes: [] },
     detail: { open: false, loading: false, video: null },
@@ -100,6 +102,7 @@ function app() {
       this.filters.to = p.get("to") || "";
       this.filters.genresMode = p.get("gmode") || "any";
       this.filters.genres = (p.get("genres") || "").split(",").filter(Boolean);
+      this.filters.completeOnly = p.get("complete") === "1";
       this.similarOf = p.get("sim") || null;
 
       // Similarity is only meaningful for search/similar; browse defaults to
@@ -132,6 +135,7 @@ function app() {
         p.set("gmode", this.filters.genresMode);
       if (this.filters.genres.length)
         p.set("genres", this.filters.genres.join(","));
+      if (this.filters.completeOnly) p.set("complete", "1");
       if (this.mode === "browse") {
         if (this.sort !== "similarity") p.set("sort", this.sort);
         if (this.order !== "desc") p.set("order", this.order);
@@ -201,6 +205,12 @@ function app() {
       this.refetch();
     },
 
+    toggleCompleteOnly() {
+      this.filters.completeOnly = !this.filters.completeOnly;
+      this.syncURL();
+      this.refetch();
+    },
+
     pickYear(year) {
       this.filters.from = `${year}-01-01`;
       this.filters.to = `${year}-12-31`;
@@ -215,6 +225,7 @@ function app() {
         to: "",
         genresMode: "any",
         genres: [],
+        completeOnly: false,
       };
       this.syncURL();
       this.refetch();
@@ -251,6 +262,7 @@ function app() {
           if (gen === this._gen) this.loading = false;
           return;
         }
+
         const res = await fetch(`${API}${params.path}`, {
           method: params.method,
           headers: params.body
@@ -260,12 +272,14 @@ function app() {
         });
         if (gen !== this._gen) return;
         this.online = true;
+
         if (!res.ok) {
           const txt = await res.text();
           throw new Error(`${res.status}: ${txt}`);
         }
         const page = await res.json();
         if (gen !== this._gen) return;
+
         if (reset) {
           this.items = [];
           this.cursor = null;
@@ -319,6 +333,7 @@ function app() {
         // search
         return this.sort || "similarity";
       };
+
       const orderFor = (mode) => {
         if (mode === "similar") return "desc";
         return this.order || "desc";
@@ -351,6 +366,7 @@ function app() {
               : null,
             sort: sortFor("search"),
             order: orderFor("search"),
+            complete_only: this.filters.completeOnly,
           },
         };
       }
@@ -368,6 +384,7 @@ function app() {
             genres_mode: this.filters.genresMode,
             sort: "similarity",
             order: "desc",
+            complete_only: this.filters.completeOnly,
           },
         };
       }
@@ -392,11 +409,10 @@ function app() {
           ? this.sort
           : "release_date";
       p.set("sort", browseSort);
-
       // order is safe in both directions for browse
       p.set("order", this.order || "desc");
-
       p.set("genres_mode", this.filters.genresMode);
+      if (this.filters.completeOnly) p.set("complete_only", "true");
 
       const genreVal = getGenreParam();
       if (genreVal) {
@@ -406,16 +422,27 @@ function app() {
           p.set("genre", genreVal);
         }
       }
+
       return { path: `/browse?${p}`, method: "GET" };
     },
 
     async fetchFacets() {
       try {
-        const r = await fetch(`${API}/facets`);
+        // Reflect the same completeness filter so sidebar counts match
+        // the current listing.
+        const qs = this.filters.completeOnly ? "?complete_only=true" : "";
+        const r = await fetch(`${API}/facets${qs}`);
         this.facets = await r.json();
       } catch {
         /* ignore */
       }
+    },
+
+    // Re-fetch facets whenever the completeness toggle flips so the
+    // sidebar counts stay consistent with the visible results.
+    async onCompleteToggle() {
+      this.toggleCompleteOnly();
+      this.fetchFacets();
     },
 
     // ── detail modal ──

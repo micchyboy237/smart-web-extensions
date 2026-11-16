@@ -186,6 +186,39 @@
               Comma-separated = match any series
             </span>
           </label>
+          <!-- complete-only toggle -->
+          <div class="mb-4">
+            <button
+              type="button"
+              @click="onCompleteToggle()"
+              :class="filters.completeOnly
+                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
+                : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+              class="flex w-full items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition"
+              :title="filters.completeOnly
+                ? 'Showing only videos with a title AND details'
+                : 'Including videos with missing title/details'"
+            >
+              <span
+                class="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border"
+                :class="filters.completeOnly
+                  ? 'border-emerald-400 bg-emerald-500 text-ink-950'
+                  : 'border-white/20 bg-transparent'"
+              >
+                <i
+                  x-show="filters.completeOnly"
+                  data-lucide="check"
+                  class="h-3 w-3"
+                ></i>
+              </span>
+              <span class="min-w-0">
+                <span class="block text-xs font-semibold">Complete only</span>
+                <span class="mt-0.5 block text-[10px] text-slate-500">
+                  Hide videos with a missing/empty title or details
+                </span>
+              </span>
+            </button>
+          </div>
           <!-- date range -->
           <div class="mb-4">
             <span
@@ -400,6 +433,20 @@
                 ></span>
                 <button
                   @click="filters.from=''; filters.to=''; refetch()"
+                  class="rounded-full p-0.5 hover:bg-white/10"
+                >
+                  <i data-lucide="x" class="h-3 w-3"></i>
+                </button>
+              </span>
+            </template>
+            <template x-if="filters.completeOnly">
+              <span
+                class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
+              >
+                <i data-lucide="check-circle-2" class="h-3 w-3"></i>
+                <span>complete only</span>
+                <button
+                  @click="onCompleteToggle()"
                   class="rounded-full p-0.5 hover:bg-white/10"
                 >
                   <i data-lucide="x" class="h-3 w-3"></i>

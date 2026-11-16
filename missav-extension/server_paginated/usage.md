@@ -188,6 +188,34 @@ curl -s -X POST localhost:9001/search \
 
 ---
 
+## 5d. Only complete rows (`complete_only`)
+
+Most rows in the DB are incomplete — `details` is ~78% NULL and many `title`s
+are empty. Pass `complete_only: true` to restrict results to items that have
+**both** a non-empty `title` **and** a non-empty `details` (rows that have
+already been enriched).
+
+The filter is applied alongside your other filters, so combine it with
+`genre`/`code`/`sort` as usual. It is supported on `/search`, `/similar`,
+`/hybrid`, `/browse`, `/facets`, and `/facets/codes`.
+
+```bash
+curl -s -X POST localhost:9001/search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "leak",
+    "limit": 10,
+    "code": ["sprd", "mdyd"],
+    "complete_only": true
+  }' | python3 -m json.tool
+```
+
+Because the flag is part of the filter fingerprint, a cursor issued under one
+value of `complete_only` is invalid for another (HTTP 400
+`"Cursor does not match filters"`).
+
+---
+
 ## 6. Minimum similarity threshold
 
 Only return results whose cosine similarity is ≥ 0.30.
@@ -277,8 +305,8 @@ curl -s -X POST localhost:9001/search \
 **Step 3** — stop when `has_more` is `false` and `next_cursor` is `null`.
 
 Changing `query`, `genre`, `genres`, `genres_mode`, `code`,
-`min/max_release_date`, `min_similarity`, `sort`, or `order` invalidates the
-cursor and returns:
+`min/max_release_date`, `min_similarity`, `sort`, `order`, or `complete_only`
+invalidates the cursor and returns:
 
 ```json
 { "detail": "Cursor does not match filters" } // HTTP 400
@@ -327,6 +355,18 @@ curl -s -X POST localhost:9001/hybrid \
     "max_release_date": "2016-12-31T23:59:59Z",
     "sort": "release_date",
     "order": "asc"
+  }' | python3 -m json.tool
+```
+
+## 8c. Hybrid — only complete rows
+
+```bash
+curl -s -X POST localhost:9001/hybrid \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "Nanami",
+    "limit": 20,
+    "complete_only": true
   }' | python3 -m json.tool
 ```
 
@@ -382,7 +422,19 @@ curl -s -X POST localhost:9001/similar \
   }' | python3 -m json.tool
 ```
 
-## 9c. Similar with cursor pagination
+## 9c. Similar — only complete rows
+
+```bash
+curl -s -X POST localhost:9001/similar \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "video_id": "jav-63v9uv",
+    "limit": 20,
+    "complete_only": true
+  }' | python3 -m json.tool
+```
+
+## 9d. Similar with cursor pagination
 
 Cursors are fingerprint-bound (same rules as `/search`). Reuse identical
 filters + the same `video_id`.
@@ -403,8 +455,9 @@ curl -s -X POST localhost:9001/similar \
 ```
 
 `similar` accepts `video_id`, `limit`, `cursor`, `genre`/`genres`,
-`genres_mode`, `code` (single or list), `sort`, `order` — but **no** date or
-similarity filters. The source video is always excluded from results.
+`genres_mode`, `code` (single or list), `sort`, `order`, and `complete_only`
+— but **no** date or similarity filters. The source video is always excluded
+from results.
 
 ---
 
@@ -469,6 +522,15 @@ curl -s 'localhost:9001/browse?limit=20&sort=created_at' | python3 -m json.tool
 curl -s 'localhost:9001/browse?limit=20&sort=release_date&order=asc' | python3 -m json.tool
 ```
 
+**Only complete rows:**
+
+```bash
+curl -s 'localhost:9001/browse?limit=20&complete_only=true' | python3 -m json.tool
+```
+
+`complete_only` is a plain boolean query param here (no JSON body on GET).
+Pass `true`/`false`; omission defaults to `false`.
+
 **Next page** (`next_cursor` on `/browse` is just the next numeric offset):
 
 ```bash
@@ -526,6 +588,17 @@ Tune sizes (`top_genres` default 60, `top_codes` default 40):
 curl -s 'localhost:9001/facets?top_genres=100&top_codes=60' | python3 -m json.tool
 ```
 
+**Facets over complete rows only** — useful for sidebar counts that match a
+`complete_only=true` view:
+
+```bash
+curl -s 'localhost:9001/facets?complete_only=true' | python3 -m json.tool
+```
+
+`complete_only` (boolean query param, default `false`) applies the same "title
+AND details both non-empty" predicate before aggregating, so counts reflect
+the filtered subset only.
+
 ---
 
 ## 13. All codes (complete list)
@@ -551,6 +624,15 @@ curl -s localhost:9001/facets/codes | python3 -m json.tool
 Use this to populate a complete series/code picker; use `/facets?top_codes=N`
 when you only need a truncated sidebar.
 
+**Codes for complete rows only:**
+
+```bash
+curl -s 'localhost:9001/facets/codes?complete_only=true' | python3 -m json.tool
+```
+
+Same boolean query param as `/facets`; counts reflect only rows with a
+non-empty `title` and `details`.
+
 ---
 
 ## 14. Ingest (bulk insert / upsert)
@@ -559,6 +641,12 @@ Insert or upsert 1–500 rows into `public.videos`. **Embeddings are always
 regenerated server-side** from the item fields (title/details/code/episode/
 genres) using the same `|`-joined format as the ChromaDB→Postgres migration,
 so ingested rows stay comparable to migrated ones for semantic search.
+
+Embedding inputs are additionally **truncated with `truncate_texts`** to a
+token budget (`INGEST_MAX_TOKENS`, default 2048) before being sent to the
+embedding server, so very long `title`/`details` combinations cannot exceed the
+model's context window. The stored `title`/`details` columns are unaffected —
+only the text fed to `embed()` is truncated.
 
 ### 14a. Single item (upsert)
 
@@ -640,6 +728,9 @@ curl -s -X POST localhost:9001/ingest \
   `skipped`.
 - **Required fields per item:** `id`, `url`, `code`, `episode`, `video_id`.
 - **Batch size:** 1–500 items (`400` if outside).
+- **Truncation:** embedding inputs longer than `INGEST_MAX_TOKENS` tokens
+  (title+details+code+episode+genres combined) are truncated by
+  `truncate_texts` before embedding; the stored columns are untouched.
 - Whole batch runs in one transaction.
 
 ---
@@ -651,6 +742,7 @@ Run every endpoint in one go:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+
 H=http://localhost:9001
 
 echo "== health ==";        curl -sf $H/health | jq .
@@ -660,17 +752,21 @@ echo "== search ==";        curl -sf -X POST $H/search -H 'Content-Type: applica
                                  -d '{"query":"sensual story","limit":5}' | jq '.items[0].id'
 echo "== search sorted =="; curl -sf -X POST $H/search -H 'Content-Type: application/json' \
                                  -d '{"query":"sensual story","limit":3,"sort":"release_date","order":"asc"}' | jq '.items|length'
+echo "== search complete =="; curl -sf -X POST $H/search -H 'Content-Type: application/json' \
+                                 -d '{"query":"sensual story","limit":3,"complete_only":true}' | jq '.items|length'
 echo "== similar ==";       curl -sf -X POST $H/similar -H 'Content-Type: application/json' \
                                  -d '{"video_id":"jav-63v9uv","limit":3}' | jq '.items | length'
 echo "== hybrid ==";        curl -sf -X POST $H/hybrid -H 'Content-Type: application/json' \
                                  -d '{"query":"Nanami","limit":3}' | jq '.items | length'
 echo "== browse ==";        curl -sf "$H/browse?limit=3" | jq '.items | length'
+echo "== browse complete =="; curl -sf "$H/browse?limit=3&complete_only=true" | jq '.items | length'
 echo "== browse multi ==" ; curl -sf -G "$H/browse" --data-urlencode 'limit=3' \
                                  --data-urlencode 'code=sprd' --data-urlencode 'code=mdyd' | jq '.items|length'
 echo "== detail ==";        curl -sf $H/videos/jav-63v9uv | jq '.code'
 echo "== ingest ==";        curl -sf -X POST $H/ingest -H 'Content-Type: application/json' \
                                  -d '{"items":[{"id":"jav-smoke-001","url":"https://example/x","code":"smk","episode":"001","video_id":"smk-001","title":"Smoke Test"}]}' \
                                  | jq '{inserted,updated,skipped}'
+
 echo "OK"
 ```
 
@@ -686,6 +782,10 @@ echo "OK"
 - **NULL-heavy columns:** `release_date` and `genres` are **~80% NULL** — any
   filter on them can drastically shrink the result set. Drop the filter first
   if you're getting empty pages.
+- **Complete rows:** most rows have a NULL `details` (~78%) and some have an
+  empty `title`. Pass `complete_only: true` (JSON body) or
+  `?complete_only=true` (query param) to restrict any endpoint to items whose
+  `title` **and** `details` are both non-empty.
 - **Multi-value filters:** `genre`/`genres` and `code` accept either a single
   string **or** a list in all JSON bodies (`/search`, `/similar`, `/hybrid`).
   On `/browse`, repeat the query param (`genre=...&genre=...`,
@@ -695,7 +795,8 @@ echo "OK"
   `/hybrid` (always `"any"`).
 - **Two kinds of cursor:**
   - `/search` and `/similar` use opaque, **fingerprint-bound** cursors. Reusing
-    one with a different query/filter set returns HTTP 400
+    one with a different query/filter set (including a different
+    `complete_only` value) returns HTTP 400
     `"Cursor does not match filters"`. Send `"cursor": null` to start over.
   - `/browse` uses **offset** pagination; its `next_cursor` is just the next
     integer offset (`"20"`, `"40"`, …). It is not fingerprint-bound.
@@ -710,5 +811,9 @@ echo "OK"
 - **Ingest regenerates embeddings:** you cannot supply your own embedding — the
   server computes it from the item text. Rows with no `title` and no `details`
   are skipped.
+- **Ingest truncates embedding input:** the `|`-joined embedding text is
+  truncated with `truncate_texts` to `INGEST_MAX_TOKENS` (default 2048), so
+  long inputs don't blow past the embedding model context. Stored `title` and
+  `details` are not truncated.
 - **Similarity direction flip:** for `sort:"similarity"`, `order:"desc"` means
   closest first; `order:"asc"` means farthest first.

@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-16T05:44:05.811188
+Generated: 2026-11-16T11:51:44.175523
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -12,7 +12,7 @@ Tables: videos
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.videos (49316 rows)
+### Table: public.videos (50323 rows)
 ```sql
 CREATE TABLE "public"."videos" (
     "id" text NOT NULL,
@@ -61,20 +61,20 @@ CREATE TABLE "public"."videos" (
 ### Table: videos
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | text | 49316 | 0.0% |
-| `embedding` | vector(768) | 47486 | 0.0% |
-| `url` | text | 49316 | 0.0% |
+| `id` | text | 50323 | 0.0% |
+| `embedding` | vector(768) | 48569 | 0.0% |
+| `url` | text | 50323 | 0.0% |
 | `code` | text | 3199 | 0.0% |
 | `episode` | text | 3412 | 0.0% |
-| `video_id` | text | 46381 | 0.0% |
-| `title` | text | 42774 | 0.0% |
-| `thumbnail` | text | 49271 | 0.0% |
-| `preview` | text | 49269 | 0.0% |
-| `details` | text | 6539 | 81.31% |
-| `release_date` | timestamp with time zone | 5766 | 80.14% |
-| `created_at` | timestamp with time zone | 4078 | 0.0% |
-| `updated_at` | timestamp with time zone | 8348 | 0.0% |
-| `genres` | text[] | 6298 | 80.15% |
+| `video_id` | text | 46804 | 0.0% |
+| `title` | text | 43410 | 0.0% |
+| `thumbnail` | text | 50278 | 0.0% |
+| `preview` | text | 50276 | 0.0% |
+| `details` | text | 7782 | 78.16% |
+| `release_date` | timestamp with time zone | 6676 | 76.77% |
+| `created_at` | timestamp with time zone | 5083 | 0.0% |
+| `updated_at` | timestamp with time zone | 10662 | 0.0% |
+| `genres` | text[] | 7791 | 76.78% |
 
 ## SAMPLE DATA
 --------------------------------------------------------------------------------
@@ -84,7 +84,7 @@ CREATE TABLE "public"."videos" (
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | jav-1u1ocek | [0.041967575,-0.029361734,-0.01981194,0.02144055,0… | https://missav.ws/dm13/en/nwf-254 | nwf | 254 | nwf-254 | NWF-254 play Mother's Beautiful Ass Misa Arisawa -… | https://fourhoi.com/nwf-254/cover-n.jpg | https://fourhoi.com/nwf-254/preview.mp4 | Uncontrollable to the mother, intense and intense… | 2009-04-15 12:00:35+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 00:39:49.141965+08 | {Mother,Incest,"Butt Fetish",Individual,Ride,Exclu… |
 | jav-118mqvo | [0.012843765,0.011284435,-0.016049515,0.06853018,0… | https://missav.ws/dm2/en/juc-729-uncensored-leak | juc | 729 | juc-729 | JUC-729 Slave Wife: I Want to Please You... Miwako… | https://fourhoi.com/juc-729-uncensored-leak/cover-… | https://fourhoi.com/juc-729-uncensored-leak/previe… | The Yamamotos are a happy couple with a good relat… | 2012-01-21 11:00:37+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 02:18:23.837862+08 | {"Uncensored leak",Humiliation,Shame,"Mature Woman… |
-| jav-1037ybs | [0.0053802263,0.04983669,0.0008176448,0.00915786,0… | https://missav.ws/dm33/en/sprd-669 | sprd | 669 | sprd-669 | SPRD-669 Mother-in-law, much better than my wife .… | https://fourhoi.com/sprd-669/cover-n.jpg | https://fourhoi.com/sprd-669/preview.mp4 | The husband who decided to live with his mother-in… | 2013-08-12 12:00:37+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 01:52:00.817143+08 | {Stepmother,"Mature Woman",Individual,Hd} |
+| jav-3dr27w | [0.010152726,0.0449282,-0.07865675,0.019591875,0.0… | https://missav.ws/dm26/en/natr-454 | natr | 454 | natr-454 | NATR-454 This is Mao Hamasaki from the Naked House… | https://fourhoi.com/natr-454/cover-n.jpg | https://fourhoi.com/natr-454/preview.mp4 | A housekeeper who does housework naked. Their work… | 2015-04-10 12:00:35+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 06:22:38.962882+08 | {"Various Occupations","Big Breasts",Fetish,Indivi… |
 
 ## QUERY GUIDANCE FOR DYNAMIC POSTGRESQL QUERIES
 --------------------------------------------------------------------------------
