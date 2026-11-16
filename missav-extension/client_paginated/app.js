@@ -224,7 +224,6 @@ function app() {
       this.cursor = null;
       this.page = 0;
       this.exhausted = false;
-      this._gen++;
       this.fetchPage({ reset: true });
     },
 
@@ -233,12 +232,16 @@ function app() {
     },
 
     async fetchPage({ reset = false } = {}) {
-      if (this.loading) return;
+      // No early-return on loading — gen-check handles cancellation.
       this.loading = true;
       const gen = ++this._gen;
       try {
         const params = this.buildParams(reset);
-        if (!params) return;
+        if (!params) {
+          // buildParams can bail (empty query); clear loading for this gen.
+          if (gen === this._gen) this.loading = false;
+          return;
+        }
         const res = await fetch(`${API}${params.path}`, {
           method: params.method,
           headers: params.body
