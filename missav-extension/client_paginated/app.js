@@ -12,6 +12,39 @@ function app() {
     core: { silhouette: 0.4, probability: 0.7 },
   };
 
+  // Advanced per-cluster diversification presets. Each maps 1:1 to the
+  // /search_clustered flags documented in usage.md.
+  const DIVERSIFY_PRESETS = {
+    off: {
+      diversifyItems: false,
+      itemsPerCluster: null,
+      itemDiversity: 0.6,
+      itemShuffle: false,
+      diversifyNoise: false,
+    },
+    reorder: {
+      diversifyItems: true,
+      itemsPerCluster: null,
+      itemDiversity: 0.6,
+      itemShuffle: false,
+      diversifyNoise: false,
+    },
+    capped: {
+      diversifyItems: true,
+      itemsPerCluster: 10,
+      itemDiversity: 0.7,
+      itemShuffle: false,
+      diversifyNoise: false,
+    },
+    paged: {
+      diversifyItems: true,
+      itemsPerCluster: 8,
+      itemDiversity: 0.8,
+      itemShuffle: true,
+      diversifyNoise: false,
+    },
+  };
+
   return {
     // ── state ──
     mode: "browse", // 'search' | 'similar' | 'browse' | 'clustered'
@@ -41,11 +74,8 @@ function app() {
     toasts: [],
 
     // ── generation counters ──
-    // Kept separate so a paginated fetch can never cancel a clustered one
-    // (and vice versa). The clustered skeleton is cleared only by the latest
-    // clustered request, never by a paginated response.
-    _gen: 0, // paginated (/search, /similar, /browse)
-    _genClustered: 0, // clustered (/search_clustered)
+    _gen: 0,
+    _genClustered: 0,
 
     // ── clustered-mode state ──
     clustered: {
@@ -65,6 +95,13 @@ function app() {
       minClusterSize: 2, // min_cluster_size (-s)
       epsilon: 0.25, // cluster_selection_epsilon (-e)
       candidateSource: "recent", // used only when query is null
+      // ── NEW: per-cluster item diversification (opt-in) ──
+      diversifyItems: false, // diversify_items
+      itemsPerCluster: null, // items_per_cluster (null = no cap)
+      itemDiversity: 0.6, // item_diversity [0,1]
+      itemShuffle: false, // item_shuffle (makes itemSeed effective)
+      diversifyNoise: false, // diversify_noise
+      itemSeed: 1, // item_seed (rotated by "Next page")
     },
 
     // Client-only: visibility prefs per cluster.
@@ -76,13 +113,11 @@ function app() {
       this.refreshIcons();
       this.$nextTick(() => this.refreshIcons());
       this.fetchFacets();
-
       if (this.mode === "clustered") {
         this.fetchClustered();
       } else {
         this.refetch();
       }
-
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.closeDetail();
         if (
@@ -93,7 +128,6 @@ function app() {
           this.$refs.searchInput.focus();
         }
       });
-
       const io = new IntersectionObserver(
         (entries) => {
           if (
@@ -109,7 +143,6 @@ function app() {
         { rootMargin: "400px" },
       );
       io.observe(this.$refs.sentinel);
-
       const checkSentinel = () => {
         if (this.mode === "clustered") return;
         const el = this.$refs.sentinel;
@@ -118,7 +151,6 @@ function app() {
         if (rect.top < window.innerHeight + 400) this.loadMore();
       };
       window.addEventListener("scroll", checkSentinel, { passive: true });
-
       this.$watch("items", () => {
         this.$nextTick(() => {
           this.refreshIcons();
@@ -138,7 +170,6 @@ function app() {
     },
 
     // ── URL sync ──
-
     hydrateFromURL() {
       const p = new URLSearchParams(location.search);
       const urlMode = p.get("mode");
@@ -146,30 +177,34 @@ function app() {
       this.mode = urlMode || (hasQ ? "search" : "browse");
       this.query = p.get("q") || "";
       this.lastQuery = this.query;
-
       this.filters.code = p.get("code") || "";
       this.filters.from = p.get("from") || "";
       this.filters.to = p.get("to") || "";
       this.filters.genresMode = p.get("gmode") || "any";
       this.filters.genres = (p.get("genres") || "").split(",").filter(Boolean);
-
       const cf = p.get("cf");
       this.filters.completionFilter =
         cf === "complete" || cf === "incomplete" ? cf : "all";
-
       this.similarOf = p.get("sim") || null;
 
       // ── Clustered knobs ──
       //
-      // URL contract:
+      // URL contract (unchanged for the core knobs):
       //   cl     → cluster_candidate_limit. Omitted or empty ⇒ "auto" (null).
       //   msize  → min_cluster_size.        Omitted ⇒ default (2).
       //   eps    → cluster_selection_epsilon. Omitted ⇒ default (0.25).
       //   src    → candidate_source.        Omitted ⇒ "recent".
       //
-      // "auto" is encoded as ABSENCE of `cl` (not as `cl=`), so a shared
-      // link without the param reproduces "use the server cap". An empty
-      // `cl=` value is also treated as auto.
+      // NEW URL contract (diversification):
+      //   div    → "1" enables diversify_items. Omitted ⇒ false.
+      //   ipc    → items_per_cluster.        Omitted ⇒ null (no cap).
+      //   idiv   → item_diversity.           Omitted ⇒ 0.6.
+      //   ishu   → "1" enables item_shuffle. Omitted ⇒ false.
+      //   inoise → "1" enables diversify_noise. Omitted ⇒ false.
+      //   iseed  → item_seed.                Omitted ⇒ 1.
+      //
+      // Defaults are omitted from the URL so a clean share link reproduces
+      // the baseline behavior.
       if (this.mode === "clustered") {
         const clRaw = p.get("cl");
         if (clRaw == null || clRaw === "") {
@@ -178,7 +213,6 @@ function app() {
           const cl = parseInt(clRaw, 10);
           this.clusterPrefs.candidateLimit = Number.isFinite(cl) ? cl : null;
         }
-
         const msRaw = p.get("msize");
         if (msRaw != null && msRaw !== "") {
           const ms = parseInt(msRaw, 10);
@@ -186,7 +220,6 @@ function app() {
             this.clusterPrefs.minClusterSize = Math.min(20, Math.max(2, ms));
           }
         }
-
         const epsRaw = p.get("eps");
         if (epsRaw != null && epsRaw !== "") {
           const eps = parseFloat(epsRaw);
@@ -194,10 +227,35 @@ function app() {
             this.clusterPrefs.epsilon = Math.min(1, Math.max(0, eps));
           }
         }
-
         const src = p.get("src");
         if (src === "random" || src === "recent") {
           this.clusterPrefs.candidateSource = src;
+        }
+
+        // ── Diversification knobs ──
+        this.clusterPrefs.diversifyItems = p.get("div") === "1";
+        const ipcRaw = p.get("ipc");
+        if (ipcRaw != null && ipcRaw !== "") {
+          const ipc = parseInt(ipcRaw, 10);
+          if (Number.isFinite(ipc)) {
+            this.clusterPrefs.itemsPerCluster = Math.min(100, Math.max(1, ipc));
+          }
+        }
+        const idivRaw = p.get("idiv");
+        if (idivRaw != null && idivRaw !== "") {
+          const idiv = parseFloat(idivRaw);
+          if (Number.isFinite(idiv)) {
+            this.clusterPrefs.itemDiversity = Math.min(1, Math.max(0, idiv));
+          }
+        }
+        this.clusterPrefs.itemShuffle = p.get("ishu") === "1";
+        this.clusterPrefs.diversifyNoise = p.get("inoise") === "1";
+        const iseedRaw = p.get("iseed");
+        if (iseedRaw != null && iseedRaw !== "") {
+          const iseed = parseInt(iseedRaw, 10);
+          if (Number.isFinite(iseed)) {
+            this.clusterPrefs.itemSeed = Math.max(0, iseed);
+          }
         }
       }
 
@@ -216,13 +274,9 @@ function app() {
     syncURL() {
       const p = new URLSearchParams();
       if (this.mode === "search" && this.lastQuery) p.set("q", this.lastQuery);
-
       if (this.mode === "clustered") {
         p.set("mode", "clustered");
         if (this.lastQuery) p.set("q", this.lastQuery);
-
-        // `cl` is only serialized when the user has typed a concrete number.
-        // `null` (auto) is encoded by omitting the param entirely.
         if (Number.isFinite(this.clusterPrefs.candidateLimit)) {
           p.set("cl", String(this.clusterPrefs.candidateLimit));
         }
@@ -235,8 +289,37 @@ function app() {
         if (this.clusterPrefs.candidateSource !== "recent") {
           p.set("src", this.clusterPrefs.candidateSource);
         }
+        // ── Diversification knobs ──
+        if (this.clusterPrefs.diversifyItems) p.set("div", "1");
+        if (
+          this.clusterPrefs.diversifyItems &&
+          Number.isFinite(this.clusterPrefs.itemsPerCluster)
+        ) {
+          p.set("ipc", String(this.clusterPrefs.itemsPerCluster));
+        }
+        if (
+          this.clusterPrefs.diversifyItems &&
+          this.clusterPrefs.itemDiversity !== 0.6
+        ) {
+          p.set("idiv", String(this.clusterPrefs.itemDiversity));
+        }
+        if (this.clusterPrefs.diversifyItems && this.clusterPrefs.itemShuffle) {
+          p.set("ishu", "1");
+        }
+        if (
+          this.clusterPrefs.diversifyItems &&
+          this.clusterPrefs.diversifyNoise
+        ) {
+          p.set("inoise", "1");
+        }
+        if (
+          this.clusterPrefs.diversifyItems &&
+          this.clusterPrefs.itemShuffle &&
+          this.clusterPrefs.itemSeed !== 1
+        ) {
+          p.set("iseed", String(this.clusterPrefs.itemSeed));
+        }
       }
-
       if (this.mode === "browse") p.set("mode", "browse");
       if (this.mode === "similar" && this.similarOf) {
         p.set("mode", "similar");
@@ -336,6 +419,37 @@ function app() {
       this.clusterPrefs.minClusterSize = p.minClusterSize;
       this.clusterPrefs.epsilon = p.epsilon;
       this.applyClusterPrefs();
+    },
+
+    // ── NEW: diversification preset helpers ──
+    applyDiversifyPreset(name) {
+      const p = DIVERSIFY_PRESETS[name];
+      if (!p) return;
+      Object.assign(this.clusterPrefs, p);
+      // Reset the seed so "paged" starts from a stable page.
+      if (p.itemShuffle) this.clusterPrefs.itemSeed = 1;
+      this.applyClusterPrefs();
+    },
+
+    // Rotate the per-cluster page. Only meaningful when item_shuffle=true;
+    // a no-op otherwise (the server ignores item_seed without item_shuffle).
+    nextClusterPage() {
+      this.clusterPrefs.itemSeed = (this.clusterPrefs.itemSeed || 0) + 1;
+      this.applyClusterPrefs();
+    },
+
+    // True iff the current clustered request will actually honor item_seed.
+    clusterItemsArePaged() {
+      return (
+        this.mode === "clustered" &&
+        this.clusterPrefs.diversifyItems &&
+        this.clusterPrefs.itemShuffle
+      );
+    },
+
+    // True iff any per-cluster diversification is active.
+    clusterDiversifyActive() {
+      return this.mode === "clustered" && this.clusterPrefs.diversifyItems;
     },
 
     findSimilar(id) {
@@ -453,7 +567,6 @@ function app() {
       this.clustered.loading = true;
       this.clustered.error = null;
       const gen = ++this._genClustered;
-
       const params = this.buildClusteredParams();
       try {
         const res = await fetch(`${API}/search_clustered`, {
@@ -469,10 +582,8 @@ function app() {
         }
         const data = await res.json();
         if (gen !== this._genClustered) return;
-
         this.clustered.data = data;
         this.lastTook = data.took_ms ?? null;
-
         // Preserve per-cluster UI state for clusters that still exist;
         // reset entries for clusters that were dropped.
         const next = {};
@@ -483,7 +594,6 @@ function app() {
           };
         }
         this.clusterUi = next;
-
         this.$nextTick(() => this.refreshIcons());
       } catch (e) {
         if (gen !== this._genClustered) return;
@@ -514,7 +624,6 @@ function app() {
         return this.filters.genres;
       };
       const q = this.lastQuery?.trim() || null;
-
       // Auto mode: send `null` so the server uses its cap. Sending `100`
       // (or any other client-invented number) would silently override the
       // server's much larger default and shrink the pool.
@@ -524,16 +633,34 @@ function app() {
           ? this.clusterPrefs.candidateLimit
           : null;
 
-      return {
+      // ── NEW: diversification knobs ──
+      // Only sent when diversification is actually on. Keeps the payload
+      // identical to the old client when the feature is off.
+      const diversifyItems = !!this.clusterPrefs.diversifyItems;
+      const itemsPerCluster =
+        diversifyItems &&
+        Number.isFinite(this.clusterPrefs.itemsPerCluster) &&
+        this.clusterPrefs.itemsPerCluster >= 1
+          ? Math.min(100, this.clusterPrefs.itemsPerCluster)
+          : null;
+      const itemDiversity = diversifyItems
+        ? Math.min(1, Math.max(0, this.clusterPrefs.itemDiversity ?? 0.6))
+        : 0.6;
+      const itemShuffle = diversifyItems && !!this.clusterPrefs.itemShuffle;
+      const diversifyNoise =
+        diversifyItems && !!this.clusterPrefs.diversifyNoise;
+      const itemSeed = itemShuffle
+        ? Math.max(0, this.clusterPrefs.itemSeed | 0)
+        : undefined;
+
+      const body = {
         // Query is optional; server branches on presence.
         query: q,
-
         // cluster_utils knobs — no n_clusters, no include_noise.
         min_cluster_size: this.clusterPrefs.minClusterSize,
         cluster_selection_epsilon: this.clusterPrefs.epsilon,
         cluster_candidate_limit: limit, // null → server cap
         candidate_source: this.clusterPrefs.candidateSource,
-
         // Shared filters.
         genre: getGenreParam(),
         genres_mode: this.filters.genresMode,
@@ -546,7 +673,15 @@ function app() {
           : null,
         min_similarity: null, // server rejects when query is null
         completion_filter: this.filters.completionFilter,
+        // ── Per-cluster diversification (opt-in) ──
+        diversify_items: diversifyItems,
+        items_per_cluster: itemsPerCluster,
+        item_diversity: itemDiversity,
+        item_shuffle: itemShuffle,
+        diversify_noise: diversifyNoise,
       };
+      if (itemSeed !== undefined) body.item_seed = itemSeed;
+      return body;
     },
 
     buildParams(reset) {
@@ -605,6 +740,7 @@ function app() {
           },
         };
       }
+
       if (this.mode === "similar") {
         return {
           path: "/similar",
@@ -622,6 +758,7 @@ function app() {
           },
         };
       }
+
       // browse
       const p = new URLSearchParams();
       p.set("limit", "20");
@@ -664,7 +801,6 @@ function app() {
     },
 
     // ── cluster view helpers ──
-
     clusterTier(c) {
       if (!c || c.is_noise) return "grey";
       const hasQuery = c.centroid_similarity != null;
@@ -735,6 +871,26 @@ function app() {
       let list = c.items;
       if (ui.coreOnly) list = list.filter((it) => this.isCoreItem(it));
       return list;
+    },
+
+    // ── NEW: cluster size helpers ──
+    // `full_size` is always present in the updated API. Fall back to `size`
+    // for safety when a cached/older response is being rendered.
+    clusterFullSize(c) {
+      return c?.full_size ?? c?.size ?? 0;
+    },
+
+    // True when the server actually ran MMR on this cluster's items.
+    clusterWasDiversified(c) {
+      return !!c?.diversified;
+    },
+
+    // Human-readable size label, e.g. "10 of 31" when capped.
+    clusterSizeLabel(c) {
+      const size = c?.size ?? 0;
+      const full = this.clusterFullSize(c);
+      if (full > size) return `${size} of ${full}`;
+      return String(size);
     },
 
     findSimilarFromCluster(id) {

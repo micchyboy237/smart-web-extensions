@@ -45,7 +45,8 @@ filters; changing them invalidates the cursor (`400 Cursor does not match filter
 
 `/search_clustered` is **not paginated**. It fetches up to
 `cluster_candidate_limit` rows and returns the full grouped result in one
-response.
+response. When `diversify_items=true`, use `item_seed` (with
+`item_shuffle=true`) to page a cluster's contents instead.
 
 ### Sort / order
 
@@ -160,6 +161,27 @@ Noise is **first-class**: items the clusterer labels `-1` come back as a
 `"Noise/Outliers"` cluster (`is_noise: true`). The client decides whether to
 render it, dim it, or hide it.
 
+### Per-cluster item diversification (opt-in)
+
+By default every cluster returns **all** its members. Set
+`diversify_items: true` to run MMR inside each cluster (reusing the candidate
+embeddings already fetched — no re-embedding). Combine with
+`items_per_cluster` to cap the returned count, and with `item_shuffle` +
+`item_seed` to get a different "page" of each cluster on every call.
+
+| Flag                | Default | Effect                                                                                                |
+| ------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
+| `diversify_items`   | `false` | Enables per-cluster MMR. `ClusterItem.size` then reflects returned count; `full_size` keeps original. |
+| `items_per_cluster` | `null`  | Cap on items returned per cluster. Requires `diversify_items=true`. `1..100`.                         |
+| `item_diversity`    | `0.6`   | MMR trade-off: `1.0` = max diversity, `0.0` = pure relevance.                                         |
+| `diversify_noise`   | `false` | Also diversify the `Noise/Outliers` bucket. Off by default — noise is low-cohesion by definition.     |
+| `item_shuffle`      | `false` | Use weighted sample + MMR (`shuffle_and_diversify`); `item_seed` then varies the result.              |
+| `item_seed`         | time    | RNG seed; only used when `item_shuffle=true`. Change it for a new "page" per cluster.                 |
+
+Ranking uses `full_size` (unaffected by the cap), so cluster ordering is stable
+across `items_per_cluster` values. `centroid_similarity` is computed from the
+**full** membership before trimming.
+
 ### Request
 
 ```jsonc
@@ -169,6 +191,14 @@ render it, dim it, or hide it.
   "cluster_selection_epsilon": 0.25, // HDBSCAN -e
   "cluster_candidate_limit": 100, // rows fetched before clustering
   "candidate_source": "recent", // used only when query is null
+
+  // NEW: per-cluster item diversification (opt-in)
+  "diversify_items": false,
+  "items_per_cluster": null,
+  "item_diversity": 0.6,
+  "diversify_noise": false,
+  "item_shuffle": false,
+  "item_seed": 1699999999,
 
   // shared filters
   "genre": null,
@@ -189,6 +219,12 @@ render it, dim it, or hide it.
 | `cluster_candidate_limit`   | —        | `100`      | `10..500`. Pool size fetched from Postgres before clustering.                                                         |
 | `candidate_source`          | —        | `"recent"` | `"recent"` (newest release / created desc) or `"random"`. Ignored when `query` is present.                            |
 | `min_similarity`            | —        | `null`     | Rejected (`422`) when `query` is `null`.                                                                              |
+| `diversify_items`           | —        | `false`    | Enables per-cluster MMR. See "Per-cluster item diversification" above.                                                |
+| `items_per_cluster`         | —        | `null`     | Cap on returned items per cluster. Requires `diversify_items=true`. `1..100`.                                         |
+| `item_diversity`            | —        | `0.6`      | MMR diversity weight `[0,1]`. Only used when `diversify_items=true`.                                                  |
+| `diversify_noise`           | —        | `false`    | Also diversify the noise bucket.                                                                                      |
+| `item_shuffle`              | —        | `false`    | Use shuffle+MMR per cluster; makes `item_seed` effective. Requires `diversify_items=true`.                            |
+| `item_seed`                 | —        | time-based | RNG seed for per-cluster shuffle. Only used when `item_shuffle=true`.                                                 |
 
 ### Response
 
@@ -203,25 +239,29 @@ render it, dim it, or hide it.
     {
       "cluster_id": 2,
       "label": null, // "Noise/Outliers" for the -1 bucket
-      "size": 31,
-      "centroid_similarity": 0.71, // mean query-similarity of members; null without query
+      "size": 10, // items RETURNED after per-cluster diversification
+      "full_size": 31, // original membership count (== size when diversify_items=false)
+      "centroid_similarity": 0.71, // mean query-similarity over FULL membership; null without query
       "consistency_score": 0.84, // cluster_utils: L2 norm of mean unit embedding
       "avg_silhouette": 0.42, // cluster_utils: mean per-item silhouette
       "misplaced_items_count": 2, // members with negative silhouette
       "is_noise": false,
+      "diversified": true, // true when per-cluster MMR ran on this cluster
       "items": [
-        /* VideoItem[] — pre-sorted by (silhouette, probability) desc */
+        /* VideoItem[] — returned count is capped when items_per_cluster is set */
       ],
     },
     {
       "cluster_id": -1,
       "label": "Noise/Outliers",
       "size": 6,
+      "full_size": 6,
       "centroid_similarity": 0.19,
       "consistency_score": 0.0,
       "avg_silhouette": 0.0,
       "misplaced_items_count": 0,
       "is_noise": true,
+      "diversified": false, // noise bucket untouched unless diversify_noise=true
       "items": [
         /* VideoItem[] */
       ],
@@ -237,21 +277,28 @@ Mirrors the module docstring of `cluster_utils`.
 
 | Field                   | Range    | Meaning                                                                                                                     |
 | ----------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `size`                  | `≥0`     | Number of items **returned** in `items` (post-diversification).                                                             |
+| `full_size`             | `≥0`     | Original cluster membership count. Equals `size` when `diversify_items=false`. Use this for ranking / stats.                |
 | `consistency_score`     | `[0,1]`  | L2 norm of the cluster's mean unit embedding. `1` = all members point the same direction (tight); `0` = orthogonal (loose). |
 | `avg_silhouette`        | `[-1,1]` | Mean per-item silhouette. `>0` = members are better explained by their own cluster than by neighbors.                       |
 | `misplaced_items_count` | `≥0`     | Members with **negative** silhouette — likely mis-assigned.                                                                 |
-| `centroid_similarity`   | `[0,1]`  | Mean of members' `similarity` to the query. Only meaningful when `query` is present.                                        |
+| `centroid_similarity`   | `[0,1]`  | Mean of members' `similarity` to the query, over full membership. Only meaningful when `query` is present.                  |
 | `is_noise`              | `bool`   | `true` only for the `-1` bucket.                                                                                            |
+| `diversified`           | `bool`   | `true` when per-cluster MMR ran on this cluster's items.                                                                    |
 
 ### Cluster ordering
 
-Clusters are sorted server-side by **`consistency_score × size` descending**,
+Clusters are sorted server-side by **`consistency_score × full_size` descending**,
 with the noise bucket always last. The intent is "tight and substantive first".
-Clients should preserve this order.
+Because `full_size` (not the possibly-capped `size`) is used, the ordering is
+identical whether or not `items_per_cluster` is set — clients can toggle the
+cap without the cluster list reshuffling. Clients should preserve this order.
 
 Item order inside a cluster is whatever `cluster_utils.get_detailed_analysis()`
 produced — already sorted by `(silhouette, probability)` **descending**, so
-representative members come first and fringe members come last.
+representative members come first and fringe members come last. When
+`diversify_items=true`, the returned subset preserves that order (the set is
+MMR-selected, the sort is unchanged).
 
 ### Cluster quality tiers (client helper)
 
@@ -294,23 +341,78 @@ curl -s http://localhost:9001/search_clustered -X POST \
   -d '{"candidate_source":"random","cluster_candidate_limit":100}' | jq
 ```
 
+**Diversified page — cap each cluster to 10 diverse representatives:**
+
+```bash
+curl -s http://localhost:9001/search_clustered -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "office romance",
+    "cluster_candidate_limit": 200,
+    "diversify_items": true,
+    "items_per_cluster": 10,
+    "item_diversity": 0.7
+  }' | jq '[.clusters[] | {id:.cluster_id, size, full_size, diversified}]'
+```
+
+**Endless per-cluster browse — bump `item_seed` for a new page:**
+
+```bash
+for seed in 1 2 3; do
+  curl -s http://localhost:9001/search_clustered -X POST \
+    -H 'Content-Type: application/json' \
+    -d "{
+      \"candidate_source\":\"recent\",
+      \"cluster_candidate_limit\":200,
+      \"diversify_items\":true,
+      \"items_per_cluster\":8,
+      \"item_diversity\":0.8,
+      \"item_shuffle\":true,
+      \"item_seed\":$seed
+    }" | jq --arg s "$seed" '{seed:$s, ids:[.clusters[0].items[].id]}'
+done
+```
+
+**Include the noise bucket in diversification:**
+
+```bash
+curl -s http://localhost:9001/search_clustered -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "anything",
+    "diversify_items": true,
+    "items_per_cluster": 5,
+    "diversify_noise": true
+  }' | jq
+```
+
 **Tuning recipes**
 
-| Goal                       | Knob                                 |
-| -------------------------- | ------------------------------------ |
-| Fewer, larger groups       | Increase `min_cluster_size`          |
-| More, smaller groups       | Decrease `min_cluster_size`          |
-| Tighter groups, more noise | Decrease `cluster_selection_epsilon` |
-| Looser groups, less noise  | Increase `cluster_selection_epsilon` |
-| More candidates to cluster | Increase `cluster_candidate_limit`   |
+| Goal                       | Knob                                         |
+| -------------------------- | -------------------------------------------- |
+| Fewer, larger groups       | Increase `min_cluster_size`                  |
+| More, smaller groups       | Decrease `min_cluster_size`                  |
+| Tighter groups, more noise | Decrease `cluster_selection_epsilon`         |
+| Looser groups, less noise  | Increase `cluster_selection_epsilon`         |
+| More candidates to cluster | Increase `cluster_candidate_limit`           |
+| Diverse reps per cluster   | `diversify_items=true` + `items_per_cluster` |
+| More diversity per cluster | Increase `item_diversity` toward `1.0`       |
+| Vary cluster contents      | `item_shuffle=true` + change `item_seed`     |
 
 ### Errors
 
-| Status | When                                                                   |
-| ------ | ---------------------------------------------------------------------- |
-| `422`  | `min_similarity` set while `query` is `null` (validation error).       |
-| `422`  | Any field fails its constraints (e.g. `cluster_candidate_limit < 10`). |
-| `500`  | DB error while fetching candidates.                                    |
+| Status | When                                                                                              |
+| ------ | ------------------------------------------------------------------------------------------------- |
+| `422`  | `min_similarity` set while `query` is `null` (validation error).                                  |
+| `422`  | `items_per_cluster` set while `diversify_items=false`.                                            |
+| `422`  | `item_shuffle=true` while `diversify_items=false`.                                                |
+| `422`  | Any field fails its constraints (e.g. `cluster_candidate_limit < 10`, `items_per_cluster > 100`). |
+| `500`  | DB error while fetching candidates.                                                               |
+
+> Per-cluster MMR failures are **non-fatal**: if `diversify_results` raises on a
+> single cluster, that cluster falls back to its full membership with
+> `diversified=false`; other clusters are unaffected, and the request returns
+> `200`.
 
 ---
 
@@ -576,6 +678,9 @@ mode = "clustered"
   │    └─ query null      → recent/random candidates, similarity == null
   ├─ render clusters in response order (tight+big first, noise last)
   ├─ tier = green | amber | grey  (see Cluster quality tiers)
+  ├─ per-cluster items (optional):
+  │    ├─ diversify_items=true + items_per_cluster=N → diverse reps, capped
+  │    └─ item_shuffle=true + changing item_seed   → new "page" per cluster
   └─ per item:
        ├─ probability       → confidence bar
        ├─ silhouette < 0    → dim (fringe)
@@ -592,7 +697,7 @@ mode = "clustered"
 }
 ```
 
-The three knobs above are the **only** tuning controls exposed to end users.
+The three knobs above are the **primary** tuning controls exposed to end users.
 `n_clusters` no longer exists — it was replaced by `cluster_utils`' dynamic
 selection. If a client previously exposed "groups = 3..10", replace it with
 "min_cluster_size" + "epsilon", or with a coarse preset:
@@ -603,9 +708,24 @@ selection. If a client previously exposed "groups = 3..10", replace it with
 | Balanced | `2`                | `0.25`                      | Default.                            |
 | Loose    | `2`                | `0.45`                      | Fewer noise points, broader groups. |
 
+A secondary group of controls (behind an "advanced" toggle) enables per-cluster
+diversification:
+
+| Preset  | `diversify_items` | `items_per_cluster` | `item_diversity` | `item_shuffle` | Effect                                          |
+| ------- | ----------------- | ------------------- | ---------------- | -------------- | ----------------------------------------------- |
+| Off     | `false`           | `null`              | —                | —              | Historical behavior (all members).              |
+| Reorder | `true`            | `null`              | `0.6`            | `false`        | Same members, MMR order (most diverse first).   |
+| Capped  | `true`            | `10`                | `0.7`            | `false`        | 10 diverse reps per cluster, deterministic.     |
+| Paged   | `true`            | `8`                 | `0.8`            | `true`         | 8 reps per cluster; change `item_seed` to page. |
+
 ### Reproducibility
 
 Clustering is deterministic for a given `(candidate pool, query, candidate_source)`:
 `TextsClusterer` seeds Spectral with `random_state=42` and HDBSCAN is
 deterministic. The only non-determinism is `candidate_source: "random"`
 (server-side `random()` ordering).
+
+Per-cluster item selection is deterministic when `item_shuffle=false`
+(`diversify_results` is greedy MMR with no RNG). When `item_shuffle=true`, the
+result is a pure function of `(cluster items, item_seed, item_diversity)`, so
+the same `item_seed` reproduces the same page.
