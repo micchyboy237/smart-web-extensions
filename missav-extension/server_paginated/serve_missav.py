@@ -38,6 +38,10 @@ from jet.adapters.llama_cpp.config import (
     EMBED_MODEL,
     EMBED_QUERY_PREFIX,
 )
+from jet.adapters.llama_cpp.diversity_utils import (
+    compute_shuffle_fetch_k,
+    shuffle_and_diversify,
+)
 from jet.adapters.llama_cpp.embed_utils import embed, shutdown_embed_pool
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
@@ -451,6 +455,34 @@ class ClusteredSearchResponse(BaseModel):
     )
     clusters: List[ClusterItem]
     took_ms: float
+
+
+# --------------------------------------------------------------------------- #
+# Diversity search — request
+# --------------------------------------------------------------------------- #
+class DiscoverRequest(BaseModel):
+    query: Optional[str] = Field(
+        None,
+        min_length=1,
+        description="Optional semantic query. If provided, discovery is biased toward this topic.",
+    )
+    limit: int = Field(20, ge=1, le=50)
+    seed: int = Field(
+        default_factory=lambda: int(time.time() * 1000) % 10**9,
+        description="Random seed for reproducibility. Change this to get a new 'feed'.",
+    )
+    genre: GenreCodeInput = None
+    genres_mode: Literal["any", "all"] = "any"
+    code: GenreCodeInput = None
+    min_release_date: Optional[datetime] = None
+    max_release_date: Optional[datetime] = None
+    completion_filter: CompletionFilter = "all"
+    diversity: float = Field(
+        0.6,
+        ge=0.0,
+        le=1.0,
+        description="Trade-off between diversity (1.0) and relevance/recency (0.0).",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -958,6 +990,147 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
         total_misplaced_items=summary["summary"]["total_misplaced_items"],
         clusters=clusters,
         took_ms=took,
+    )
+
+
+@app.post("/discover", response_model=VideoListResponse)
+def discover(req: DiscoverRequest) -> VideoListResponse:
+    """
+    Shuffle/Discovery mode for endless browsing.
+
+    - If `query` is provided: Fetches relevant candidates via vector search,
+      then applies weighted sampling + MMR to ensure diverse coverage of the topic.
+    - If `query` is omitted: Fetches random candidates and diversifies them
+      for a broad "surprise me" experience.
+
+    Does not use cursors; clients should change the 'seed' for subsequent batches.
+    """
+    t0 = time.perf_counter()
+
+    # 1. Determine how many candidates to fetch from DB
+    fetch_k = compute_shuffle_fetch_k(req.limit)
+
+    # 2. Build SQL to fetch a large candidate pool
+    params: dict = {"limit": fetch_k}
+    conds: List[str] = ["embedding IS NOT NULL"]  # Ensure we have embeddings for MMR
+
+    # Apply standard filters
+    class FilterReq:
+        def __init__(self, source_req):
+            self.genre = source_req.genre
+            self.genres_mode = source_req.genres_mode
+            self.code = source_req.code
+            self.min_release_date = source_req.min_release_date
+            self.max_release_date = source_req.max_release_date
+            self.completion_filter = source_req.completion_filter
+
+    filter_req = FilterReq(req)
+    _apply_filters(filter_req, params, conds)
+    where_sql = " AND ".join(conds)
+
+    has_query = req.query is not None
+    emb = None
+
+    if has_query:
+        # Query mode: Fetch top-K by similarity to ensure relevance
+        emb = list(_embed_query(req.query))
+        params["emb"] = emb
+        distance_sql = "(embedding <=> %(emb)s::vector)"
+        order_sql = f"ORDER BY {distance_sql} ASC"
+        select_cols = f"""
+            id, title, details, url, code, episode, release_date, genres,
+            thumbnail, preview, embedding,
+            {distance_sql} AS distance
+        """
+    else:
+        # Random mode: Fetch random sample
+        order_sql = "ORDER BY random()"
+        select_cols = """
+            id, title, details, url, code, episode, release_date, genres,
+            thumbnail, preview, embedding,
+            NULL::float8 AS distance
+        """
+
+    sql = f"""
+        SELECT {select_cols}
+        FROM public.videos
+        WHERE {where_sql}
+        {order_sql}
+        LIMIT %(limit)s
+    """
+
+    try:
+        with pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+    except Exception as e:
+        logger.error("Discover DB error: %s", e)
+        raise HTTPException(500, f"Discovery failed: {e}")
+
+    if not rows:
+        return VideoListResponse(
+            items=[], count=0, took_ms=(time.perf_counter() - t0) * 1000
+        )
+
+    # 3. Prepare data for diversity_utils
+    search_results = []
+    embeddings_list = []
+
+    for r in rows:
+        # Create a simple document string for semantic comparison
+        doc_text = f"{r['title']} {r['details']}" if r["details"] else r["title"]
+
+        # Calculate score: 1 - distance if query exists, else 1.0 (neutral)
+        score = (1.0 - r["distance"]) if r["distance"] is not None else 1.0
+
+        search_results.append(
+            {
+                "id": r["id"],
+                "score": score,
+                "document": doc_text or "",
+            }
+        )
+        embeddings_list.append(_to_float_list(r["embedding"]))
+
+    embeddings_matrix = np.array(embeddings_list, dtype=np.float32)
+
+    # 4. Apply Shuffle and Diversify
+    diversified_results = shuffle_and_diversify(
+        results=search_results,
+        top_k=req.limit,
+        diversity=req.diversity,
+        seed=req.seed,
+        relevance_bias=1.0,  # Bias toward the calculated 'score'
+        embeddings=embeddings_matrix,
+    )
+
+    # 5. Map back to full VideoItem objects
+    row_map = {r["id"]: r for r in rows}
+    final_items = []
+
+    for res in diversified_results:
+        original_row = row_map.get(res["id"])
+        if original_row:
+            # If query exists, pass similarity to VideoItem
+            sim = (
+                (1.0 - original_row["distance"])
+                if has_query and original_row["distance"] is not None
+                else None
+            )
+            final_items.append(_row_to_item(original_row, similarity=sim))
+
+    took = (time.perf_counter() - t0) * 1000
+    logger.info(
+        "discover ok query=%s seed=%d limit=%d fetched=%d returned=%d %.1fms",
+        bool(has_query),
+        req.seed,
+        req.limit,
+        len(rows),
+        len(final_items),
+        took,
+    )
+
+    return VideoListResponse(
+        items=[dict(item) for item in final_items], count=len(final_items), took_ms=took
     )
 
 
