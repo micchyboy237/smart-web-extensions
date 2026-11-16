@@ -1,20 +1,15 @@
 // Jet_Apps/web-extensions/smart-web-extensions/missav-video-opener-extension/content_search.js
 (function () {
   "use strict";
-
   // --- GUARD CLAUSE ---
-  // Only run if this is a search page
   if (!window.location.pathname.includes("/en/search/")) {
     return;
   }
-
   const LOG_PREFIX = "[MissAV-Content]";
   const DEBUG = true;
-
   function log(...args) {
     if (DEBUG) console.log(LOG_PREFIX, ...args);
   }
-
   function logObj(label, obj) {
     if (!DEBUG) return;
     console.groupCollapsed(`${LOG_PREFIX} ${label}`);
@@ -24,10 +19,8 @@
     console.log(obj);
     console.groupEnd();
   }
-
   let panelElement = null;
   let lastPendingIds = [];
-
   function isValidMediaUrl(url) {
     if (!url || typeof url !== "string") return false;
     const t = url.trim();
@@ -42,7 +35,6 @@
     if (!/^https?:\/\//i.test(t)) return false;
     return true;
   }
-
   function getSrcOrDataSrc(el) {
     if (!el) return null;
     if (el.currentSrc) {
@@ -64,7 +56,6 @@
     }
     return null;
   }
-
   function generatePreviewUrl(thumb) {
     if (!thumb || typeof thumb !== "string") return null;
     if (thumb.endsWith("/preview.mp4")) return thumb;
@@ -72,7 +63,6 @@
     if (i === -1) return null;
     return thumb.substring(0, i + 1) + "preview.mp4";
   }
-
   function generateIdFromUrl(url, videoId) {
     const input = url || videoId;
     if (!input) return "unknown-" + Date.now();
@@ -90,85 +80,161 @@
     }
     return "jav-" + hash.toString(36);
   }
-
-  function extractVideoMetadataFromSearch(code) {
-    const startedAt = performance.now();
-    log(`extractVideoMetadataFromSearch(${code}) — scanning anchors…`);
-    const anchors = Array.from(document.querySelectorAll("a"));
-    const uniqueItems = new Map();
-    let matched = 0;
-    anchors.forEach((anchor, idx) => {
-      const href = anchor.getAttribute("href");
-      if (!href) return;
-      if (anchor.querySelector("video") === null) return;
-      if (!new RegExp(code, "i").test(href)) return;
-      if (!href.includes("/en/")) return;
-      const absoluteUrl = href.startsWith("http")
-        ? href
-        : new URL(href, window.location.origin).href;
-      const pathMatch = absoluteUrl.match(
-        /\/(?:dm\d+\/)?en\/([a-z0-9]+-\d+(?:-[a-z0-9-]+)?)/i,
-      );
-      if (!pathMatch) {
-        log(`  [anchor ${idx}] path fail: ${absoluteUrl}`);
-        return;
+  // --- JAV identifier extraction (from pasted extractor script) ---
+  function extractJavInfo(url, text) {
+    const threePartWithSuffix = /\b([a-z]+\d*-[a-z]+)-(\d+)(-[a-z0-9-]+)?\b/i;
+    const twoPartWithSuffix = /\b([a-z0-9]+)-(\d+)(-[a-z0-9-]+)?\b/i;
+    const lettersThenDigits = /\b([a-z]+)(\d{3,6})\b/i;
+    const digitsThenLetters = /\b(\d+[a-z]+)(\d{3,6})\b/i;
+    let match = null;
+    match =
+      url.match(threePartWithSuffix) ||
+      url.match(twoPartWithSuffix) ||
+      url.match(lettersThenDigits) ||
+      url.match(digitsThenLetters);
+    if (!match && text) {
+      match =
+        text.match(threePartWithSuffix) ||
+        text.match(twoPartWithSuffix) ||
+        text.match(lettersThenDigits) ||
+        text.match(digitsThenLetters);
+    }
+    if (match) {
+      if (match[0].includes("-")) {
+        return {
+          videoId: match[0].toLowerCase(),
+          code: match[1].toLowerCase(),
+          episode: match[2],
+        };
       }
-      const videoId = pathMatch[1].toLowerCase();
-      const codeMatch = videoId.match(/^([a-z0-9]+)-(\d+)/);
-      if (!codeMatch) return;
-      const itemCode = codeMatch[1],
-        episode = codeMatch[2];
-      const titleEl = anchor.querySelector(
-        ".text-base, .lg\\:text-lg, h1, h2, h3, .title",
-      );
-      const title = titleEl ? titleEl.innerText.trim() : null;
-      const imgEl = anchor.querySelector("img");
-      const thumbnail = imgEl ? getSrcOrDataSrc(imgEl) : null;
-      const id = generateIdFromUrl(absoluteUrl, videoId);
-      matched++;
-      if (uniqueItems.has(id)) {
-        log(`  [anchor ${idx}] duplicate ${id}`);
-        return;
-      }
-      log(
-        `  [anchor ${idx}] ✓ ${videoId} | title=${title?.slice(0, 40) || "(none)"}`,
-      );
-      uniqueItems.set(id, {
-        id,
-        url: absoluteUrl,
-        code: itemCode,
-        episode,
-        video_id: videoId,
-        title,
-        thumbnail,
-        preview: thumbnail ? generatePreviewUrl(thumbnail) : null,
-        details: null,
-        release_date: null,
-        genres: [],
-      });
-    });
-    const elapsed = (performance.now() - startedAt).toFixed(1);
-    log(
-      `extractVideoMetadataFromSearch: matched=${matched} unique=${uniqueItems.size} (${elapsed}ms)`,
-    );
-    return {
-      urls: Array.from(uniqueItems.values()).map((i) => i.url),
-      metadataList: Array.from(uniqueItems.values()),
-    };
+      return {
+        videoId: match[0].toLowerCase(),
+        code: match[1]?.toLowerCase() || null,
+        episode: match[2] || null,
+      };
+    }
+    return { videoId: null, code: null, episode: null };
   }
-
+  // --- Multi-item extraction via .thumbnail.group containers ---
+  function extractVideoMetadataFromSearch(code) {
+    const t0 = performance.now();
+    log(`extractVideoMetadataFromSearch(${code}) — scanning .thumbnail.group…`);
+    const containers = document.querySelectorAll(".thumbnail.group");
+    log(`  found ${containers.length} .thumbnail.group containers`);
+    const seenUrls = new Set();
+    const items = [];
+    containers.forEach((container, index) => {
+      try {
+        // 1. Anchor containing media
+        const mediaAnchor = Array.from(
+          container.querySelectorAll("a[href]"),
+        ).find((a) => a.querySelector("video") || a.querySelector("img"));
+        if (!mediaAnchor) return;
+        // 2. URL
+        let rawUrl = mediaAnchor.getAttribute("href");
+        if (!rawUrl) return;
+        if (rawUrl.startsWith("/")) rawUrl = window.location.origin + rawUrl;
+        const cleanUrl = rawUrl.split("#")[0].split("?")[0];
+        if (seenUrls.has(cleanUrl)) return;
+        seenUrls.add(cleanUrl);
+        // 3. Title (Structure 4 first, then siblings, then flex, then img alt)
+        let title = "";
+        const innerTitleLink = container.querySelector(
+          ".text-sm.truncate a.text-secondary",
+        );
+        let siblingTitleLink = null;
+        if (!innerTitleLink) {
+          const parent = container.parentElement;
+          siblingTitleLink =
+            parent?.querySelector(".text-sm.truncate a") ||
+            container.nextElementSibling?.querySelector("a");
+        }
+        if (!innerTitleLink && !siblingTitleLink) {
+          const parentFlex = container.closest(".flex");
+          const sideTitle = parentFlex?.querySelector(".overflow-y-hidden a");
+          if (sideTitle) title = sideTitle.innerText.trim();
+        }
+        if (innerTitleLink) title = innerTitleLink.innerText.trim();
+        else if (siblingTitleLink) title = siblingTitleLink.innerText.trim();
+        if (!title) {
+          const img = container.querySelector("img");
+          if (img) title = img.getAttribute("alt") || "";
+        }
+        // 4. Media
+        const imgEl = container.querySelector("img");
+        const videoEl = container.querySelector("video");
+        let thumbnail = imgEl ? getSrcOrDataSrc(imgEl) : null;
+        let preview = null;
+        if (videoEl) {
+          const vSrc = getSrcOrDataSrc(videoEl);
+          if (vSrc && vSrc.includes("preview.mp4")) preview = vSrc;
+        }
+        if (!preview && thumbnail) preview = generatePreviewUrl(thumbnail);
+        // 5. Identifiers
+        const {
+          videoId,
+          code: itemCode,
+          episode,
+        } = extractJavInfo(cleanUrl, title);
+        if (!videoId) {
+          log(`  [container ${index}] no videoId, skipping (${cleanUrl})`);
+          return;
+        }
+        const id = generateIdFromUrl(cleanUrl, videoId);
+        items.push({
+          id,
+          url: cleanUrl,
+          code: itemCode,
+          episode,
+          video_id: videoId,
+          title: title || null,
+          thumbnail: thumbnail || null,
+          preview: preview || null,
+          details: null,
+          release_date: null,
+          genres: [],
+        });
+      } catch (err) {
+        log(`  [container ${index}] error:`, err?.message);
+      }
+    });
+    const elapsed = (performance.now() - t0).toFixed(1);
+    log(
+      `extractVideoMetadataFromSearch: unique=${items.length} (${elapsed}ms)`,
+    );
+    return { items, urls: items.map((i) => i.url) };
+  }
   function getTotalPagesFromDom() {
-    let maxPage = 0;
-    const c = document.querySelector(".hidden.md\\:flex");
-    if (c)
-      c.querySelectorAll('a[href*="page="]').forEach((l) => {
-        const m = l.getAttribute("href").match(/page=(\d+)/);
-        if (m) maxPage = Math.max(maxPage, parseInt(m[1]));
-      });
-    log(`getTotalPagesFromDom: maxPage=${maxPage}`);
+    const container = document.querySelector(".hidden.md\\:flex");
+    // No paginator in DOM → only one page of results.
+    if (!container) {
+      log(`getTotalPagesFromDom: no paginator → single page`);
+      return 1;
+    }
+    // Also require at least one page link inside it, in case the element exists
+    // but is empty/hidden shell.
+    const links = container.querySelectorAll('a[href*="page="]');
+    if (links.length === 0) {
+      log(
+        `getTotalPagesFromDom: paginator present but no page links → single page`,
+      );
+      return 1;
+    }
+    let maxPage = 1;
+    let currentPage = 1;
+    links.forEach((l) => {
+      const m = l.getAttribute("href").match(/[?&]page=(\d+)/);
+      if (m) maxPage = Math.max(maxPage, parseInt(m[1], 10));
+    });
+    // The "current" page is the one wrapped in [aria-current="page"].
+    const currentEl = container.querySelector('[aria-current="page"]');
+    if (currentEl) {
+      const t = (currentEl.textContent || "").trim();
+      if (/^\d+$/.test(t)) currentPage = parseInt(t, 10);
+    }
+    log(`getTotalPagesFromDom: maxPage=${maxPage} currentPage=${currentPage}`);
     return maxPage;
   }
-
   function createPanel(state) {
     log("createPanel()");
     if (panelElement) panelElement.remove();
@@ -185,7 +251,6 @@
     document.body.appendChild(panelElement);
     updatePanelContent(state);
   }
-
   function updatePanelContent(state, pendingIds) {
     if (!panelElement) {
       createPanel(state);
@@ -279,7 +344,6 @@
         });
       });
   }
-
   function showNotification(message) {
     const n = document.createElement("div");
     n.style.cssText = `position:fixed;bottom:20px;right:20px;background:#333;color:white;padding:12px;border-radius:5px;z-index:2147483647;`;
@@ -287,28 +351,37 @@
     document.body.appendChild(n);
     setTimeout(() => n.remove(), 3000);
   }
-
   async function initializeBatchProcess(code, startPage) {
     log(`initializeBatchProcess code=${code} startPage=${startPage}`);
-    const totalPages = getTotalPagesFromDom() || 50;
-    const pageUrls = [];
-    const baseUrl = `https://missav.ws/en/search/${code}-`;
-    for (let i = 1; i <= totalPages; i++) pageUrls.push(`${baseUrl}?page=${i}`);
-    log(`initializeBatchProcess: queuing ${pageUrls.length} page URLs`);
-    chrome.runtime.sendMessage({
-      action: "setPageQueue",
-      pageUrls,
-      totalPages,
-    });
-    const { urls, metadataList } = extractVideoMetadataFromSearch(code);
+    const totalPages = getTotalPagesFromDom(); // always >= 1, never 0/50
+
+    if (totalPages <= 1) {
+      log(`initializeBatchProcess: single page, no page queue needed`);
+      chrome.runtime.sendMessage({
+        action: "setPageQueue",
+        pageUrls: [], // no extra tabs
+        totalPages: 1,
+      });
+    } else {
+      const baseUrl = `https://missav.ws/en/search/${code}-`;
+      const pageUrls = [];
+      for (let i = 1; i <= totalPages; i++)
+        pageUrls.push(`${baseUrl}?page=${i}`);
+      log(`initializeBatchProcess: queuing ${pageUrls.length} page URLs`);
+      chrome.runtime.sendMessage({
+        action: "setPageQueue",
+        pageUrls,
+        totalPages,
+      });
+    }
+
+    const { items } = extractVideoMetadataFromSearch(code);
     chrome.runtime.sendMessage({
       action: "extractedVideos",
-      urls,
+      items,
       pageNum: startPage,
-      metadataList,
     });
   }
-
   async function fetchPendingPreview() {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ action: "getProcessingState" }, (resp) => {
@@ -316,7 +389,6 @@
       });
     });
   }
-
   let _panelRefreshTimer = null;
   let _lastPanelStateJson = null;
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -344,7 +416,6 @@
       );
     }, 150);
   });
-
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     log(`← message: ${message?.action}`);
     if (
@@ -366,7 +437,6 @@
     }
     return true;
   });
-
   window.addEventListener("load", () => {
     setTimeout(async () => {
       const response = await new Promise((resolve) =>
@@ -381,12 +451,11 @@
           const code = urlMatch[1];
           const pageMatch = window.location.href.match(/[?&]page=(\d+)/);
           const pageNum = pageMatch ? parseInt(pageMatch[1]) : 1;
-          const { urls, metadataList } = extractVideoMetadataFromSearch(code);
+          const { items } = extractVideoMetadataFromSearch(code);
           chrome.runtime.sendMessage({
             action: "extractedVideos",
-            urls,
+            items,
             pageNum,
-            metadataList,
           });
         }
       }

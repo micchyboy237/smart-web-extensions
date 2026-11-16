@@ -1,26 +1,19 @@
 // Jet_Apps/web-extensions/smart-web-extensions/missav-video-opener-extension/content_single.js
 (function () {
   "use strict";
-
-  // --- GUARD CLAUSE ---
   const SINGLE_VIDEO_PATH_RE =
     /^\/(?:dm\d+\/)?en\/([a-z0-9]+-\d+(?:-[a-z0-9-]+)?)$/i;
-
   if (!SINGLE_VIDEO_PATH_RE.test(window.location.pathname)) {
     return;
   }
-
-  // ---- Immediate injection proof (set AFTER guard) ---------------------
   window.__missavSingleRan = true;
   window.__missavSingleLastLog = `injected @ ${new Date().toISOString()} ${location.href}`;
   console.log("[MissAV-Single] 🚀 CONTENT SCRIPT INJECTED", location.href);
-
   const LOG_PREFIX = "[MissAV-Single]";
   const DEBUG = true;
   const MAX_DOM_WAIT_MS = 8000;
   const POLL_INTERVAL_MS = 500;
   const SETTLE_DELAY_MS = 1500;
-
   function log(...args) {
     window.__missavSingleLastLog = args
       .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
@@ -28,7 +21,6 @@
       .slice(0, 300);
     if (DEBUG) console.log(LOG_PREFIX, ...args);
   }
-
   function logObj(label, obj) {
     if (!DEBUG) return;
     window.__missavSingleLastLog = `${label}: ${JSON.stringify(obj).slice(0, 300)}`;
@@ -39,11 +31,9 @@
     console.log("raw:", obj);
     console.groupEnd();
   }
-
   function isSingleVideoPage() {
     return SINGLE_VIDEO_PATH_RE.test(window.location.pathname);
   }
-
   function isValidMediaUrl(url) {
     if (!url || typeof url !== "string") return false;
     const t = url.trim();
@@ -58,7 +48,6 @@
     if (!/^https?:\/\//i.test(t)) return false;
     return true;
   }
-
   function getSrcOrDataSrc(el) {
     if (!el) return null;
     if (el.currentSrc) {
@@ -80,7 +69,6 @@
     }
     return null;
   }
-
   function generatePreviewUrl(thumb) {
     if (!thumb || typeof thumb !== "string") return null;
     if (thumb.endsWith("/preview.mp4")) return thumb;
@@ -88,7 +76,6 @@
     if (i === -1) return null;
     return thumb.substring(0, i + 1) + "preview.mp4";
   }
-
   function generateIdFromUrl(url, videoId) {
     const input = url || videoId;
     if (!input) return "unknown-" + Date.now();
@@ -106,14 +93,12 @@
     }
     return "jav-" + hash.toString(36);
   }
-
   function deriveVideoIdentifiers(seg) {
     const s = String(seg || "").toLowerCase();
     const m = s.match(/^([a-z0-9]+)-(\d+)/);
     if (!m) return { videoId: null, code: null, episode: null };
     return { videoId: s, code: m[1], episode: m[2] };
   }
-
   function waitForDomReady(
     isReady,
     timeoutMs = MAX_DOM_WAIT_MS,
@@ -135,7 +120,6 @@
       tick();
     });
   }
-
   function isPageLikelyReady() {
     return (
       !!document.querySelector("h1") ||
@@ -145,7 +129,6 @@
         ))
     );
   }
-
   function pickFirst(label, selectors) {
     for (const sel of selectors) {
       let v = null;
@@ -168,7 +151,6 @@
     log(`  no match [${label}]`);
     return null;
   }
-
   function extractVideoMetadata() {
     const t0 = performance.now();
     const url = window.location.href.split("#")[0];
@@ -289,7 +271,6 @@
     );
     return result;
   }
-
   function isMetadataComplete(meta) {
     if (!meta) return false;
     if (
@@ -303,7 +284,6 @@
     log("isMetadataComplete: ✓ complete");
     return true;
   }
-
   function reportIncomplete(metadata) {
     console.warn(`${LOG_PREFIX} ⚠️ Incomplete extraction`);
     console.groupCollapsed(`${LOG_PREFIX} incomplete metadata (expand)`);
@@ -331,13 +311,11 @@
       url: metadata?.url || window.location.href,
     });
   }
-
   function reportCompleted(metadata) {
     log(`✅ Complete extraction for ${metadata.video_id}`);
     logObj("Sending videoCompleted payload", metadata);
     chrome.runtime.sendMessage({ action: "videoCompleted", metadata });
   }
-
   async function run() {
     log("run()", {
       href: window.location.href,
@@ -369,16 +347,12 @@
     }
     reportIncomplete(retry || metadata);
   }
-
-  // ---- Scheduling: fire on load OR immediately if load already happened -----
   let _navTimer = null;
   function scheduleRun(label) {
     log(`scheduleRun via ${label}`);
     clearTimeout(_navTimer);
     _navTimer = setTimeout(run, 500);
   }
-
-  // If document is already past DOMContentLoaded, run ASAP.
   if (
     document.readyState === "complete" ||
     document.readyState === "interactive"
@@ -386,7 +360,6 @@
     log("document already ready — scheduling immediate run");
     setTimeout(() => scheduleRun("readyState-at-inject"), 0);
   }
-
   document.addEventListener(
     "DOMContentLoaded",
     () => scheduleRun("DOMContentLoaded"),
@@ -394,8 +367,6 @@
   );
   window.addEventListener("load", () => scheduleRun("window.load"));
   window.addEventListener("popstate", () => scheduleRun("popstate"));
-
-  // SPA-safe URL watcher
   (function watchPathChanges() {
     let last = window.location.href;
     setInterval(() => {
