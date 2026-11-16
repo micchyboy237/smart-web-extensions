@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-16T21:15:54.169125
+Generated: 2026-11-17T02:18:09.769062
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -109,9 +109,9 @@ CREATE TABLE "public"."videos_title_backup" (
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-100hszg | [0.014488542,0.074044116,-0.031004738,0.038037527,… | https://missav.ws/dm2/en/juc-707-uncensored-leak | juc | 707 | juc-707 | A Married Woman's Embarrassing Job ~Beautiful Ass… | https://fourhoi.com/juc-707-uncensored-leak/cover-… | https://fourhoi.com/juc-707-uncensored-leak/previe… | Nana is living a happy life with her husband. One… | 2011-12-29 11:00:38+08 | 2026-11-12 13:12:30.691758+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak",Shame,"Mature Woman","Various O… |
-| jav-100sork | [0.017019205,0.026341263,-0.048715793,0.03012967,0… | https://missav.ws/dm95/en/wnz-395 | wnz | 395 | wnz-395 | I will lend you a young wife who can do vaginal cu… | https://fourhoi.com/wnz-395/cover-n.jpg | https://fourhoi.com/wnz-395/preview.mp4 | A young wife, Miki, came to an interview to repay… | 2011-12-13 11:00:14+08 | 2026-11-12 13:18:55.477351+08 | 2026-11-16 21:12:37.409468+08 | {Cunnilingus,"Young Wife",Individual,Creampie,Orgy… |
-| jav-10109o | [0.016260069,0.009397987,0.011582558,-0.007827973,… | https://missav.ws/en/sprd-1483-uncensored-leak | sprd | 1483 | sprd-1483 | It's better than my husband ... Chinatsu Asamiya | https://fourhoi.com/sprd-1483-uncensored-leak/cove… | https://fourhoi.com/sprd-1483-uncensored-leak/prev… | He works for the former residence of the cameraman… | 2021-11-11 11:00:30+08 | 2026-11-12 13:24:47.556815+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak","Mature Woman",Wife,Adultery,In… |
+| jav-14efxc | [0.01861933,0.018008813,-0.030650739,-0.012953725,… | https://missav.ws/dm30/en/jul-999-uncensored-leak | jul | 999 | jul-999 | Nude Model NTR Shocking Wife Drowning in Shame Che… | https://fourhoi.com/jul-999-uncensored-leak/cover-… | https://fourhoi.com/jul-999-uncensored-leak/previe… | It's been 15 years since I got married to my wife… | 2022-06-24 12:00:36+08 | 2026-11-16 03:12:42.837731+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak",Shame,"Mature Woman",Wife,Indiv… |
+| jav-ys01ts | [-0.0040968014,0.079799026,-0.016319009,0.01468804… | https://missav.ws/en/nacr-744-english-subtitle | nacr | 744 | nacr-744 | My sex friend loves dick play and whole body licki… | https://fourhoi.com/nacr-744-english-subtitle/cove… | https://fourhoi.com/nacr-744-english-subtitle/prev… | I met my sex friend Mayi for the first time in a w… | 2023-12-20 10:00:00+08 | 2026-11-16 06:33:57.713737+08 | 2026-11-16 21:12:37.409468+08 | {"English subtitle","Big Breasts","Big Ass",Indivi… |
+| jav-14eotvw | [0.015222604,0.037005376,-0.01780895,0.009737986,0… | https://missav.ws/dm68/en/juc-779 | juc | 779 | juc-779 | My Wife Started A Barber Shop...Hitomi Honjo | https://fourhoi.com/juc-779/cover-n.jpg | https://fourhoi.com/juc-779/preview.mp4 | Hitomi, a married woman whose husband was hospital… | 2012-03-24 11:00:20+08 | 2026-11-16 02:18:16.709783+08 | 2026-11-16 21:12:37.409468+08 | {Shame,"Mature Woman","Various Occupations",Prosti… |
 
 ### Table: videos_title_backup (first 3 rows)
 | id | code | episode | title | backed_up_at |
