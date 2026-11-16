@@ -427,11 +427,11 @@
             >
               <i data-lucide="layers" class="h-3 w-3"></i>
 
-              <!-- Presets -->
+              <!-- Preset -->
               <select
                 @change="applyClusterPreset($event.target.value); $event.target.value = ''"
                 class="cursor-pointer rounded bg-ink-900/80 px-1.5 py-0.5 text-[11px] font-medium text-violet-100 focus:outline-none [color-scheme:dark]"
-                title="Preset for min_cluster_size / epsilon"
+                title="Preset for min_cluster_size / epsilon / mmr_lambda"
               >
                 <option value="">Preset…</option>
                 <option value="tight">Tight groups</option>
@@ -440,6 +440,7 @@
               </select>
 
               <span class="text-violet-400/60">|</span>
+
               <label
                 class="flex items-center gap-1"
                 title="min_cluster_size (-s)"
@@ -454,7 +455,9 @@
                   class="w-10 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
                 />
               </label>
+
               <span class="text-violet-400/60">|</span>
+
               <label
                 class="flex items-center gap-1"
                 title="cluster_selection_epsilon (-e)"
@@ -470,10 +473,34 @@
                   class="w-14 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
                 />
               </label>
+
+              <!-- MMR — only meaningful when there's a query to diversify against. -->
+              <span
+                x-show="lastQuery"
+                class="flex items-center gap-1"
+                title="mmr_lambda — 0.5–0.7 balanced; blank = off"
+              >
+                <span class="text-violet-400/60">|</span>
+                <label class="flex items-center gap-1">
+                  mmr
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    placeholder="off"
+                    x-model.number="clusterPrefs.mmrLambda"
+                    @change="applyClusterPrefs()"
+                    class="w-12 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 placeholder:text-violet-400/40 focus:outline-none"
+                  />
+                </label>
+              </span>
+
               <span class="text-violet-400/60">|</span>
+
               <label
                 class="flex items-center gap-1"
-                title="cluster_candidate_limit — empty = server cap"
+                title="cluster_candidate_limit — blank = server cap"
               >
                 pool
                 <input
@@ -488,12 +515,8 @@
                 />
               </label>
 
-              <!-- Candidate source — only meaningful when there's no query -->
-              <span
-                x-show="!lastQuery"
-                class="flex items-center gap-1"
-                title="Used only when the query is blank"
-              >
+              <!-- candidate_source — only shown when there's no query -->
+              <span x-show="!lastQuery" class="flex items-center gap-1">
                 <span class="text-violet-400/60">|</span>
                 <label class="flex items-center gap-1">
                   pool
