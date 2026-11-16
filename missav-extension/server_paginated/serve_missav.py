@@ -20,6 +20,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from contextlib import asynccontextmanager
@@ -52,6 +53,29 @@ DB_CONNINFO = "dbname=missav_db1 user=jethroestrada host=localhost port=5432"
 ITERATIVE_SCAN_MODE: Optional[str] = "strict_order"
 MAX_SCAN_TUPLES = 20000
 INGEST_MAX_TOKENS = 512
+
+# --------------------------------------------------------------------------- #
+# /search_clustered caps.
+#
+# `cluster_candidate_limit` is optional in the request. When omitted, the
+# server uses one of these caps depending on whether a query was provided:
+#
+#   * Query mode: the pool is top-N by cosine distance — the query already
+#     narrows the candidates semantically, so a large cap (default 5000) is
+#     both useful and fast on the HNSW index.
+#
+#   * Query-less mode: the pool is a recent/random sample — a large cap
+#     gives the clusterer more structure to work with, but "recent 50k" is
+#     dominated by the newest ingestion batch and "random 50k" is a full
+#     seq scan. 5000 is a stable, bounded default.
+#
+# Both caps are env-overridable so an operator can tune per deployment
+# without touching code. Explicit `cluster_candidate_limit` values are
+# clamped to the relevant cap (never exceed it), but a client may ask for
+# *fewer* candidates (e.g. for latency).
+# --------------------------------------------------------------------------- #
+CLUSTER_CANDIDATE_CAP_QUERY = int(os.getenv("CLUSTER_CANDIDATE_CAP_QUERY", "5000"))
+CLUSTER_CANDIDATE_CAP_BROWSE = int(os.getenv("CLUSTER_CANDIDATE_CAP_BROWSE", "5000"))
 
 _PREFIX_RE = re.compile(r"^\s*([A-Za-z0-9]+)-\d+\s*[:\-\u2013\u2014]?\s*")
 
@@ -280,6 +304,12 @@ class IngestResponse(BaseModel):
 # same as cluster_utils.main()) picks k dynamically via HDBSCAN or Spectral
 # based on `min_cluster_size` and `cluster_selection_epsilon`, which map 1:1
 # to the CLI's `-s / --min-cluster-size` and `-e / --epsilon` flags.
+#
+# `cluster_candidate_limit` is ALSO optional. When omitted (the recommended
+# usage), the server uses CLUSTER_CANDIDATE_CAP_QUERY or
+# CLUSTER_CANDIDATE_CAP_BROWSE depending on whether a query was provided.
+# Explicit values are clamped to that cap so a client can request fewer
+# candidates (for latency) but never more than the deployment allows.
 # --------------------------------------------------------------------------- #
 class ClusteredSearchRequest(BaseModel):
     query: Optional[str] = Field(
@@ -311,11 +341,18 @@ class ClusteredSearchRequest(BaseModel):
     )
 
     # Candidate fetching.
-    cluster_candidate_limit: int = Field(
-        100,
+    cluster_candidate_limit: Optional[int] = Field(
+        None,
         ge=10,
-        le=500,
-        description="How many candidate rows to fetch before clustering.",
+        le=50_000,
+        description=(
+            "How many candidate rows to fetch before clustering. "
+            "When omitted (recommended), the server uses its configured cap "
+            "(CLUSTER_CANDIDATE_CAP_QUERY for query mode, "
+            "CLUSTER_CANDIDATE_CAP_BROWSE for query-less mode). "
+            "Explicit values are clamped to that cap — a client can request "
+            "fewer candidates for latency but never more than the cap."
+        ),
     )
     candidate_source: Literal["recent", "random"] = Field(
         "recent",
@@ -394,6 +431,14 @@ class ClusteredSearchResponse(BaseModel):
 
     query: str = Field("", description="Echo of the request query.")
     total_results: int = Field(..., description="Candidates fetched before clustering.")
+    candidate_limit: int = Field(
+        ...,
+        description=(
+            "Effective candidate limit used for this request. Equals the "
+            "request's `cluster_candidate_limit` when provided (after "
+            "clamping), otherwise the server-side cap for the active mode."
+        ),
+    )
     n_clusters: int = Field(
         ..., description="Non-noise clusters returned (summary.n_clusters)."
     )
@@ -707,8 +752,28 @@ def search(req: SearchRequest) -> SearchResponse:
 # probabilities, centroids, consistency scores, silhouettes, and per-item
 # ordering inside a cluster — comes from cluster_utils unchanged.
 # --------------------------------------------------------------------------- #
-def _fetch_clustered_candidates(req: ClusteredSearchRequest) -> List[dict]:
-    params: dict = {"limit": req.cluster_candidate_limit}
+def _resolve_cluster_candidate_limit(req: ClusteredSearchRequest) -> int:
+    """
+    Resolve the effective candidate limit for /search_clustered.
+
+    Rules:
+      * Query mode  → hard cap = CLUSTER_CANDIDATE_CAP_QUERY.
+      * No query    → hard cap = CLUSTER_CANDIDATE_CAP_BROWSE.
+      * If the request omits `cluster_candidate_limit`, use the cap.
+      * If it sets one, clamp it to [10, cap] (never exceed the cap).
+    """
+    cap = (
+        CLUSTER_CANDIDATE_CAP_QUERY
+        if req.query is not None
+        else CLUSTER_CANDIDATE_CAP_BROWSE
+    )
+    if req.cluster_candidate_limit is None:
+        return cap
+    return max(10, min(req.cluster_candidate_limit, cap))
+
+
+def _fetch_clustered_candidates(req: ClusteredSearchRequest, limit: int) -> List[dict]:
+    params: dict = {"limit": limit}
     conds: List[str] = ["embedding IS NOT NULL"]
     _apply_filters(req, params, conds)
 
@@ -761,9 +826,12 @@ def _fetch_clustered_candidates(req: ClusteredSearchRequest) -> List[dict]:
 def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
     t0 = time.perf_counter()
 
+    # ---- 0. Resolve the effective candidate limit (request or server cap) ----
+    limit = _resolve_cluster_candidate_limit(req)
+
     # ---- 1. Fetch candidates ----
     try:
-        rows = _fetch_clustered_candidates(req)
+        rows = _fetch_clustered_candidates(req, limit)
     except Exception as e:
         logger.error("search_clustered DB error: %s", e)
         raise HTTPException(500, f"Search failed: {e}")
@@ -772,6 +840,7 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
         return ClusteredSearchResponse(
             query=req.query or "",
             total_results=0,
+            candidate_limit=limit,
             n_clusters=0,
             n_noise=0,
             total_misplaced_items=0,
@@ -872,8 +941,9 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
 
     took = (time.perf_counter() - t0) * 1000
     logger.info(
-        "search_clustered ok query=%s rows=%d k=%d noise=%d took=%.1fms",
+        "search_clustered ok query=%s limit=%d rows=%d k=%d noise=%d took=%.1fms",
         bool(req.query),
+        limit,
         len(rows),
         summary["summary"]["n_clusters"],
         summary["summary"]["n_noise"],
@@ -882,6 +952,7 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
     return ClusteredSearchResponse(
         query=req.query or "",
         total_results=len(rows),
+        candidate_limit=limit,
         n_clusters=summary["summary"]["n_clusters"],
         n_noise=summary["summary"]["n_noise"],
         total_misplaced_items=summary["summary"]["total_misplaced_items"],

@@ -473,17 +473,18 @@
               <span class="text-violet-400/60">|</span>
               <label
                 class="flex items-center gap-1"
-                title="cluster_candidate_limit"
+                title="cluster_candidate_limit — empty = server cap"
               >
                 pool
                 <input
                   type="number"
                   min="10"
-                  max="500"
-                  step="10"
+                  max="50000"
+                  step="100"
+                  placeholder="auto"
                   x-model.number="clusterPrefs.candidateLimit"
                   @change="applyClusterPrefs()"
-                  class="w-12 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
+                  class="w-16 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 placeholder:text-violet-400/40 focus:outline-none"
                 />
               </label>
 

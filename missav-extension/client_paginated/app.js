@@ -2,9 +2,10 @@
 function app() {
   const API = "http://localhost:9001";
 
-  // Cluster quality tiers (client-side display mapping — server sends raw
-  // numbers only). The "core" thresholds are the only ones the client decides;
-  // every other metric is read verbatim from /search_clustered.
+  // Cluster quality tiers — client-side display mapping only. The "core"
+  // thresholds are the only ones the client invents; every other number
+  // (probability, silhouette, consistency_score, etc.) is read verbatim
+  // from /search_clustered.
   const CLUSTER_TIER_THRESHOLDS = {
     green: { consistency: 0.75, centroidSim: 0.7 },
     amber: { consistency: 0.55, centroidSim: 0.6 },
@@ -53,14 +54,19 @@ function app() {
       error: null,
       _inflight: false,
     },
+
     // Server-side knobs passed verbatim to /search_clustered.
+    //
+    // `candidateLimit: null` means "let the server decide" — the server uses
+    // CLUSTER_CANDIDATE_CAP_QUERY or CLUSTER_CANDIDATE_CAP_BROWSE.
     // There is no n_clusters — the server picks k via cluster_utils.
     clusterPrefs: {
-      candidateLimit: 100, // cluster_candidate_limit
+      candidateLimit: null, // null = "auto" (server cap)
       minClusterSize: 2, // min_cluster_size (-s)
       epsilon: 0.25, // cluster_selection_epsilon (-e)
       candidateSource: "recent", // used only when query is null
     },
+
     // Client-only: visibility prefs per cluster.
     clusterUi: {}, // { [cluster_id]: { coreOnly, hidden } }
 
@@ -132,6 +138,7 @@ function app() {
     },
 
     // ── URL sync ──
+
     hydrateFromURL() {
       const p = new URLSearchParams(location.search);
       const urlMode = p.get("mode");
@@ -139,30 +146,59 @@ function app() {
       this.mode = urlMode || (hasQ ? "search" : "browse");
       this.query = p.get("q") || "";
       this.lastQuery = this.query;
+
       this.filters.code = p.get("code") || "";
       this.filters.from = p.get("from") || "";
       this.filters.to = p.get("to") || "";
       this.filters.genresMode = p.get("gmode") || "any";
       this.filters.genres = (p.get("genres") || "").split(",").filter(Boolean);
+
       const cf = p.get("cf");
       this.filters.completionFilter =
         cf === "complete" || cf === "incomplete" ? cf : "all";
+
       this.similarOf = p.get("sim") || null;
 
-      // Clustered knobs — mirror the server's defaults when absent.
+      // ── Clustered knobs ──
+      //
+      // URL contract:
+      //   cl     → cluster_candidate_limit. Omitted or empty ⇒ "auto" (null).
+      //   msize  → min_cluster_size.        Omitted ⇒ default (2).
+      //   eps    → cluster_selection_epsilon. Omitted ⇒ default (0.25).
+      //   src    → candidate_source.        Omitted ⇒ "recent".
+      //
+      // "auto" is encoded as ABSENCE of `cl` (not as `cl=`), so a shared
+      // link without the param reproduces "use the server cap". An empty
+      // `cl=` value is also treated as auto.
       if (this.mode === "clustered") {
-        const cl = parseInt(p.get("cl") || "", 10);
-        if (Number.isFinite(cl))
-          this.clusterPrefs.candidateLimit = Math.min(500, Math.max(10, cl));
-        const ms = parseInt(p.get("msize") || "", 10);
-        if (Number.isFinite(ms))
-          this.clusterPrefs.minClusterSize = Math.min(20, Math.max(2, ms));
-        const eps = parseFloat(p.get("eps") || "");
-        if (Number.isFinite(eps))
-          this.clusterPrefs.epsilon = Math.min(1, Math.max(0, eps));
+        const clRaw = p.get("cl");
+        if (clRaw == null || clRaw === "") {
+          this.clusterPrefs.candidateLimit = null;
+        } else {
+          const cl = parseInt(clRaw, 10);
+          this.clusterPrefs.candidateLimit = Number.isFinite(cl) ? cl : null;
+        }
+
+        const msRaw = p.get("msize");
+        if (msRaw != null && msRaw !== "") {
+          const ms = parseInt(msRaw, 10);
+          if (Number.isFinite(ms)) {
+            this.clusterPrefs.minClusterSize = Math.min(20, Math.max(2, ms));
+          }
+        }
+
+        const epsRaw = p.get("eps");
+        if (epsRaw != null && epsRaw !== "") {
+          const eps = parseFloat(epsRaw);
+          if (Number.isFinite(eps)) {
+            this.clusterPrefs.epsilon = Math.min(1, Math.max(0, eps));
+          }
+        }
+
         const src = p.get("src");
-        if (src === "random" || src === "recent")
+        if (src === "random" || src === "recent") {
           this.clusterPrefs.candidateSource = src;
+        }
       }
 
       const urlSort = p.get("sort");
@@ -180,15 +216,27 @@ function app() {
     syncURL() {
       const p = new URLSearchParams();
       if (this.mode === "search" && this.lastQuery) p.set("q", this.lastQuery);
+
       if (this.mode === "clustered") {
         p.set("mode", "clustered");
         if (this.lastQuery) p.set("q", this.lastQuery);
-        p.set("cl", String(this.clusterPrefs.candidateLimit));
-        p.set("msize", String(this.clusterPrefs.minClusterSize));
-        p.set("eps", String(this.clusterPrefs.epsilon));
-        if (this.clusterPrefs.candidateSource !== "recent")
+
+        // `cl` is only serialized when the user has typed a concrete number.
+        // `null` (auto) is encoded by omitting the param entirely.
+        if (Number.isFinite(this.clusterPrefs.candidateLimit)) {
+          p.set("cl", String(this.clusterPrefs.candidateLimit));
+        }
+        if (this.clusterPrefs.minClusterSize !== 2) {
+          p.set("msize", String(this.clusterPrefs.minClusterSize));
+        }
+        if (this.clusterPrefs.epsilon !== 0.25) {
+          p.set("eps", String(this.clusterPrefs.epsilon));
+        }
+        if (this.clusterPrefs.candidateSource !== "recent") {
           p.set("src", this.clusterPrefs.candidateSource);
+        }
       }
+
       if (this.mode === "browse") p.set("mode", "browse");
       if (this.mode === "similar" && this.similarOf) {
         p.set("mode", "similar");
@@ -211,18 +259,25 @@ function app() {
     },
 
     // ── actions ──
+    onQueryInput() {
+      clearTimeout(this._deb);
+      this._deb = setTimeout(() => {
+        if (this.mode === "clustered") {
+          this.lastQuery = this.query.trim();
+          this.syncURL();
+          this.fetchClustered();
+          return;
+        }
+        if (this.query.trim()) {
+          this.doSearch();
+        } else if (this.mode === "search" || this.mode === "similar") {
+          this.doBrowse();
+        }
+      }, 400);
+    },
+
     doSearch() {
       const q = this.query.trim();
-      // When "Group by topic" is active, submitting a search must not
-      // switch away from clustered mode. Re-run the clustered fetch with
-      // the current query (empty query = browse-by-topic).
-      if (this.mode === "clustered") {
-        clearTimeout(this._deb);
-        this.lastQuery = q;
-        this.syncURL();
-        this.fetchClustered();
-        return;
-      }
       if (!q) {
         if (this.mode !== "browse") this.doBrowse();
         return;
@@ -459,6 +514,16 @@ function app() {
         return this.filters.genres;
       };
       const q = this.lastQuery?.trim() || null;
+
+      // Auto mode: send `null` so the server uses its cap. Sending `100`
+      // (or any other client-invented number) would silently override the
+      // server's much larger default and shrink the pool.
+      const limit =
+        Number.isFinite(this.clusterPrefs.candidateLimit) &&
+        this.clusterPrefs.candidateLimit >= 10
+          ? this.clusterPrefs.candidateLimit
+          : null;
+
       return {
         // Query is optional; server branches on presence.
         query: q,
@@ -466,7 +531,7 @@ function app() {
         // cluster_utils knobs — no n_clusters, no include_noise.
         min_cluster_size: this.clusterPrefs.minClusterSize,
         cluster_selection_epsilon: this.clusterPrefs.epsilon,
-        cluster_candidate_limit: this.clusterPrefs.candidateLimit,
+        cluster_candidate_limit: limit, // null → server cap
         candidate_source: this.clusterPrefs.candidateSource,
 
         // Shared filters.
