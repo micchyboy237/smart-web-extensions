@@ -1,7 +1,8 @@
 # Video Search API — Usage
 
 FastAPI server backed by Postgres + pgvector. All semantic search, similarity,
-hybrid retrieval, and dynamic clustering is served from a single process.
+hybrid retrieval, dynamic clustering, and shuffle-discovery is served from a
+single process.
 
 - **Base URL:** `http://localhost:9001`
 - **Content type:** `application/json` (POST bodies), query strings (GET)
@@ -12,6 +13,7 @@ hybrid retrieval, and dynamic clustering is served from a single process.
 ```
 POST  /search
 POST  /search_clustered
+POST  /discover
 POST  /similar
 POST  /hybrid
 GET   /browse
@@ -27,7 +29,10 @@ POST  /ingest
 
 ## Conventions
 
-### Filters (shared by `/search`, `/search_clustered`, `/similar`, `/hybrid`, `/browse`, `/videos`)
+### Filters (shared by `/search`, `/search_clustered`, `/discover`, `/hybrid`, `/browse`, `/videos`)
+
+> `/similar` supports only `genre`, `genres_mode`, `code`, and `completion_filter`.
+> Date-range filters are **not** part of the `/similar` request model.
 
 | Field                                   | Type                                  | Notes                                                 |
 | --------------------------------------- | ------------------------------------- | ----------------------------------------------------- |
@@ -39,23 +44,24 @@ POST  /ingest
 
 ### Pagination
 
-`/search`, `/similar`, `/browse` use a **cursor** or **offset**. The cursor is
-opaque — round-trip `next_cursor` verbatim. Cursors are bound to the request
-filters; changing them invalidates the cursor (`400 Cursor does not match filters`).
-
-`/search_clustered` is **not paginated**. It fetches up to
-`cluster_candidate_limit` rows and returns the full grouped result in one
-response. When `diversify_items=true`, use `item_seed` (with
-`item_shuffle=true`) to page a cluster's contents instead.
+- **Cursor** — `/search`, `/similar`. Cursor is opaque — round-trip `next_cursor`
+  verbatim. Cursors are bound to the request filters; changing them invalidates
+  the cursor (`400 Cursor does not match filters`).
+- **Offset** — `/browse`, `/videos`.
+- **Not paginated** — `/search_clustered` (single-shot grouping), `/hybrid`
+  (RRF shortlist), `/discover` (use `seed` to vary the batch), `/facets`,
+  `/facets/codes`, `/ingest`.
 
 ### Sort / order
 
-| Endpoint              | `sort`                                     | `order`       |
-| --------------------- | ------------------------------------------ | ------------- |
-| `/search`, `/similar` | `similarity \| release_date \| created_at` | `asc \| desc` |
-| `/hybrid`             | `release_date \| created_at`               | `asc \| desc` |
-| `/browse`             | `release_date \| created_at`               | `asc \| desc` |
-| `/search_clustered`   | — (order is cohesion-weighted server-side) | —             |
+| Endpoint              | `sort`                                     | `order`       | Notes                                                 |
+| --------------------- | ------------------------------------------ | ------------- | ----------------------------------------------------- |
+| `/search`, `/similar` | `similarity \| release_date \| created_at` | `asc \| desc` |                                                       |
+| `/hybrid`             | `release_date \| created_at`               | `asc \| desc` | Accepted but **ignored** — output is RRF score order. |
+| `/browse`             | `release_date \| created_at`               | `asc \| desc` |                                                       |
+| `/search_clustered`   | —                                          | —             | Order is cohesion-weighted server-side.               |
+| `/discover`           | —                                          | —             | Shuffle/MMR order server-side.                        |
+| `/videos`             | —                                          | —             | Always `id ASC`.                                      |
 
 ### The `VideoItem` shape
 
@@ -73,10 +79,8 @@ Returned by every search-ish endpoint.
   "thumbnail": "https://fourhoi.com/.../cover-n.jpg",
   "release_date": "2011-12-29T11:00:38+08:00",
   "genres": ["Wife", "Mature Woman"],
-
   // query-dependent — null when the endpoint has no query
   "similarity": 0.8123,
-
   // /search_clustered only — null elsewhere
   "probability": 0.93,
   "silhouette": 0.71,
@@ -89,7 +93,7 @@ Returned by every search-ish endpoint.
 | `similarity`           | `1 - cosine_distance` to the query vector. `null` on `/browse`, `/hybrid`, and on `/search_clustered` without a query. |
 | `probability`          | Cluster membership confidence in `[0,1]` — `cluster_utils.probabilities`.                                              |
 | `silhouette`           | Per-item silhouette in `[-1,1]` — negative means "probably in the wrong cluster".                                      |
-| `distance_to_centroid` | `1 - cosine(item, centroid)` — `0` = perfectly typical member.                                                         |
+| `distance_to_centroid` | Cosine distance to cluster centroid — `0` = perfectly typical member.                                                  |
 
 ---
 
@@ -136,12 +140,66 @@ Semantic search with cursor pagination.
 }
 ```
 
-### Example
+### Examples
+
+**Basic query:**
 
 ```bash
 curl -s http://localhost:9001/search -X POST \
   -H 'Content-Type: application/json' \
   -d '{"query":"lonely wife, rainy night","limit":20}' | jq
+```
+
+**Full filter stack (`genre` + `genres_mode: "all"` + `min_similarity` + sort):**
+
+```bash
+curl -s http://localhost:9001/search -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query":"lonely wife, rainy night",
+    "limit":20,
+    "genre":["Wife","Drama"],
+    "genres_mode":"all",
+    "code":"juc",
+    "min_release_date":"2000-01-01T00:00:00Z",
+    "max_release_date":"2024-12-31T00:00:00Z",
+    "min_similarity":0.3,
+    "sort":"release_date",
+    "order":"asc",
+    "completion_filter":"complete"
+  }' | jq
+```
+
+**Sort by `created_at` desc:**
+
+```bash
+curl -s http://localhost:9001/search -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"office romance","sort":"created_at","order":"desc","limit":10}' | jq
+```
+
+**Cursor pagination round-trip:**
+
+```bash
+# Page 1 — capture next_cursor
+NEXT=$(curl -s http://localhost:9001/search -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"lonely wife","limit":20}' | jq -r '.next_cursor')
+
+# Page 2 — pass it back
+curl -s http://localhost:9001/search -X POST \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"lonely wife\",\"limit\":20,\"cursor\":\"$NEXT\"}" | jq
+```
+
+**Cursor mismatch → 400:**
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  http://localhost:9001/search -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"a different query","cursor":"eyJrIjoiMC4xLCJpIjoieCIsImYiOiJkZWFkYmVlZiJ9"}'
+# → 400
 ```
 
 ---
@@ -161,26 +219,9 @@ Noise is **first-class**: items the clusterer labels `-1` come back as a
 `"Noise/Outliers"` cluster (`is_noise: true`). The client decides whether to
 render it, dim it, or hide it.
 
-### Per-cluster item diversification (opt-in)
-
-By default every cluster returns **all** its members. Set
-`diversify_items: true` to run MMR inside each cluster (reusing the candidate
-embeddings already fetched — no re-embedding). Combine with
-`items_per_cluster` to cap the returned count, and with `item_shuffle` +
-`item_seed` to get a different "page" of each cluster on every call.
-
-| Flag                | Default | Effect                                                                                                |
-| ------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
-| `diversify_items`   | `false` | Enables per-cluster MMR. `ClusterItem.size` then reflects returned count; `full_size` keeps original. |
-| `items_per_cluster` | `null`  | Cap on items returned per cluster. Requires `diversify_items=true`. `1..100`.                         |
-| `item_diversity`    | `0.6`   | MMR trade-off: `1.0` = max diversity, `0.0` = pure relevance.                                         |
-| `diversify_noise`   | `false` | Also diversify the `Noise/Outliers` bucket. Off by default — noise is low-cohesion by definition.     |
-| `item_shuffle`      | `false` | Use weighted sample + MMR (`shuffle_and_diversify`); `item_seed` then varies the result.              |
-| `item_seed`         | time    | RNG seed; only used when `item_shuffle=true`. Change it for a new "page" per cluster.                 |
-
-Ranking uses `full_size` (unaffected by the cap), so cluster ordering is stable
-across `items_per_cluster` values. `centroid_similarity` is computed from the
-**full** membership before trimming.
+**Every cluster returns all its members.** The endpoint performs no
+per-cluster diversification or item-level paging — for an endless-diversity
+feed, use `POST /discover` instead.
 
 ### Request
 
@@ -191,15 +232,6 @@ across `items_per_cluster` values. `centroid_similarity` is computed from the
   "cluster_selection_epsilon": 0.25, // HDBSCAN -e
   "cluster_candidate_limit": 100, // rows fetched before clustering
   "candidate_source": "recent", // used only when query is null
-
-  // NEW: per-cluster item diversification (opt-in)
-  "diversify_items": false,
-  "items_per_cluster": null,
-  "item_diversity": 0.6,
-  "diversify_noise": false,
-  "item_shuffle": false,
-  "item_seed": 1699999999,
-
   // shared filters
   "genre": null,
   "genres_mode": "any",
@@ -216,15 +248,22 @@ across `items_per_cluster` values. `centroid_similarity` is computed from the
 | `query`                     | —        | `null`     | When omitted, `candidate_source` decides the pool and `similarity` is `null` on every item.                           |
 | `min_cluster_size`          | —        | `2`        | `2..20`. Raise to get fewer/tighter groups; lower to get more/smaller groups. Maps to `-s` in `cluster_utils.main()`. |
 | `cluster_selection_epsilon` | —        | `0.25`     | `0..1`. Lower = stricter (more noise, tighter groups). Maps to `-e`.                                                  |
-| `cluster_candidate_limit`   | —        | `100`      | `10..500`. Pool size fetched from Postgres before clustering.                                                         |
+| `cluster_candidate_limit`   | —        | `null`     | `10..50000`. When omitted the server uses its configured cap (see below). Explicit values are clamped to the cap.     |
 | `candidate_source`          | —        | `"recent"` | `"recent"` (newest release / created desc) or `"random"`. Ignored when `query` is present.                            |
 | `min_similarity`            | —        | `null`     | Rejected (`422`) when `query` is `null`.                                                                              |
-| `diversify_items`           | —        | `false`    | Enables per-cluster MMR. See "Per-cluster item diversification" above.                                                |
-| `items_per_cluster`         | —        | `null`     | Cap on returned items per cluster. Requires `diversify_items=true`. `1..100`.                                         |
-| `item_diversity`            | —        | `0.6`      | MMR diversity weight `[0,1]`. Only used when `diversify_items=true`.                                                  |
-| `diversify_noise`           | —        | `false`    | Also diversify the noise bucket.                                                                                      |
-| `item_shuffle`              | —        | `false`    | Use shuffle+MMR per cluster; makes `item_seed` effective. Requires `diversify_items=true`.                            |
-| `item_seed`                 | —        | time-based | RNG seed for per-cluster shuffle. Only used when `item_shuffle=true`.                                                 |
+
+#### Candidate cap (server-side)
+
+The effective `cluster_candidate_limit` is `min(requested_or_null, cap)`, where
+the cap depends on mode:
+
+| Env var                        | Default | Used when          |
+| ------------------------------ | ------- | ------------------ |
+| `CLUSTER_CANDIDATE_CAP_QUERY`  | `5000`  | `query` is present |
+| `CLUSTER_CANDIDATE_CAP_BROWSE` | `5000`  | `query` is absent  |
+
+When `cluster_candidate_limit` is omitted, the cap itself is used. The effective
+value is echoed back as `candidate_limit` in the response.
 
 ### Response
 
@@ -232,6 +271,7 @@ across `items_per_cluster` values. `centroid_similarity` is computed from the
 {
   "query": "mother and son",
   "total_results": 100, // rows fetched before clustering
+  "candidate_limit": 100, // effective limit used (post-clamp)
   "n_clusters": 4, // summary.n_clusters (non-noise only)
   "n_noise": 6, // summary.n_noise
   "total_misplaced_items": 11, // summary.total_misplaced_items
@@ -239,29 +279,25 @@ across `items_per_cluster` values. `centroid_similarity` is computed from the
     {
       "cluster_id": 2,
       "label": null, // "Noise/Outliers" for the -1 bucket
-      "size": 10, // items RETURNED after per-cluster diversification
-      "full_size": 31, // original membership count (== size when diversify_items=false)
-      "centroid_similarity": 0.71, // mean query-similarity over FULL membership; null without query
+      "size": 10, // number of members in this cluster
+      "centroid_similarity": 0.71, // mean query-similarity; null without query
       "consistency_score": 0.84, // cluster_utils: L2 norm of mean unit embedding
       "avg_silhouette": 0.42, // cluster_utils: mean per-item silhouette
       "misplaced_items_count": 2, // members with negative silhouette
       "is_noise": false,
-      "diversified": true, // true when per-cluster MMR ran on this cluster
       "items": [
-        /* VideoItem[] — returned count is capped when items_per_cluster is set */
+        /* VideoItem[] — the cluster's full membership */
       ],
     },
     {
       "cluster_id": -1,
       "label": "Noise/Outliers",
       "size": 6,
-      "full_size": 6,
       "centroid_similarity": 0.19,
       "consistency_score": 0.0,
       "avg_silhouette": 0.0,
       "misplaced_items_count": 0,
       "is_noise": true,
-      "diversified": false, // noise bucket untouched unless diversify_noise=true
       "items": [
         /* VideoItem[] */
       ],
@@ -277,28 +313,22 @@ Mirrors the module docstring of `cluster_utils`.
 
 | Field                   | Range    | Meaning                                                                                                                     |
 | ----------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `size`                  | `≥0`     | Number of items **returned** in `items` (post-diversification).                                                             |
-| `full_size`             | `≥0`     | Original cluster membership count. Equals `size` when `diversify_items=false`. Use this for ranking / stats.                |
+| `size`                  | `≥0`     | Number of members returned in `items`.                                                                                      |
 | `consistency_score`     | `[0,1]`  | L2 norm of the cluster's mean unit embedding. `1` = all members point the same direction (tight); `0` = orthogonal (loose). |
 | `avg_silhouette`        | `[-1,1]` | Mean per-item silhouette. `>0` = members are better explained by their own cluster than by neighbors.                       |
 | `misplaced_items_count` | `≥0`     | Members with **negative** silhouette — likely mis-assigned.                                                                 |
-| `centroid_similarity`   | `[0,1]`  | Mean of members' `similarity` to the query, over full membership. Only meaningful when `query` is present.                  |
+| `centroid_similarity`   | `[0,1]`  | Mean of members' `similarity` to the query. Only meaningful when `query` is present.                                        |
 | `is_noise`              | `bool`   | `true` only for the `-1` bucket.                                                                                            |
-| `diversified`           | `bool`   | `true` when per-cluster MMR ran on this cluster's items.                                                                    |
 
 ### Cluster ordering
 
-Clusters are sorted server-side by **`consistency_score × full_size` descending**,
+Clusters are sorted server-side by **`consistency_score × size` descending**,
 with the noise bucket always last. The intent is "tight and substantive first".
-Because `full_size` (not the possibly-capped `size`) is used, the ordering is
-identical whether or not `items_per_cluster` is set — clients can toggle the
-cap without the cluster list reshuffling. Clients should preserve this order.
+Clients should preserve this order.
 
 Item order inside a cluster is whatever `cluster_utils.get_detailed_analysis()`
 produced — already sorted by `(silhouette, probability)` **descending**, so
-representative members come first and fringe members come last. When
-`diversify_items=true`, the returned subset preserves that order (the set is
-MMR-selected, the sort is unchanged).
+representative members come first and fringe members come last.
 
 ### Cluster quality tiers (client helper)
 
@@ -341,78 +371,175 @@ curl -s http://localhost:9001/search_clustered -X POST \
   -d '{"candidate_source":"random","cluster_candidate_limit":100}' | jq
 ```
 
-**Diversified page — cap each cluster to 10 diverse representatives:**
+**Query mode with shared filters (`genre` + `genres_mode: "all"` + `min_similarity`):**
 
 ```bash
 curl -s http://localhost:9001/search_clustered -X POST \
   -H 'Content-Type: application/json' \
   -d '{
-    "query": "office romance",
-    "cluster_candidate_limit": 200,
-    "diversify_items": true,
-    "items_per_cluster": 10,
-    "item_diversity": 0.7
-  }' | jq '[.clusters[] | {id:.cluster_id, size, full_size, diversified}]'
-```
-
-**Endless per-cluster browse — bump `item_seed` for a new page:**
-
-```bash
-for seed in 1 2 3; do
-  curl -s http://localhost:9001/search_clustered -X POST \
-    -H 'Content-Type: application/json' \
-    -d "{
-      \"candidate_source\":\"recent\",
-      \"cluster_candidate_limit\":200,
-      \"diversify_items\":true,
-      \"items_per_cluster\":8,
-      \"item_diversity\":0.8,
-      \"item_shuffle\":true,
-      \"item_seed\":$seed
-    }" | jq --arg s "$seed" '{seed:$s, ids:[.clusters[0].items[].id]}'
-done
-```
-
-**Include the noise bucket in diversification:**
-
-```bash
-curl -s http://localhost:9001/search_clustered -X POST \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "anything",
-    "diversify_items": true,
-    "items_per_cluster": 5,
-    "diversify_noise": true
+    "query":"office romance",
+    "genre":["Wife","Drama"],
+    "genres_mode":"all",
+    "code":"juc",
+    "min_release_date":"2010-01-01T00:00:00Z",
+    "max_release_date":"2024-12-31T00:00:00Z",
+    "min_similarity":0.35,
+    "completion_filter":"complete",
+    "cluster_candidate_limit":200
   }' | jq
+```
+
+**Confirm the candidate cap is applied (requesting above the 5000 default):**
+
+```bash
+curl -s http://localhost:9001/search_clustered -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"anything","cluster_candidate_limit":99999}' \
+  | jq '{candidate_limit, total_results}'
+# → candidate_limit == 5000 (capped), total_results == 5000 (if data allows)
+```
+
+**`min_similarity` without query → 422:**
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  http://localhost:9001/search_clustered -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"min_similarity":0.3}'
+# → 422
+```
+
+**`cluster_candidate_limit` below 10 → 422:**
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  http://localhost:9001/search_clustered -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"x","cluster_candidate_limit":5}'
+# → 422
 ```
 
 **Tuning recipes**
 
-| Goal                       | Knob                                         |
-| -------------------------- | -------------------------------------------- |
-| Fewer, larger groups       | Increase `min_cluster_size`                  |
-| More, smaller groups       | Decrease `min_cluster_size`                  |
-| Tighter groups, more noise | Decrease `cluster_selection_epsilon`         |
-| Looser groups, less noise  | Increase `cluster_selection_epsilon`         |
-| More candidates to cluster | Increase `cluster_candidate_limit`           |
-| Diverse reps per cluster   | `diversify_items=true` + `items_per_cluster` |
-| More diversity per cluster | Increase `item_diversity` toward `1.0`       |
-| Vary cluster contents      | `item_shuffle=true` + change `item_seed`     |
+| Goal                       | Knob                                 |
+| -------------------------- | ------------------------------------ |
+| Fewer, larger groups       | Increase `min_cluster_size`          |
+| More, smaller groups       | Decrease `min_cluster_size`          |
+| Tighter groups, more noise | Decrease `cluster_selection_epsilon` |
+| Looser groups, less noise  | Increase `cluster_selection_epsilon` |
+| More candidates to cluster | Increase `cluster_candidate_limit`   |
 
 ### Errors
 
-| Status | When                                                                                              |
-| ------ | ------------------------------------------------------------------------------------------------- |
-| `422`  | `min_similarity` set while `query` is `null` (validation error).                                  |
-| `422`  | `items_per_cluster` set while `diversify_items=false`.                                            |
-| `422`  | `item_shuffle=true` while `diversify_items=false`.                                                |
-| `422`  | Any field fails its constraints (e.g. `cluster_candidate_limit < 10`, `items_per_cluster > 100`). |
-| `500`  | DB error while fetching candidates.                                                               |
+| Status | When                                                                                |
+| ------ | ----------------------------------------------------------------------------------- |
+| `422`  | `min_similarity` set while `query` is `null` (validation error).                    |
+| `422`  | Any field fails its constraints (e.g. `cluster_candidate_limit < 10` or `> 50000`). |
+| `500`  | DB error while fetching candidates.                                                 |
 
-> Per-cluster MMR failures are **non-fatal**: if `diversify_results` raises on a
-> single cluster, that cluster falls back to its full membership with
-> `diversified=false`; other clusters are unaffected, and the request returns
-> `200`.
+---
+
+## `POST /discover`
+
+Shuffle / "endless browse" feed. Fetches a wider candidate pool, then applies
+weighted sampling + MMR (`jet.adapters.llama_cpp.diversity_utils.shuffle_and_diversify`)
+to return a diverse batch.
+
+- If `query` is provided: candidates come from vector search, biased toward the
+  topic (`similarity` populated on each item).
+- If `query` is omitted: candidates come from a `random()` ordering, and
+  `similarity` is `null` on every item.
+- **Not cursor-paginated.** Change `seed` to get a different "page".
+
+### Request
+
+```jsonc
+{
+  "query": "rainy night", // optional
+  "limit": 20, // 1..50
+  "seed": 1699999999, // change for a new feed
+  "diversity": 0.6, // 0.0 = relevance/recency, 1.0 = max diversity
+  "genre": null,
+  "genres_mode": "any",
+  "code": null,
+  "min_release_date": null,
+  "max_release_date": null,
+  "completion_filter": "all",
+}
+```
+
+| Field               | Default    | Notes                                                              |
+| ------------------- | ---------- | ------------------------------------------------------------------ |
+| `query`             | `null`     | Optional semantic bias.                                            |
+| `limit`             | `20`       | `1..50`.                                                           |
+| `seed`              | time-based | RNG seed. Same `(seed, filters, query)` reproduces the same batch. |
+| `diversity`         | `0.6`      | `0.0` = relevance/recency, `1.0` = max diversity (MMR).            |
+| `completion_filter` | `all`      |                                                                    |
+
+### Response
+
+```jsonc
+{
+  "count": 20,
+  "items": [
+    /* VideoItem[] — count == limit when enough candidates exist */
+  ],
+  "took_ms": 87.4,
+}
+```
+
+### Examples
+
+**Topic-biased discovery:**
+
+```bash
+curl -s http://localhost:9001/discover -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"office romance","limit":20,"seed":1,"diversity":0.7}' | jq
+```
+
+**Endless "surprise me" feed — vary seed for new pages:**
+
+```bash
+for seed in 1 2 3; do
+  curl -s http://localhost:9001/discover -X POST \
+    -H 'Content-Type: application/json' \
+    -d "{\"limit\":15,\"seed\":$seed,\"diversity\":0.8}" \
+    | jq --arg s "$seed" '{seed:$s, ids:[.items[].id]}'
+done
+```
+
+**Shared filters + max diversity (`diversity: 1.0`):**
+
+```bash
+curl -s http://localhost:9001/discover -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "genre":["Wife"],
+    "genres_mode":"any",
+    "code":"juc",
+    "min_release_date":"2015-01-01T00:00:00Z",
+    "completion_filter":"complete",
+    "limit":20,
+    "seed":42,
+    "diversity":1.0
+  }' | jq
+```
+
+**Pure relevance mode (`diversity: 0.0`):**
+
+```bash
+curl -s http://localhost:9001/discover -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"rainy night","limit":10,"seed":7,"diversity":0.0}' | jq
+```
+
+### Reproducibility
+
+The batch is a pure function of `(seed, diversity, query, filters, current
+candidate pool)`. When `query` is `null` the underlying candidate order is
+`random()`, so identical requests may return different batches; the seed still
+controls the _diversification_ of the fetched pool.
 
 ---
 
@@ -437,16 +564,60 @@ embedding (no re-embedding).
 }
 ```
 
+> Date-range filters and `min_similarity` are **not** supported on this endpoint
+> (they are not part of the request model).
+
 ### Response
 
 Same `SearchResponse` as `/search`. The source video is excluded from results.
 
-### Example
+### Examples
+
+**Basic:**
 
 ```bash
 curl -s http://localhost:9001/similar -X POST \
   -H 'Content-Type: application/json' \
   -d '{"video_id":"jav-100hszg","limit":10}' | jq
+```
+
+**With filters + `sort: release_date`:**
+
+```bash
+curl -s http://localhost:9001/similar -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "video_id":"jav-100hszg",
+    "limit":20,
+    "genre":["Wife"],
+    "genres_mode":"any",
+    "code":"juc",
+    "sort":"release_date",
+    "order":"desc",
+    "completion_filter":"complete"
+  }' | jq
+```
+
+**Cursor pagination round-trip:**
+
+```bash
+NEXT=$(curl -s http://localhost:9001/similar -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"video_id":"jav-100hszg","limit":10}' | jq -r '.next_cursor')
+
+curl -s http://localhost:9001/similar -X POST \
+  -H 'Content-Type: application/json' \
+  -d "{\"video_id\":\"jav-100hszg\",\"limit\":10,\"cursor\":\"$NEXT\"}" | jq
+```
+
+**Unknown `video_id` → 404:**
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  http://localhost:9001/similar -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"video_id":"does-not-exist"}'
+# → 404
 ```
 
 ---
@@ -455,6 +626,9 @@ curl -s http://localhost:9001/similar -X POST \
 
 FTS (title) + vector (cosine) fused with Reciprocal Rank Fusion (`k = 60`). Not
 paginated — the fusion shortlist is returned in one shot.
+
+> `sort` and `order` are accepted for schema compatibility but do **not** affect
+> output ordering — results are always returned in RRF-score order.
 
 ### Request
 
@@ -477,6 +651,46 @@ paginated — the fusion shortlist is returned in one shot.
 
 Same `SearchResponse`; `next_cursor` is always `null`, `has_more` always
 `false`, and `similarity` is `null` on every item (ranking is RRF, not cosine).
+
+### Examples
+
+**Basic hybrid:**
+
+```bash
+curl -s http://localhost:9001/hybrid -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"married wife drama","limit":20}' | jq
+```
+
+**Hybrid with full filter stack:**
+
+```bash
+curl -s http://localhost:9001/hybrid -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query":"married wife drama",
+    "limit":20,
+    "genre":["Wife","Drama"],
+    "genres_mode":"all",
+    "code":"juc",
+    "min_release_date":"2010-01-01T00:00:00Z",
+    "max_release_date":"2024-12-31T00:00:00Z",
+    "completion_filter":"complete"
+  }' | jq
+```
+
+**Note — `sort`/`order` are ignored:**
+
+```bash
+# Same query, different sort — verify identical ordering
+curl -s http://localhost:9001/hybrid -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"wife","limit":5,"sort":"release_date","order":"asc"}' | jq '[.items[].id]'
+curl -s http://localhost:9001/hybrid -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"wife","limit":5,"sort":"created_at","order":"desc"}' | jq '[.items[].id]'
+# → identical id order (RRF order)
+```
 
 ---
 
@@ -501,10 +715,31 @@ Plain listing with offset pagination. Default sort is `release_date`.
 
 `SearchResponse` with `next_cursor` containing the next `offset` as a string.
 
-### Example
+### Examples
+
+**Basic:**
 
 ```bash
 curl -s 'http://localhost:9001/browse?limit=20&sort=release_date&order=desc' | jq
+```
+
+**Sort by `created_at` asc:**
+
+```bash
+curl -s 'http://localhost:9001/browse?sort=created_at&order=asc&limit=10' | jq
+```
+
+**Filters (`genre`, `code`, `completion_filter`):**
+
+```bash
+curl -s 'http://localhost:9001/browse?genre=Wife&genre=Drama&genres_mode=all&code=juc&completion_filter=complete&limit=10' | jq
+```
+
+**Offset paging via `next_cursor`:**
+
+```bash
+OFF=$(curl -s 'http://localhost:9001/browse?limit=20' | jq -r '.next_cursor')
+curl -s "http://localhost:9001/browse?limit=20&offset=$OFF" | jq
 ```
 
 ---
@@ -513,11 +748,20 @@ curl -s 'http://localhost:9001/browse?limit=20&sort=release_date&order=desc' | j
 
 Single video.
 
+### Examples
+
+**Found:**
+
 ```bash
 curl -s http://localhost:9001/videos/jav-100hszg | jq
 ```
 
-`404` when the id is unknown.
+**Unknown id → 404:**
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:9001/videos/does-not-exist
+# → 404
+```
 
 ---
 
@@ -539,6 +783,17 @@ keyset cursor. Caps at `5000` rows.
 | `offset`                                | `0`       |                         |
 | `fields`                                | `summary` | `id \| summary \| full` |
 
+### `fields` shapes
+
+| `fields`  | Columns returned                                                                   |
+| --------- | ---------------------------------------------------------------------------------- |
+| `id`      | `id`                                                                               |
+| `summary` | `id, code, episode, title, release_date, complete`                                 |
+| `full`    | `id, title, details, url, code, episode, release_date, genres, thumbnail, preview` |
+
+`complete` is a computed boolean: `true` when both `title` and `details` are
+non-empty.
+
 ### Response
 
 ```jsonc
@@ -558,8 +813,31 @@ keyset cursor. Caps at `5000` rows.
 }
 ```
 
-The `summary` payload also includes `complete: bool` — `true` when title **and**
-details are present.
+### Examples
+
+**Default `summary` shape:**
+
+```bash
+curl -s 'http://localhost:9001/videos?limit=20' | jq
+```
+
+**`fields: id` (lightweight sync):**
+
+```bash
+curl -s 'http://localhost:9001/videos?fields=id&limit=100' | jq
+```
+
+**`fields: full` (full payload export):**
+
+```bash
+curl -s 'http://localhost:9001/videos?fields=full&limit=50' | jq
+```
+
+**Offset paging + filters:**
+
+```bash
+curl -s 'http://localhost:9001/videos?genre=Wife&genres_mode=all&code=juc&min_release_date=2010-01-01T00:00:00Z&max_release_date=2024-12-31T00:00:00Z&completion_filter=complete&limit=100&offset=200' | jq
+```
 
 ---
 
@@ -579,10 +857,24 @@ Genre / code / year counts for building filter UIs.
 
 ```jsonc
 {
-  "genres": [{"name": "Wife", "count": 4821}, ...],
-  "codes":  [{"code": "juc", "count": 210}, ...],
-  "years":  [{"year": 2011, "count": 1024}, ...]
+  "genres": [{ "name": "Wife", "count": 4821 }],
+  "codes": [{ "code": "juc", "count": 210 }],
+  "years": [{ "year": 2011, "count": 1024 }],
 }
+```
+
+### Examples
+
+**Defaults:**
+
+```bash
+curl -s 'http://localhost:9001/facets' | jq
+```
+
+**Custom `top_*` + `completion_filter: complete`:**
+
+```bash
+curl -s 'http://localhost:9001/facets?top_genres=20&top_codes=10&completion_filter=complete' | jq
 ```
 
 ---
@@ -594,8 +886,14 @@ All codes (uncapped), plus a completion count per code.
 ```jsonc
 {
   "code_count": 3199,
-  "codes": [{"code": "juc", "count": 210, "completed": 187}, ...]
+  "codes": [{ "code": "juc", "count": 210, "completed": 187 }],
 }
+```
+
+### Example
+
+```bash
+curl -s 'http://localhost:9001/facets/codes' | jq
 ```
 
 ---
@@ -606,6 +904,12 @@ Liveness + round-trip to Postgres.
 
 ```jsonc
 { "ok": true, "db_ms": 1.42 }
+```
+
+### Example
+
+```bash
+curl -s 'http://localhost:9001/health' | jq
 ```
 
 ---
@@ -644,6 +948,19 @@ Batch insert / upsert of videos. Embeds missing vectors with
 | `upsert`           | `true` (default) updates existing rows; `false` skips conflicts. |
 | `title`, `details` | Code prefix (`juc-707 ...`) is stripped before embedding.        |
 
+#### Upsert semantics (`upsert: true`)
+
+- On conflict, mutable fields are updated from `EXCLUDED`; `title`, `thumbnail`,
+  `preview`, `details`, `release_date`, and `genres` use `COALESCE(EXCLUDED.x, videos.x)`
+  so a `null` in the incoming item preserves the existing value.
+- `embedding` is always overwritten.
+- `updated_at` is set to `now()`.
+
+#### Upsert semantics (`upsert: false`)
+
+- `ON CONFLICT (id) DO NOTHING` — existing rows are not modified and the count
+  lands in `updated` (returning `inserted = false` for each conflict).
+
 ### Response
 
 ```jsonc
@@ -651,6 +968,117 @@ Batch insert / upsert of videos. Embeds missing vectors with
 ```
 
 `skipped` counts items with no embeddable text.
+
+### Examples
+
+**Insert new rows (`upsert: true`):**
+
+```bash
+curl -s http://localhost:9001/ingest -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "upsert": true,
+    "items": [
+      {
+        "id": "jav-100hszg",
+        "url": "https://missav.ws/...",
+        "code": "juc",
+        "episode": "707",
+        "video_id": "juc-707",
+        "title": "A Married Woman\u0027s ...",
+        "thumbnail": "https://.../cover-n.jpg",
+        "preview": "https://.../preview.mp4",
+        "details": "Nana is living ...",
+        "release_date": "2011-12-29T11:00:38+08:00",
+        "genres": ["Wife", "Mature Woman"]
+      }
+    ]
+  }' | jq
+```
+
+**Update with nulls (COALESCE-preserve proof):**
+
+```bash
+# Re-send same id with title/details omitted — existing values should survive
+curl -s http://localhost:9001/ingest -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "upsert": true,
+    "items": [
+      {
+        "id": "jav-100hszg",
+        "url": "https://missav.ws/updated-url",
+        "code": "juc",
+        "episode": "707",
+        "video_id": "juc-707",
+        "genres": ["Wife"]
+      }
+    ]
+  }' | jq
+# → {"inserted":0,"updated":1,...}; title/details/thumbnail/preview preserved
+```
+
+**Skip on conflict (`upsert: false`):**
+
+```bash
+curl -s http://localhost:9001/ingest -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "upsert": false,
+    "items": [
+      {
+        "id": "jav-100hszg",
+        "url": "https://missav.ws/will-not-overwrite",
+        "code": "juc",
+        "episode": "707",
+        "video_id": "juc-707",
+        "title": "Ignored"
+      }
+    ]
+  }' | jq
+# → {"inserted":0,"updated":1,...}; row untouched
+```
+
+**Dedupe by `id` (duplicate entries in one call collapse):**
+
+```bash
+curl -s http://localhost:9001/ingest -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "items": [
+      {"id":"dup-1","url":"https://a","code":"x","episode":"1","video_id":"x-1","title":"First"},
+      {"id":"dup-1","url":"https://b","code":"x","episode":"1","video_id":"x-1","title":"Second (wins)"}
+    ]
+  }' | jq
+# → only one row written; last occurrence wins
+```
+
+**Code-prefix stripping (embedding quality):**
+
+```bash
+# Both of these produce the same embedding text after prefix stripping
+curl -s http://localhost:9001/ingest -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "items": [
+      {"id":"p-1","url":"https://a","code":"juc","episode":"707","video_id":"juc-707","title":"juc-707 Married Woman","details":"juc-707 Nana lives"}
+    ]
+  }' | jq
+# Internally embedded as: "Married Woman | Nana lives | Series: juc | Episode: 707"
+```
+
+**`skipped` counter (no embeddable text):**
+
+```bash
+curl -s http://localhost:9001/ingest -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "items": [
+      {"id":"empty-1","url":"https://a","code":"x","episode":"1","video_id":"x-1"}
+    ]
+  }' | jq
+# → {"inserted":0,"updated":0,"skipped":1,...}
+```
 
 ---
 
@@ -665,6 +1093,28 @@ All errors return FastAPI's standard envelope:
 `422` errors from Pydantic validation include a structured `detail[]` with
 `loc`, `msg`, and `type` per field.
 
+### Examples
+
+```bash
+# 400 — cursor bound to different filters
+curl -s -o /dev/null -w '%{http_code}\n' \
+  http://localhost:9001/search -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"x","cursor":"eyJrIjoiMCIsImkiOiJhIiwiZiI6ImRlYWRiZWVmIn0="}'
+# → 400
+
+# 422 — missing required field
+curl -s -o /dev/null -w '%{http_code}\n' \
+  http://localhost:9001/search -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+# → 422
+
+# 404 — unknown video
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:9001/videos/nope
+# → 404
+```
+
 ---
 
 ## Client integration cheat-sheet
@@ -678,13 +1128,20 @@ mode = "clustered"
   │    └─ query null      → recent/random candidates, similarity == null
   ├─ render clusters in response order (tight+big first, noise last)
   ├─ tier = green | amber | grey  (see Cluster quality tiers)
-  ├─ per-cluster items (optional):
-  │    ├─ diversify_items=true + items_per_cluster=N → diverse reps, capped
-  │    └─ item_shuffle=true + changing item_seed   → new "page" per cluster
   └─ per item:
        ├─ probability       → confidence bar
        ├─ silhouette < 0    → dim (fringe)
        └─ silhouette ≥ 0.4 && probability ≥ 0.7 → "core" badge
+```
+
+### Endless / discovery feed — quick map
+
+```
+mode = "discover"
+  ├─ POST /discover  (query optional)
+  ├─ results are already diversified (diversity knob 0..1)
+  ├─ change `seed` for a new "page"
+  └─ similarity present only when `query` was supplied
 ```
 
 ### Tuning the clustered view from the UI
@@ -693,14 +1150,15 @@ mode = "clustered"
 {
   "min_cluster_size": 2, // fewer/larger groups ← higher
   "cluster_selection_epsilon": 0.25, // tighter/more-noise ← lower
-  "cluster_candidate_limit": 100, // more candidates   ← higher
+  "cluster_candidate_limit": 100, // more candidates    ← higher
 }
 ```
 
-The three knobs above are the **primary** tuning controls exposed to end users.
-`n_clusters` no longer exists — it was replaced by `cluster_utils`' dynamic
-selection. If a client previously exposed "groups = 3..10", replace it with
-"min_cluster_size" + "epsilon", or with a coarse preset:
+The three knobs above are the **only** tuning controls exposed to end users for
+`/search_clustered`. `n_clusters` does not exist — it was replaced by
+`cluster_utils`' dynamic selection. If a client previously exposed
+"groups = 3..10", replace it with "min_cluster_size" + "epsilon", or with a
+coarse preset:
 
 | Preset   | `min_cluster_size` | `cluster_selection_epsilon` | Effect                              |
 | -------- | ------------------ | --------------------------- | ----------------------------------- |
@@ -708,24 +1166,13 @@ selection. If a client previously exposed "groups = 3..10", replace it with
 | Balanced | `2`                | `0.25`                      | Default.                            |
 | Loose    | `2`                | `0.45`                      | Fewer noise points, broader groups. |
 
-A secondary group of controls (behind an "advanced" toggle) enables per-cluster
-diversification:
-
-| Preset  | `diversify_items` | `items_per_cluster` | `item_diversity` | `item_shuffle` | Effect                                          |
-| ------- | ----------------- | ------------------- | ---------------- | -------------- | ----------------------------------------------- |
-| Off     | `false`           | `null`              | —                | —              | Historical behavior (all members).              |
-| Reorder | `true`            | `null`              | `0.6`            | `false`        | Same members, MMR order (most diverse first).   |
-| Capped  | `true`            | `10`                | `0.7`            | `false`        | 10 diverse reps per cluster, deterministic.     |
-| Paged   | `true`            | `8`                 | `0.8`            | `true`         | 8 reps per cluster; change `item_seed` to page. |
-
 ### Reproducibility
 
-Clustering is deterministic for a given `(candidate pool, query, candidate_source)`:
-`TextsClusterer` seeds Spectral with `random_state=42` and HDBSCAN is
-deterministic. The only non-determinism is `candidate_source: "random"`
-(server-side `random()` ordering).
+Clustering is deterministic for a given `(candidate pool, query,
+candidate_source)`: `TextsClusterer` seeds Spectral with `random_state=42` and
+HDBSCAN is deterministic. The only non-determinism is
+`candidate_source: "random"` (server-side `random()` ordering).
 
-Per-cluster item selection is deterministic when `item_shuffle=false`
-(`diversify_results` is greedy MMR with no RNG). When `item_shuffle=true`, the
-result is a pure function of `(cluster items, item_seed, item_diversity)`, so
-the same `item_seed` reproduces the same page.
+`/discover` is a pure function of `(seed, diversity, query, filters, candidate
+pool)`; when `query` is `null` the candidate pool is `random()`-ordered, so
+identical requests may differ.
