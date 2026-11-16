@@ -143,13 +143,22 @@ function app() {
     onQueryInput() {
       clearTimeout(this._deb);
       this._deb = setTimeout(() => {
-        if (this.query.trim()) this.doSearch();
+        if (this.query.trim()) {
+          this.doSearch();
+        } else if (this.mode === "search" || this.mode === "similar") {
+          // Input was cleared → return to browse listing.
+          this.doBrowse();
+        }
       }, 400);
     },
 
     doSearch() {
       const q = this.query.trim();
-      if (!q) return;
+      if (!q) {
+        // Empty submit → behave like Browse.
+        if (this.mode !== "browse") this.doBrowse();
+        return;
+      }
       this.mode = "search";
       this.lastQuery = q;
       this.similarOf = null;
@@ -317,8 +326,12 @@ function app() {
 
       if (this.mode === "search") {
         if (!this.lastQuery) {
-          this.toast("info", "Type something to search");
-          return null;
+          // Shouldn't happen once onQueryInput/doSearch are fixed, but be safe:
+          // switch to browse and refetch instead of dropping the request.
+          this.mode = "browse";
+          this.similarOf = null;
+          this.syncURL();
+          return this.buildParams(reset); // re-enter as browse
         }
         return {
           path: "/search",
