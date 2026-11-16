@@ -87,3 +87,33 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* ─── clustered-mode carousel ─── */
+.carousel-mask {
+  position: relative;
+  /* right-edge fade so the user sees there's more to scroll */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    black 0,
+    black calc(100% - 48px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    black 0,
+    black calc(100% - 48px),
+    transparent 100%
+  );
+}
+.carousel {
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  scrollbar-color: #293241 transparent;
+}
+.carousel > article {
+  scroll-snap-align: start;
+}
+/* slight refinement when a row is hidden */
+.cluster-row[class*="opacity-70"] {
+  transition: opacity 0.2s ease;
+}

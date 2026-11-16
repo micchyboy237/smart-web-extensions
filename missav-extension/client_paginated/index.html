@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>MissAV Explorer</title>
+
     <!-- Tailwind (JIT via CDN) -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -32,6 +33,7 @@
         },
       };
     </script>
+
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -39,16 +41,20 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
+
     <!-- Alpine.js -->
     <script
       defer
       src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"
     ></script>
+
     <!-- Lucide icons -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+
     <!-- Custom Styles -->
     <link rel="stylesheet" href="styles.css" />
   </head>
+
   <body
     class="bg-ink-950 text-slate-200 min-h-screen bg-grain antialiased"
     x-data="app()"
@@ -73,6 +79,7 @@
             MissAV<span class="text-accent-400">.</span>Explorer
           </span>
         </a>
+
         <!-- search -->
         <form
           @submit.prevent="doSearch()"
@@ -109,7 +116,22 @@
           >
             <i data-lucide="layout-grid" class="h-4 w-4"></i> Browse
           </button>
+          <button
+            type="button"
+            @click="toggleClusterMode()"
+            :class="mode === 'clustered'
+              ? 'bg-violet-500 text-ink-950 shadow-glow'
+              : 'border border-white/10 text-slate-300 hover:border-white/20 hover:bg-white/5'"
+            class="hidden items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition md:flex"
+            :title="mode === 'clustered' ? 'Exit grouped view' : 'Group results into topics'"
+          >
+            <i data-lucide="layers" class="h-4 w-4"></i>
+            <span
+              x-text="mode === 'clustered' ? 'Ungroup' : 'Group by topic'"
+            ></span>
+          </button>
         </form>
+
         <!-- right status -->
         <div class="hidden items-center gap-2 md:flex">
           <span
@@ -123,6 +145,7 @@
             <span x-text="online ? 'live' : 'offline'"></span>
           </span>
         </div>
+
         <!-- mobile filters trigger -->
         <button
           @click="filtersOpen = !filtersOpen"
@@ -132,11 +155,12 @@
         </button>
       </div>
     </header>
+
     <!-- ═══════════════════ MAIN LAYOUT ═══════════════════ -->
     <div
       class="relative z-10 mx-auto flex max-w-[1600px] gap-6 px-4 py-6 md:px-6"
     >
-      <!-- ─── Filter sidebar ─── -->
+      <!-- ─── Filter sidebar (unchanged) ─── -->
       <aside
         :class="filtersOpen ? 'fixed inset-0 z-40 flex justify-end bg-black/60 backdrop-blur-sm lg:static lg:z-auto lg:block lg:bg-transparent lg:backdrop-blur-none' : 'hidden lg:block'"
         class="w-full shrink-0 lg:w-72"
@@ -157,6 +181,7 @@
               <i data-lucide="x" class="h-5 w-5"></i>
             </button>
           </div>
+
           <!-- code -->
           <label class="mb-4 block">
             <span class="mb-1.5 block text-xs font-medium text-slate-500"
@@ -170,13 +195,13 @@
               <input
                 x-model="filters.code"
                 @change="
-        filters.code = filters.code
-          .split(',')
-          .map(c => c.trim().toLowerCase())
-          .filter(Boolean)
-          .join(', ');
-        refetch();
-      "
+                  filters.code = filters.code
+                    .split(',')
+                    .map(c => c.trim().toLowerCase())
+                    .filter(Boolean)
+                    .join(', ');
+                  mode === 'clustered' ? fetchClustered() : refetch();
+                "
                 placeholder="mdyd, sprd…"
                 class="w-full rounded-lg border border-white/10 bg-ink-800 py-2 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-accent-500/60 focus:outline-none"
               />
@@ -232,17 +257,18 @@
               <input
                 type="date"
                 x-model="filters.from"
-                @change="refetch()"
+                @change="mode === 'clustered' ? fetchClustered() : refetch()"
                 class="rounded-lg border border-white/10 bg-ink-800 px-2.5 py-2 text-xs text-slate-100 focus:border-accent-500/60 focus:outline-none [color-scheme:dark]"
               />
               <input
                 type="date"
                 x-model="filters.to"
-                @change="refetch()"
+                @change="mode === 'clustered' ? fetchClustered() : refetch()"
                 class="rounded-lg border border-white/10 bg-ink-800 px-2.5 py-2 text-xs text-slate-100 focus:border-accent-500/60 focus:outline-none [color-scheme:dark]"
               />
             </div>
           </div>
+
           <!-- genres mode toggle -->
           <div class="mb-4">
             <span
@@ -254,14 +280,14 @@
               class="flex rounded-lg border border-white/10 bg-ink-800 p-1 text-xs"
             >
               <button
-                @click="filters.genresMode = 'any'; refetch()"
+                @click="filters.genresMode = 'any'; mode === 'clustered' ? fetchClustered() : refetch()"
                 :class="filters.genresMode === 'any' ? 'bg-accent-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
                 class="flex-1 rounded-md py-1.5 font-semibold transition"
               >
                 Any of
               </button>
               <button
-                @click="filters.genresMode = 'all'; refetch()"
+                @click="filters.genresMode = 'all'; mode === 'clustered' ? fetchClustered() : refetch()"
                 :class="filters.genresMode === 'all' ? 'bg-accent-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
                 class="flex-1 rounded-md py-1.5 font-semibold transition"
               >
@@ -269,6 +295,7 @@
               </button>
             </div>
           </div>
+
           <!-- genres chips -->
           <div class="mb-4">
             <span
@@ -285,8 +312,8 @@
                 <button
                   @click="toggleGenre(g.name)"
                   :class="filters.genres.includes(g.name)
-                      ? 'border-accent-500 bg-accent-500/15 text-accent-300'
-                      : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                    ? 'border-accent-500 bg-accent-500/15 text-accent-300'
+                    : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
                   class="rounded-full border px-2.5 py-1 text-[11px] font-medium transition"
                   :title="`${g.count.toLocaleString()} videos`"
                 >
@@ -295,6 +322,7 @@
               </template>
             </div>
           </div>
+
           <!-- year quick-pick -->
           <div class="mb-4">
             <span
@@ -307,8 +335,8 @@
                 <button
                   @click="pickYear(y.year)"
                   :class="filters.from === y.year+'-01-01' && filters.to === y.year+'-12-31'
-                      ? 'border-violet-500 bg-violet-500/20 text-violet-300'
-                      : 'border-white/10 bg-ink-800 text-slate-400 hover:text-slate-200'"
+                    ? 'border-violet-500 bg-violet-500/20 text-violet-300'
+                    : 'border-white/10 bg-ink-800 text-slate-400 hover:text-slate-200'"
                   class="rounded-md border px-2 py-1 text-[11px] font-medium transition"
                   :title="`${y.count.toLocaleString()} videos`"
                   x-text="y.year"
@@ -316,6 +344,7 @@
               </template>
             </div>
           </div>
+
           <button
             @click="clearFilters()"
             class="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/10 py-2 text-xs font-semibold text-slate-400 transition hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300"
@@ -325,6 +354,7 @@
           </button>
         </div>
       </aside>
+
       <!-- ─── Results ─── -->
       <section class="min-w-0 flex-1">
         <!-- result header -->
@@ -336,6 +366,20 @@
                   >Results for
                   <span class="text-accent-400" x-text="`“${lastQuery}”`"></span
                 ></span>
+              </template>
+              <template x-if="mode === 'clustered'">
+                <span class="flex items-center gap-2">
+                  <i data-lucide="layers" class="h-6 w-6 text-violet-400"></i>
+                  <span>
+                    <span x-show="lastQuery">Grouped results for </span>
+                    <span
+                      x-show="lastQuery"
+                      class="text-accent-400"
+                      x-text="`“${lastQuery}”`"
+                    ></span>
+                    <span x-show="!lastQuery">Browse by topic</span>
+                  </span>
+                </span>
               </template>
               <template x-if="mode === 'similar'">
                 <span class="flex items-center gap-2"
@@ -354,26 +398,88 @@
               </template>
             </h1>
             <p class="mt-1 text-sm text-slate-500">
-              <span x-text="items.length"></span> loaded
-              <span x-show="exhausted && items.length" class="text-slate-600">
-                · end of results</span
-              >
-              <span
-                x-show="lastTook != null"
-                class="text-slate-600"
-                x-text="` · ${lastTook?.toFixed(0)} ms`"
-              ></span>
+              <template x-if="mode === 'clustered'">
+                <span>
+                  <span x-text="clustered.data?.total_results ?? 0"></span>
+                  results ·
+                  <span x-text="clustered.data?.n_clusters ?? 0"></span> groups
+                  <span
+                    x-show="lastTook != null"
+                    class="text-slate-600"
+                    x-text="` · ${lastTook?.toFixed(0)} ms`"
+                  ></span>
+                </span>
+              </template>
+              <template x-if="mode !== 'clustered'">
+                <span>
+                  <span x-text="items.length"></span> loaded
+                  <span
+                    x-show="exhausted && items.length"
+                    class="text-slate-600"
+                  >
+                    · end of results</span
+                  >
+                  <span
+                    x-show="lastTook != null"
+                    class="text-slate-600"
+                    x-text="` · ${lastTook?.toFixed(0)} ms`"
+                  ></span>
+                </span>
+              </template>
             </p>
           </div>
+
           <!-- active filter pills -->
           <div class="flex flex-wrap items-center gap-1.5">
-            <!-- Sort & Order selector (browse + search; hidden for similar) -->
+            <!-- clustered-mode config -->
+            <div
+              x-show="mode === 'clustered'"
+              class="inline-flex items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-200"
+            >
+              <i data-lucide="layers" class="h-3 w-3"></i>
+              <label class="flex items-center gap-1">
+                groups
+                <input
+                  type="number"
+                  min="2"
+                  max="10"
+                  x-model.number="clusterPrefs.nClusters"
+                  @change="applyClusterPrefs()"
+                  class="w-10 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
+                />
+              </label>
+              <span class="text-violet-400/60">|</span>
+              <label class="flex items-center gap-1">
+                pool
+                <input
+                  type="number"
+                  min="10"
+                  max="500"
+                  step="10"
+                  x-model.number="clusterPrefs.candidateLimit"
+                  @change="applyClusterPrefs()"
+                  class="w-12 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
+                />
+              </label>
+              <span class="text-violet-400/60">|</span>
+              <label class="flex cursor-pointer items-center gap-1">
+                <input
+                  type="checkbox"
+                  x-model="clusterPrefs.includeNoise"
+                  @change="applyClusterPrefs()"
+                  class="h-3 w-3 rounded border-white/20 bg-ink-900"
+                />
+                show outliers
+              </label>
+            </div>
+
+            <!-- Sort & Order selector (browse + search) -->
             <div
               x-show="mode === 'browse' || mode === 'search'"
               class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/80 px-2.5 py-1 text-[11px] font-medium text-slate-400"
               :title="mode === 'browse'
-  ? 'Sort order'
-  : 'Search sort order — choosing \'Newest release\' hides videos without a release date'"
+                ? 'Sort order'
+                : 'Search sort order — choosing \'Newest release\' hides videos without a release date'"
             >
               <i data-lucide="arrow-up-down" class="h-3 w-3"></i>
               <select
@@ -381,7 +487,6 @@
                 @change="refetch()"
                 class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
               >
-                <!-- Similarity option only meaningful in search mode -->
                 <option value="similarity" x-show="mode === 'search'">
                   Most similar
                 </option>
@@ -398,6 +503,8 @@
                 <option value="asc">Asc</option>
               </select>
             </div>
+
+            <!-- genre pills -->
             <template x-for="g in filters.genres" :key="g">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-accent-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-accent-300"
@@ -411,19 +518,23 @@
                 </button>
               </span>
             </template>
+
+            <!-- code pill -->
             <template x-if="filters.code">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-violet-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-violet-300"
               >
                 <span x-text="'code: ' + filters.code"></span>
                 <button
-                  @click="filters.code = ''; refetch()"
+                  @click="filters.code = ''; mode === 'clustered' ? fetchClustered() : refetch()"
                   class="rounded-full p-0.5 hover:bg-white/10"
                 >
                   <i data-lucide="x" class="h-3 w-3"></i>
                 </button>
               </span>
             </template>
+
+            <!-- date pill -->
             <template x-if="filters.from || filters.to">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
@@ -432,7 +543,7 @@
                   x-text="`${filters.from || '…'} → ${filters.to || '…'}`"
                 ></span>
                 <button
-                  @click="filters.from=''; filters.to=''; refetch()"
+                  @click="filters.from=''; filters.to=''; mode === 'clustered' ? fetchClustered() : refetch()"
                   class="rounded-full p-0.5 hover:bg-white/10"
                 >
                   <i data-lucide="x" class="h-3 w-3"></i>
@@ -440,7 +551,7 @@
               </span>
             </template>
 
-            <!-- Completion Filter Pill -->
+            <!-- completion filter pill -->
             <template x-if="filters.completionFilter !== 'all'">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
@@ -460,164 +571,441 @@
             </template>
           </div>
         </div>
-        <!-- skeleton on first load -->
-        <div
-          x-show="items.length === 0 && loading"
-          class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
-        >
-          <template x-for="i in 10" :key="i">
-            <div
-              class="overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
-            >
-              <div class="aspect-[4/3] skeleton"></div>
-              <div class="space-y-2 p-3">
-                <div class="h-3 w-4/5 skeleton rounded"></div>
-                <div class="h-2.5 w-2/5 skeleton rounded"></div>
-                <div class="flex gap-1 pt-1">
-                  <div class="h-4 w-12 skeleton rounded"></div>
-                  <div class="h-4 w-14 skeleton rounded"></div>
-                </div>
-              </div>
-            </div>
-          </template>
-        </div>
-        <!-- cards grid -->
-        <div
-          x-show="items.length > 0"
-          class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
-        >
-          <template x-for="(v, idx) in items" :key="v.id + '-' + idx">
-            <article
-              class="card-enter group relative overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
-              :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
-            >
-              <!-- thumbnail -->
-              <div class="relative aspect-[4/3] overflow-hidden bg-ink-800">
-                <img
-                  :src="v.thumbnail"
-                  :alt="v.title"
-                  loading="lazy"
-                  decoding="async"
-                  class="h-full w-full object-cover transition duration-500 group-hover:scale-110"
-                  @error="$event.target.style.opacity = .2"
-                />
-                <div
-                  class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
-                ></div>
-                <!-- similarity badge -->
-                <div
-                  x-show="v.similarity != null"
-                  class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-accent-300 backdrop-blur"
-                >
-                  <i data-lucide="target" class="h-3 w-3"></i>
-                  <span x-text="(v.similarity * 100).toFixed(0) + '%'"></span>
-                </div>
-                <!-- year badge -->
-                <div
-                  x-show="v.release_date"
-                  class="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-slate-300 backdrop-blur"
-                  x-text="v.release_date?.slice(0,4)"
-                ></div>
-                <!-- hover overlay actions -->
-                <div
-                  class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
-                >
-                  <button
-                    @click="openDetail(v.id)"
-                    class="flex items-center gap-1.5 rounded-full bg-accent-500 px-3 py-1.5 text-xs font-bold text-ink-950 transition hover:scale-105"
-                  >
-                    <i data-lucide="play" class="h-3.5 w-3.5"></i> Preview
-                  </button>
-                  <button
-                    @click="findSimilar(v.id)"
-                    class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
-                  >
-                    <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
-                  </button>
-                </div>
-              </div>
-              <!-- body -->
-              <div class="p-3">
-                <h3
-                  @click="openDetail(v.id)"
-                  class="line-clamp-2 min-h-[2.4em] cursor-pointer text-[13px] font-semibold leading-snug text-slate-100 transition group-hover:text-accent-300"
-                  x-text="v.title || '(untitled)'"
-                ></h3>
-                <div
-                  class="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500"
-                >
-                  <span
-                    class="rounded bg-ink-700 px-1.5 py-0.5 font-mono text-[10px] text-accent-300"
-                    x-text="v.code"
-                  ></span>
-                  <span x-text="v.episode"></span>
-                </div>
-                <div class="mt-2 flex flex-wrap gap-1">
-                  <template x-for="g in (v.genres ?? []).slice(0, 2)" :key="g">
-                    <span
-                      class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
-                      x-text="g"
-                    ></span>
+
+        <!-- ═══════════════════ CLUSTERED RESULTS ═══════════════════ -->
+        <div x-show="mode === 'clustered'" x-cloak>
+          <!-- skeleton -->
+          <div x-show="clustered.loading && !clustered.data" class="space-y-8">
+            <template x-for="ci in 3" :key="ci">
+              <div>
+                <div class="mb-3 h-5 w-64 skeleton rounded"></div>
+                <div class="flex gap-4 overflow-hidden">
+                  <template x-for="ii in 6" :key="ii">
+                    <div
+                      class="w-52 shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
+                    >
+                      <div class="aspect-[4/3] skeleton"></div>
+                      <div class="space-y-2 p-3">
+                        <div class="h-3 w-4/5 skeleton rounded"></div>
+                        <div class="h-2.5 w-2/5 skeleton rounded"></div>
+                      </div>
+                    </div>
                   </template>
-                  <span
-                    x-show="(v.genres?.length ?? 0) > 2"
-                    class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
-                    x-text="`+${(v.genres?.length ?? 0) - 2}`"
-                  ></span>
                 </div>
               </div>
-            </article>
-          </template>
-        </div>
-        <!-- empty state -->
-        <div
-          x-show="!loading && items.length === 0"
-          class="flex flex-col items-center justify-center py-24 text-center"
-        >
-          <div
-            class="grid h-16 w-16 place-items-center rounded-2xl bg-ink-800 text-slate-500"
-          >
-            <i data-lucide="ghost" class="h-8 w-8"></i>
+            </template>
           </div>
-          <h3 class="mt-4 text-lg font-semibold text-slate-300">No results</h3>
-          <p class="mt-1 max-w-sm text-sm text-slate-500">
-            Try removing some filters, or rephrase your query.
-          </p>
-          <button
-            @click="clearFilters()"
-            class="mt-4 rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/5"
+
+          <!-- error -->
+          <div
+            x-show="clustered.error"
+            class="rounded-2xl border border-rose-500/30 bg-rose-950/40 p-4 text-sm text-rose-200"
           >
-            Clear filters
-          </button>
-        </div>
-        <!-- load more / sentinel -->
-        <div
-          x-show="items.length > 0"
-          class="mt-8 flex flex-col items-center gap-4"
-        >
-          <button
-            x-show="!exhausted"
-            @click="loadMore()"
-            :disabled="loading"
-            class="flex items-center gap-2 rounded-xl border border-white/10 bg-ink-800 px-5 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-accent-500/40 hover:bg-ink-700 disabled:opacity-50"
+            <p class="font-semibold">Couldn't group results</p>
+            <p class="mt-1 text-rose-300/80" x-text="clustered.error"></p>
+            <button
+              @click="fetchClustered()"
+              class="mt-3 rounded-lg border border-rose-400/40 px-3 py-1.5 text-xs font-semibold hover:bg-rose-500/10"
+            >
+              Retry
+            </button>
+          </div>
+
+          <!-- rows -->
+          <div
+            x-show="!clustered.loading && clustered.data && clustered.data.clusters.length"
+            class="space-y-8"
           >
-            <template x-if="loading"
-              ><i data-lucide="loader-2" class="h-4 w-4 animate-spin"></i
-            ></template>
-            <template x-if="!loading"
-              ><i data-lucide="chevron-down" class="h-4 w-4"></i
-            ></template>
-            <span x-text="loading ? 'Loading…' : 'Load more'"></span>
-          </button>
-          <p x-show="exhausted" class="text-xs text-slate-600">
-            — you've reached the end —
-          </p>
+            <template x-for="c in clustered.data.clusters" :key="c.cluster_id">
+              <section
+                x-show="!clusterUiFor(c.cluster_id).hidden"
+                class="cluster-row"
+              >
+                <!-- cluster header -->
+                <header class="mb-3 flex flex-wrap items-center gap-2">
+                  <span
+                    class="h-2 w-2 shrink-0 rounded-full"
+                    :class="clusterTierDotClass(c)"
+                  ></span>
+                  <h2
+                    class="text-sm font-bold tracking-tight text-slate-200"
+                    x-text="clusterLabel(c)"
+                  ></h2>
+
+                  <!-- 5-segment cohesion bar -->
+                  <span
+                    class="flex items-center gap-0.5"
+                    :title="`Cohesion ${(c.consistency_score ?? 0).toFixed(2)}`"
+                  >
+                    <template x-for="s in 5" :key="s">
+                      <span
+                        class="h-1.5 w-3 rounded-full"
+                        :class="s <= clusterSegments(c) ? clusterTierDotClass(c) : 'bg-white/10'"
+                      ></span>
+                    </template>
+                  </span>
+
+                  <span class="text-[11px] text-slate-500">
+                    <span x-text="c.size"></span> items
+                    <template x-if="(c.misplaced_items_count ?? 0) > 0">
+                      <span class="text-amber-400/80">
+                        · <span x-text="c.misplaced_items_count"></span> fringe
+                      </span>
+                    </template>
+                  </span>
+
+                  <button
+                    @click="toggleClusterCoreOnly(c.cluster_id)"
+                    class="ml-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition"
+                    :class="clusterUiFor(c.cluster_id).coreOnly
+                      ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
+                      : 'border-white/10 text-slate-400 hover:text-slate-200'"
+                    title="Hide fringe items"
+                  >
+                    <i data-lucide="sparkles" class="h-3 w-3"></i>
+                    <span
+                      x-text="clusterUiFor(c.cluster_id).coreOnly ? 'core only' : 'show core'"
+                    ></span>
+                  </button>
+
+                  <button
+                    @click="toggleClusterHidden(c.cluster_id)"
+                    class="rounded-full border border-white/10 p-1 text-slate-400 hover:text-rose-300"
+                    :title="clusterUiFor(c.cluster_id).hidden ? 'Show this group' : 'Hide this group'"
+                  >
+                    <i
+                      :data-lucide="clusterUiFor(c.cluster_id).hidden ? 'eye' : 'eye-off'"
+                      class="h-3 w-3"
+                    ></i>
+                  </button>
+                </header>
+
+                <!-- horizontal scroller -->
+                <div class="carousel-mask">
+                  <div class="carousel flex gap-3 overflow-x-auto pb-2">
+                    <template
+                      x-for="(v, idx) in visibleItems(c)"
+                      :key="v.id + '-' + idx"
+                    >
+                      <article
+                        class="card-enter group relative w-52 shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
+                        :class="{ 'opacity-60': isFringeItem(v) }"
+                        :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
+                      >
+                        <!-- thumbnail -->
+                        <div
+                          class="relative aspect-[4/3] overflow-hidden bg-ink-800"
+                        >
+                          <img
+                            :src="v.thumbnail"
+                            :alt="v.title"
+                            loading="lazy"
+                            decoding="async"
+                            class="h-full w-full object-cover transition duration-500 group-hover:scale-110"
+                            @error="$event.target.style.opacity = .2"
+                          />
+                          <div
+                            class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
+                          ></div>
+
+                          <!-- similarity badge (only when a query exists) -->
+                          <div
+                            x-show="v.similarity != null"
+                            class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-accent-300 backdrop-blur"
+                          >
+                            <i data-lucide="target" class="h-3 w-3"></i>
+                            <span
+                              x-text="(v.similarity * 100).toFixed(0) + '%'"
+                            ></span>
+                          </div>
+
+                          <!-- core badge -->
+                          <div
+                            x-show="isCoreItem(v)"
+                            class="absolute right-2 top-2 flex items-center gap-0.5 rounded-full bg-emerald-500/90 px-1.5 py-0.5 text-[9px] font-bold text-ink-950"
+                            title="Representative of this group"
+                          >
+                            <i data-lucide="zap" class="h-2.5 w-2.5"></i>
+                          </div>
+
+                          <!-- hover actions -->
+                          <div
+                            class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
+                          >
+                            <button
+                              @click="openDetail(v.id)"
+                              class="flex items-center gap-1.5 rounded-full bg-accent-500 px-3 py-1.5 text-xs font-bold text-ink-950 transition hover:scale-105"
+                            >
+                              <i data-lucide="play" class="h-3.5 w-3.5"></i>
+                              Preview
+                            </button>
+                            <button
+                              @click="findSimilarFromCluster(v.id)"
+                              class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
+                            >
+                              <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
+                            </button>
+                          </div>
+                        </div>
+
+                        <!-- body -->
+                        <div class="p-3">
+                          <h3
+                            @click="openDetail(v.id)"
+                            class="line-clamp-2 min-h-[2.4em] cursor-pointer text-[13px] font-semibold leading-snug text-slate-100 transition group-hover:text-accent-300"
+                            x-text="v.title || '(untitled)'"
+                          ></h3>
+                          <div
+                            class="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500"
+                          >
+                            <span
+                              class="rounded bg-ink-700 px-1.5 py-0.5 font-mono text-[10px] text-accent-300"
+                              x-text="v.code"
+                            ></span>
+                            <span x-text="v.episode"></span>
+                          </div>
+
+                          <!-- confidence bar (probability) -->
+                          <div x-show="v.probability != null" class="mt-2">
+                            <div
+                              class="h-1 w-full overflow-hidden rounded-full bg-white/10"
+                            >
+                              <div
+                                class="h-full rounded-full"
+                                :class="clusterTier(c) === 'green'
+                                  ? 'bg-emerald-400'
+                                  : clusterTier(c) === 'amber'
+                                    ? 'bg-amber-400'
+                                    : 'bg-slate-500'"
+                                :style="`width:${Math.round((v.probability ?? 0) * 100)}%`"
+                              ></div>
+                            </div>
+                          </div>
+
+                          <div class="mt-2 flex flex-wrap gap-1">
+                            <template
+                              x-for="g in (v.genres ?? []).slice(0, 2)"
+                              :key="g"
+                            >
+                              <span
+                                class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
+                                x-text="g"
+                              ></span>
+                            </template>
+                            <span
+                              x-show="(v.genres?.length ?? 0) > 2"
+                              class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
+                              x-text="`+${(v.genres?.length ?? 0) - 2}`"
+                            ></span>
+                          </div>
+                        </div>
+                      </article>
+                    </template>
+
+                    <!-- empty (all core filtered out) -->
+                    <div
+                      x-show="visibleItems(c).length === 0"
+                      class="flex h-[220px] w-full items-center justify-center rounded-2xl border border-dashed border-white/10 text-xs text-slate-500"
+                    >
+                      No core items in this group — turn off “core only”.
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </template>
+          </div>
+
+          <!-- empty -->
+          <div
+            x-show="!clustered.loading && clustered.data && !clustered.data.clusters.length"
+            class="flex flex-col items-center justify-center py-24 text-center"
+          >
+            <div
+              class="grid h-16 w-16 place-items-center rounded-2xl bg-ink-800 text-slate-500"
+            >
+              <i data-lucide="layers" class="h-8 w-8"></i>
+            </div>
+            <h3 class="mt-4 text-lg font-semibold text-slate-300">
+              Nothing to group
+            </h3>
+            <p class="mt-1 max-w-sm text-sm text-slate-500">
+              Try removing filters, or search for a topic above.
+            </p>
+            <button
+              @click="clearFilters()"
+              class="mt-4 rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/5"
+            >
+              Clear filters
+            </button>
+          </div>
         </div>
-        <!-- intersection sentinel -->
+
+        <!-- ═══════════════════ PAGINATED RESULTS (existing) ═══════════════════ -->
+        <div x-show="mode !== 'clustered'">
+          <!-- skeleton on first load -->
+          <div
+            x-show="items.length === 0 && loading"
+            class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+          >
+            <template x-for="i in 10" :key="i">
+              <div
+                class="overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
+              >
+                <div class="aspect-[4/3] skeleton"></div>
+                <div class="space-y-2 p-3">
+                  <div class="h-3 w-4/5 skeleton rounded"></div>
+                  <div class="h-2.5 w-2/5 skeleton rounded"></div>
+                  <div class="flex gap-1 pt-1">
+                    <div class="h-4 w-12 skeleton rounded"></div>
+                    <div class="h-4 w-14 skeleton rounded"></div>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- cards grid -->
+          <div
+            x-show="items.length > 0"
+            class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+          >
+            <template x-for="(v, idx) in items" :key="v.id + '-' + idx">
+              <article
+                class="card-enter group relative overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
+                :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
+              >
+                <div class="relative aspect-[4/3] overflow-hidden bg-ink-800">
+                  <img
+                    :src="v.thumbnail"
+                    :alt="v.title"
+                    loading="lazy"
+                    decoding="async"
+                    class="h-full w-full object-cover transition duration-500 group-hover:scale-110"
+                    @error="$event.target.style.opacity = .2"
+                  />
+                  <div
+                    class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
+                  ></div>
+                  <div
+                    x-show="v.similarity != null"
+                    class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-accent-300 backdrop-blur"
+                  >
+                    <i data-lucide="target" class="h-3 w-3"></i>
+                    <span x-text="(v.similarity * 100).toFixed(0) + '%'"></span>
+                  </div>
+                  <div
+                    x-show="v.release_date"
+                    class="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-slate-300 backdrop-blur"
+                    x-text="v.release_date?.slice(0,4)"
+                  ></div>
+                  <div
+                    class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
+                  >
+                    <button
+                      @click="openDetail(v.id)"
+                      class="flex items-center gap-1.5 rounded-full bg-accent-500 px-3 py-1.5 text-xs font-bold text-ink-950 transition hover:scale-105"
+                    >
+                      <i data-lucide="play" class="h-3.5 w-3.5"></i> Preview
+                    </button>
+                    <button
+                      @click="findSimilar(v.id)"
+                      class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
+                    >
+                      <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="p-3">
+                  <h3
+                    @click="openDetail(v.id)"
+                    class="line-clamp-2 min-h-[2.4em] cursor-pointer text-[13px] font-semibold leading-snug text-slate-100 transition group-hover:text-accent-300"
+                    x-text="v.title || '(untitled)'"
+                  ></h3>
+                  <div
+                    class="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500"
+                  >
+                    <span
+                      class="rounded bg-ink-700 px-1.5 py-0.5 font-mono text-[10px] text-accent-300"
+                      x-text="v.code"
+                    ></span>
+                    <span x-text="v.episode"></span>
+                  </div>
+                  <div class="mt-2 flex flex-wrap gap-1">
+                    <template
+                      x-for="g in (v.genres ?? []).slice(0, 2)"
+                      :key="g"
+                    >
+                      <span
+                        class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
+                        x-text="g"
+                      ></span>
+                    </template>
+                    <span
+                      x-show="(v.genres?.length ?? 0) > 2"
+                      class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
+                      x-text="`+${(v.genres?.length ?? 0) - 2}`"
+                    ></span>
+                  </div>
+                </div>
+              </article>
+            </template>
+          </div>
+
+          <!-- empty state -->
+          <div
+            x-show="!loading && items.length === 0"
+            class="flex flex-col items-center justify-center py-24 text-center"
+          >
+            <div
+              class="grid h-16 w-16 place-items-center rounded-2xl bg-ink-800 text-slate-500"
+            >
+              <i data-lucide="ghost" class="h-8 w-8"></i>
+            </div>
+            <h3 class="mt-4 text-lg font-semibold text-slate-300">
+              No results
+            </h3>
+            <p class="mt-1 max-w-sm text-sm text-slate-500">
+              Try removing some filters, or rephrase your query.
+            </p>
+            <button
+              @click="clearFilters()"
+              class="mt-4 rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/5"
+            >
+              Clear filters
+            </button>
+          </div>
+
+          <!-- load more / sentinel -->
+          <div
+            x-show="items.length > 0"
+            class="mt-8 flex flex-col items-center gap-4"
+          >
+            <button
+              x-show="!exhausted"
+              @click="loadMore()"
+              :disabled="loading"
+              class="flex items-center gap-2 rounded-xl border border-white/10 bg-ink-800 px-5 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-accent-500/40 hover:bg-ink-700 disabled:opacity-50"
+            >
+              <template x-if="loading"
+                ><i data-lucide="loader-2" class="h-4 w-4 animate-spin"></i
+              ></template>
+              <template x-if="!loading"
+                ><i data-lucide="chevron-down" class="h-4 w-4"></i
+              ></template>
+              <span x-text="loading ? 'Loading…' : 'Load more'"></span>
+            </button>
+            <p x-show="exhausted" class="text-xs text-slate-600">
+              — you've reached the end —
+            </p>
+          </div>
+        </div>
+
+        <!-- intersection sentinel (paginated modes only) -->
         <div x-ref="sentinel" class="h-1"></div>
       </section>
     </div>
-    <!-- ═══════════════════ DETAIL MODAL ═══════════════════ -->
+
+    <!-- ═══════════════════ DETAIL MODAL (unchanged) ═══════════════════ -->
     <div
       x-show="detail.open"
       x-cloak
@@ -640,7 +1028,6 @@
         </template>
         <template x-if="detail.video">
           <div>
-            <!-- media -->
             <div class="aspect-video bg-black">
               <template x-if="detail.video.preview">
                 <video
@@ -660,7 +1047,6 @@
                 />
               </template>
             </div>
-            <!-- meta -->
             <div class="max-h-[50vh] overflow-y-auto p-5">
               <div class="mb-2 flex items-center gap-2 text-xs text-slate-500">
                 <span
@@ -680,7 +1066,7 @@
               <div class="mt-3 flex flex-wrap gap-1.5">
                 <template x-for="g in (detail.video.genres || [])" :key="g">
                   <span
-                    @click="closeDetail(); filters.genres=[g]; refetch()"
+                    @click="closeDetail(); filters.genres=[g]; mode === 'clustered' ? fetchClustered() : refetch()"
                     class="cursor-pointer rounded-full border border-white/10 bg-ink-800 px-2.5 py-0.5 text-[11px] text-slate-400 transition hover:border-accent-500/40 hover:text-accent-300"
                     x-text="g"
                   ></span>
@@ -713,7 +1099,8 @@
         </template>
       </div>
     </div>
-    <!-- ═══════════════════ TOASTS ═══════════════════ -->
+
+    <!-- ═══════════════════ TOASTS (unchanged) ═══════════════════ -->
     <div
       class="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2"
     >
@@ -721,10 +1108,10 @@
         <div
           class="pointer-events-auto flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm shadow-lg backdrop-blur-md"
           :class="{
-           'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
-           'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
-           'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
-         }"
+            'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
+            'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
+            'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
+          }"
           x-transition
         >
           <i
@@ -735,6 +1122,7 @@
         </div>
       </template>
     </div>
+
     <!-- App Logic -->
     <script src="app.js"></script>
   </body>

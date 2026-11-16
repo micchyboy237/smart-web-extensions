@@ -1,18 +1,18 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-16T11:51:44.175523
+Generated: 2026-11-16T21:15:54.169125
 ================================================================================
 
 ## DATABASE OVERVIEW
 Available Schemas: public
 Target Schema: public
-Total Tables: 1
-Tables: videos
+Total Tables: 2
+Tables: videos, videos_title_backup
 
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.videos (50323 rows)
+### Table: public.videos (52144 rows)
 ```sql
 CREATE TABLE "public"."videos" (
     "id" text NOT NULL,
@@ -55,26 +55,53 @@ CREATE TABLE "public"."videos" (
 - `videos_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX videos_pkey ON public.videos USING btree (id)
 - `videos_title_fts_idx`: CREATE INDEX videos_title_fts_idx ON public.videos USING gin (to_tsvector('english'::regconfig, title))
 
+### Table: public.videos_title_backup (13787 rows)
+```sql
+CREATE TABLE "public"."videos_title_backup" (
+    "id" text NULL,
+    "code" text NULL,
+    "episode" text NULL,
+    "title" text NULL,
+    "backed_up_at" timestamp with time zone NULL
+);
+```
+
+**Columns:**
+- `id`: text (nullable)
+- `code`: text (nullable)
+- `episode`: text (nullable)
+- `title`: text (nullable)
+- `backed_up_at`: timestamp with time zone (nullable)
+
 ## COLUMN STATISTICS SUMMARY
 --------------------------------------------------------------------------------
 
 ### Table: videos
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | text | 50323 | 0.0% |
-| `embedding` | vector(768) | 48569 | 0.0% |
-| `url` | text | 50323 | 0.0% |
+| `id` | text | 52144 | 0.0% |
+| `embedding` | vector(768) | 50423 | 0.0% |
+| `url` | text | 52144 | 0.0% |
 | `code` | text | 3199 | 0.0% |
 | `episode` | text | 3412 | 0.0% |
-| `video_id` | text | 46804 | 0.0% |
-| `title` | text | 43410 | 0.0% |
-| `thumbnail` | text | 50278 | 0.0% |
-| `preview` | text | 50276 | 0.0% |
-| `details` | text | 7782 | 78.16% |
-| `release_date` | timestamp with time zone | 6676 | 76.77% |
-| `created_at` | timestamp with time zone | 5083 | 0.0% |
-| `updated_at` | timestamp with time zone | 10662 | 0.0% |
-| `genres` | text[] | 7791 | 76.78% |
+| `video_id` | text | 48619 | 0.0% |
+| `title` | text | 44065 | 0.76% |
+| `thumbnail` | text | 52099 | 0.0% |
+| `preview` | text | 52096 | 0.0% |
+| `details` | text | 9679 | 74.1% |
+| `release_date` | timestamp with time zone | 8392 | 72.57% |
+| `created_at` | timestamp with time zone | 5105 | 0.0% |
+| `updated_at` | timestamp with time zone | 51 | 0.0% |
+| `genres` | text[] | 9343 | 71.51% |
+
+### Table: videos_title_backup
+| Column | Type | Distinct Values | Null % |
+|--------|------|-----------------|--------|
+| `id` | text | 13787 | 0.0% |
+| `code` | text | 27 | 0.0% |
+| `episode` | text | 1975 | 0.0% |
+| `title` | text | 10147 | 0.0% |
+| `backed_up_at` | timestamp with time zone | 1 | 0.0% |
 
 ## SAMPLE DATA
 --------------------------------------------------------------------------------
@@ -82,9 +109,16 @@ CREATE TABLE "public"."videos" (
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-1u1ocek | [0.041967575,-0.029361734,-0.01981194,0.02144055,0… | https://missav.ws/dm13/en/nwf-254 | nwf | 254 | nwf-254 | NWF-254 play Mother's Beautiful Ass Misa Arisawa -… | https://fourhoi.com/nwf-254/cover-n.jpg | https://fourhoi.com/nwf-254/preview.mp4 | Uncontrollable to the mother, intense and intense… | 2009-04-15 12:00:35+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 00:39:49.141965+08 | {Mother,Incest,"Butt Fetish",Individual,Ride,Exclu… |
-| jav-118mqvo | [0.012843765,0.011284435,-0.016049515,0.06853018,0… | https://missav.ws/dm2/en/juc-729-uncensored-leak | juc | 729 | juc-729 | JUC-729 Slave Wife: I Want to Please You... Miwako… | https://fourhoi.com/juc-729-uncensored-leak/cover-… | https://fourhoi.com/juc-729-uncensored-leak/previe… | The Yamamotos are a happy couple with a good relat… | 2012-01-21 11:00:37+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 02:18:23.837862+08 | {"Uncensored leak",Humiliation,Shame,"Mature Woman… |
-| jav-3dr27w | [0.010152726,0.0449282,-0.07865675,0.019591875,0.0… | https://missav.ws/dm26/en/natr-454 | natr | 454 | natr-454 | NATR-454 This is Mao Hamasaki from the Naked House… | https://fourhoi.com/natr-454/cover-n.jpg | https://fourhoi.com/natr-454/preview.mp4 | A housekeeper who does housework naked. Their work… | 2015-04-10 12:00:35+08 | 2026-11-12 13:08:48.393184+08 | 2026-11-16 06:22:38.962882+08 | {"Various Occupations","Big Breasts",Fetish,Indivi… |
+| jav-100hszg | [0.014488542,0.074044116,-0.031004738,0.038037527,… | https://missav.ws/dm2/en/juc-707-uncensored-leak | juc | 707 | juc-707 | A Married Woman's Embarrassing Job ~Beautiful Ass… | https://fourhoi.com/juc-707-uncensored-leak/cover-… | https://fourhoi.com/juc-707-uncensored-leak/previe… | Nana is living a happy life with her husband. One… | 2011-12-29 11:00:38+08 | 2026-11-12 13:12:30.691758+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak",Shame,"Mature Woman","Various O… |
+| jav-100sork | [0.017019205,0.026341263,-0.048715793,0.03012967,0… | https://missav.ws/dm95/en/wnz-395 | wnz | 395 | wnz-395 | I will lend you a young wife who can do vaginal cu… | https://fourhoi.com/wnz-395/cover-n.jpg | https://fourhoi.com/wnz-395/preview.mp4 | A young wife, Miki, came to an interview to repay… | 2011-12-13 11:00:14+08 | 2026-11-12 13:18:55.477351+08 | 2026-11-16 21:12:37.409468+08 | {Cunnilingus,"Young Wife",Individual,Creampie,Orgy… |
+| jav-10109o | [0.016260069,0.009397987,0.011582558,-0.007827973,… | https://missav.ws/en/sprd-1483-uncensored-leak | sprd | 1483 | sprd-1483 | It's better than my husband ... Chinatsu Asamiya | https://fourhoi.com/sprd-1483-uncensored-leak/cove… | https://fourhoi.com/sprd-1483-uncensored-leak/prev… | He works for the former residence of the cameraman… | 2021-11-11 11:00:30+08 | 2026-11-12 13:24:47.556815+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak","Mature Woman",Wife,Adultery,In… |
+
+### Table: videos_title_backup (first 3 rows)
+| id | code | episode | title | backed_up_at |
+| --- | --- | --- | --- | --- |
+| jav-1k067am | fc2-ppv | 3725436 | FC2-PPV-3725436 【Pajamas Monashi】Pajamas de Ojama♥… | 2026-11-16 20:32:06.000851+08 |
+| jav-1fp67co | venu | 028 | VENU-028 play A Perverted Family's New Form Of Lov… | 2026-11-16 20:32:06.000851+08 |
+| jav-1u1ocek | nwf | 254 | NWF-254 play Mother's Beautiful Ass Misa Arisawa -… | 2026-11-16 20:32:06.000851+08 |
 
 ## QUERY GUIDANCE FOR DYNAMIC POSTGRESQL QUERIES
 --------------------------------------------------------------------------------
@@ -93,7 +127,7 @@ When constructing PostgreSQL queries based on user questions:
 
 1. **Identify Tables**: Use table names above to determine which tables to query
 2. **Available Columns**: See column lists for each table above
-3. **Common Column Names Found**: id, embedding, url, code, episode, video_id, title, thumbnail, preview, details, release_date, created_at, updated_at, genres
+3. **Common Column Names Found**: id, embedding, url, code, episode, video_id, title, thumbnail, preview, details, release_date, created_at, updated_at, genres, backed_up_at
 4. **Relationships**: Check foreign keys section for table relationships
 5. **Data Types**: Note column types for proper filtering and casting
 6. **Truncated values**: Sample values ending with … are cut for display only
