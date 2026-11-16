@@ -40,7 +40,6 @@ from jet.adapters.llama_cpp.config import (
 )
 from jet.adapters.llama_cpp.diversity_utils import (
     compute_shuffle_fetch_k,
-    diversify_results,
     shuffle_and_diversify,
 )
 from jet.adapters.llama_cpp.embed_utils import embed, shutdown_embed_pool
@@ -81,8 +80,6 @@ INGEST_MAX_TOKENS = 512
 # --------------------------------------------------------------------------- #
 CLUSTER_CANDIDATE_CAP_QUERY = int(os.getenv("CLUSTER_CANDIDATE_CAP_QUERY", "5000"))
 CLUSTER_CANDIDATE_CAP_BROWSE = int(os.getenv("CLUSTER_CANDIDATE_CAP_BROWSE", "5000"))
-# Per-cluster MMR input cap. Prevents O(n^2) blowup on huge clusters.
-CLUSTER_ITEM_MMR_INPUT_CAP = int(os.getenv("CLUSTER_ITEM_MMR_INPUT_CAP", "200"))
 
 _PREFIX_RE = re.compile(r"^\s*([A-Za-z0-9]+)-\d+\s*[:\-\u2013\u2014]?\s*")
 
@@ -329,6 +326,8 @@ class ClusteredSearchRequest(BaseModel):
             "by cosine distance and `similarity` is populated on each item."
         ),
     )
+
+    # cluster_utils tuning — mirrors the CLI flags.
     min_cluster_size: int = Field(
         2,
         ge=2,
@@ -344,6 +343,8 @@ class ClusteredSearchRequest(BaseModel):
             "Lower = stricter, tighter groups with more noise."
         ),
     )
+
+    # Candidate fetching.
     cluster_candidate_limit: Optional[int] = Field(
         None,
         ge=10,
@@ -364,6 +365,8 @@ class ClusteredSearchRequest(BaseModel):
             "release_date/created_at desc; 'random' uses random() ordering."
         ),
     )
+
+    # Standard filters.
     genre: GenreCodeInput = None
     genres_mode: Literal["any", "all"] = "any"
     min_release_date: Optional[datetime] = None
@@ -377,71 +380,10 @@ class ClusteredSearchRequest(BaseModel):
     )
     completion_filter: CompletionFilter = "all"
 
-    # ------------------------------------------------------------------
-    # NEW: per-cluster item diversification (opt-in; defaults preserve
-    # the historical "return every member" behavior).
-    # ------------------------------------------------------------------
-    diversify_items: bool = Field(
-        False,
-        description=(
-            "When True, applies MMR diversification inside each non-noise "
-            "cluster. `size` on each ClusterItem then reflects the number of "
-            "items actually returned after diversification."
-        ),
-    )
-    items_per_cluster: Optional[int] = Field(
-        None,
-        ge=1,
-        le=100,
-        description=(
-            "Cap on items returned per cluster after diversification. "
-            "None = no cap (all members returned, MMR only re-orders if "
-            "diversify_items=True)."
-        ),
-    )
-    item_diversity: float = Field(
-        0.6,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "MMR trade-off between diversity (1.0) and relevance (0.0) "
-            "for per-cluster item selection. Only used when "
-            "diversify_items=True."
-        ),
-    )
-    diversify_noise: bool = Field(
-        False,
-        description=(
-            "When True, also diversifies the Noise/Outliers bucket. "
-            "Off by default — noise is low-cohesion by definition and MMR "
-            "rarely helps there."
-        ),
-    )
-    item_seed: int = Field(
-        default_factory=lambda: int(time.time() * 1000) % 10**9,
-        description=(
-            "Random seed for per-cluster shuffle+diversify. Only used when "
-            "diversify_items=True AND item_shuffle=True. Change it to get a "
-            "different 'page' of each cluster."
-        ),
-    )
-    item_shuffle: bool = Field(
-        False,
-        description=(
-            "When True, per-cluster selection uses shuffle_and_diversify "
-            "(weighted sample + MMR), so `item_seed` changes the result. "
-            "When False, uses pure diversify_results (deterministic MMR)."
-        ),
-    )
-
     @model_validator(mode="after")
     def _check_query_dependencies(self) -> "ClusteredSearchRequest":
         if self.query is None and self.min_similarity is not None:
             raise ValueError("min_similarity requires a query")
-        if self.items_per_cluster is not None and not self.diversify_items:
-            raise ValueError("items_per_cluster requires diversify_items=True")
-        if self.item_shuffle and not self.diversify_items:
-            raise ValueError("item_shuffle requires diversify_items=True")
         return self
 
 
@@ -459,29 +401,10 @@ class ClusterItem(BaseModel):
         None,
         description="'Noise/Outliers' for the -1 bucket, else None.",
     )
-    size: int = Field(
-        ...,
-        description=(
-            "Number of items in this cluster AFTER per-cluster "
-            "diversification (equals full membership when "
-            "diversify_items=False)."
-        ),
-    )
-    full_size: int = Field(
-        ...,
-        ge=0,
-        description=(
-            "Original cluster membership count BEFORE diversification. "
-            "Equals `size` when diversify_items=False. Use this for ranking "
-            "or stats that should be independent of the display cap."
-        ),
-    )
+    size: int
     centroid_similarity: Optional[float] = Field(
         None,
-        description=(
-            "Mean query-similarity over FULL cluster membership; None when "
-            "query is None. Unaffected by per-cluster diversification."
-        ),
+        description="Mean query-similarity of members; None when query is None.",
     )
     consistency_score: Optional[float] = Field(
         None,
@@ -503,13 +426,6 @@ class ClusterItem(BaseModel):
     is_noise: bool = Field(
         False,
         description="True only for the -1 bucket ('Noise/Outliers').",
-    )
-    diversified: bool = Field(
-        False,
-        description=(
-            "True when per-cluster MMR ran on this cluster's items. "
-            "False when full membership is returned as-is."
-        ),
     )
     items: List[VideoItem]
 
@@ -938,124 +854,14 @@ def _fetch_clustered_candidates(req: ClusteredSearchRequest, limit: int) -> List
         return conn.execute(sql, params).fetchall()
 
 
-def _diversify_cluster_items(
-    *,
-    req: ClusteredSearchRequest,
-    items: List[VideoItem],
-    embeddings: np.ndarray,  # aligned 1:1 with `items`
-    is_noise: bool,
-) -> Tuple[List[VideoItem], bool]:
-    """
-    Apply per-cluster diversification to `items` using precomputed embeddings.
-
-    Returns (kept_items, diversified_flag).
-
-    Design notes
-    ------------
-    * Reuses the caller's candidate embeddings — never re-embeds via llama.cpp.
-    * Scores: probability > similarity > 0.0. Probability is available in
-      both query and browse modes; similarity is only in query mode.
-    * When `len(items) <= 1`, or when the cluster is noise and the caller
-      did not opt in, returns items unchanged.
-    * `items_per_cluster` caps the *returned* count; the MMR input is
-      additionally capped at CLUSTER_ITEM_MMR_INPUT_CAP to bound latency
-      on pathological clusters.
-    * The returned list preserves input order of the kept items (i.e. the
-      cluster_utils (silhouette, probability)-desc order), so downstream
-      consumers that rely on ranking stability still work.
-    """
-    if not req.diversify_items or len(items) <= 1:
-        return items, False
-    if is_noise and not req.diversify_noise:
-        return items, False
-
-    # --- Build the MMR input pool ---------------------------------------
-    pool = items
-    pool_embeddings = embeddings
-    truncated_for_mmr = False
-    if CLUSTER_ITEM_MMR_INPUT_CAP > 0 and len(pool) > CLUSTER_ITEM_MMR_INPUT_CAP:
-        # `items` is already (silhouette, probability)-desc; keep the
-        # strongest members. Slice embeddings in lockstep.
-        pool = pool[:CLUSTER_ITEM_MMR_INPUT_CAP]
-        pool_embeddings = embeddings[:CLUSTER_ITEM_MMR_INPUT_CAP]
-        truncated_for_mmr = True
-        logger.info(
-            "diversify_cluster: capped MMR input from %d -> %d "
-            "(cluster_id=%s noise=%s)",
-            len(items),
-            len(pool),
-            items[0].id if items else "?",
-            is_noise,
-        )
-
-    search_results: List[dict] = []
-    for it in pool:
-        if it.probability is not None:
-            score = float(it.probability)
-        elif it.similarity is not None:
-            score = float(it.similarity)
-        else:
-            score = 0.0
-        search_results.append(
-            {
-                "id": it.id,
-                "score": score,
-                "document": it.title or "",
-            }
-        )
-
-    top_k = (
-        min(req.items_per_cluster, len(search_results))
-        if req.items_per_cluster is not None
-        else len(search_results)
-    )
-    if top_k <= 0:
-        return [], True
-
-    # --- Run MMR ---------------------------------------------------------
-    try:
-        if req.item_shuffle:
-            picked = shuffle_and_diversify(
-                results=search_results,
-                top_k=top_k,
-                diversity=req.item_diversity,
-                seed=req.item_seed,
-                relevance_bias=1.0,
-                embeddings=pool_embeddings,
-            )
-        else:
-            picked = diversify_results(
-                results=search_results,
-                top_k=top_k,
-                diversity=req.item_diversity,
-                embeddings=pool_embeddings,
-            )
-    except Exception as e:
-        logger.warning(
-            "diversify_cluster: MMR failed (%s); returning undiversified items",
-            e,
-        )
-        return items, False
-
-    keep_ids = {r["id"] for r in picked}
-    # Preserve the original (silhouette, probability) order.
-    kept = [it for it in items if it.id in keep_ids]
-
-    # If the pool was truncated for latency, the tail (unseen by MMR) is
-    # still valid membership — but the caller asked for a display cap, so
-    # we honor the cap and drop it. If no cap was requested, append it so
-    # we never silently lose members.
-    if truncated_for_mmr and req.items_per_cluster is None:
-        kept_ids = {it.id for it in kept}
-        kept.extend(it for it in items if it.id not in kept_ids)
-
-    return kept, True
-
-
 @app.post("/search_clustered", response_model=ClusteredSearchResponse)
 def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
     t0 = time.perf_counter()
+
+    # ---- 0. Resolve the effective candidate limit (request or server cap) ----
     limit = _resolve_cluster_candidate_limit(req)
+
+    # ---- 1. Fetch candidates ----
     try:
         rows = _fetch_clustered_candidates(req, limit)
     except Exception as e:
@@ -1074,11 +880,22 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
             took_ms=(time.perf_counter() - t0) * 1000,
         )
 
+    # ---- 2. Build the embedding matrix once ----
     matrix = np.asarray(
         [_to_float_list(r["embedding"]) for r in rows], dtype=np.float32
     )
-    texts = [f"{r['id']}" for r in rows]
 
+    # ---- 3. Hand everything to cluster_utils ----
+    #
+    # `texts` are only used as labels by get_detailed_analysis(); the
+    # embeddings drive clustering. Dedup is off because row ids are unique
+    # and `original_indices` must line up 1:1 with `rows`.
+    #
+    # TextsClusterer picks `k` automatically via HDBSCAN (n >= 10) or
+    # Spectral (n < 10), exactly like cluster_utils.main() does. It also
+    # computes probabilities, centroids, cluster_consistency, and silhouette
+    # scores — the endpoint never touches any of that.
+    texts = [f"{r['id']}" for r in rows]
     clusterer = TextsClusterer(
         min_cluster_size=req.min_cluster_size,
         cluster_selection_epsilon=req.cluster_selection_epsilon,
@@ -1089,11 +906,20 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
         deduplicate=False,
         embeddings=matrix,
     )
+
     analysis = clusterer.get_detailed_analysis()
     summary = clusterer.get_summary(analysis)
 
+    # ---- 4. Translate cluster_utils output to the response shape ----
+    #
+    # For each analysis entry:
+    #   - "original_indices" → row indices (we passed indices=range(len(rows)))
+    #   - "all_texts"        → row ids, same order as original_indices
+    #   - "probabilities", "distances_to_centroid", "silhouette_scores"
+    #     are aligned with all_texts.
+    # get_detailed_analysis already sorts members by (silhouette, probability)
+    # descending, so items within each cluster come out core-first.
     by_id: Dict[str, dict] = {r["id"]: r for r in rows}
-    idx_of: Dict[str, int] = {r["id"]: i for i, r in enumerate(rows)}
 
     clusters: List[ClusterItem] = []
     for cluster_name, info in analysis.items():
@@ -1117,62 +943,42 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
             item.silhouette = float(sil)
             items.append(item)
 
-        full_size = len(items)
-
-        # --- centroid_similarity is a CLUSTER property: compute from the
-        # full membership, BEFORE per-cluster diversification trims it.
+        # Query-dependent cluster field. None when no query was provided.
         centroid_sim = None
         if req.query is not None and items:
             sims = [it.similarity for it in items if it.similarity is not None]
             if sims:
                 centroid_sim = float(np.mean(sims))
 
-        # --- NEW: per-cluster diversification ---------------------------
-        diversified = False
-        if req.diversify_items and full_size > 1:
-            cluster_embeddings = np.asarray(
-                [matrix[idx_of[it.id]] for it in items], dtype=np.float32
-            )
-            items, diversified = _diversify_cluster_items(
-                req=req,
-                items=items,
-                embeddings=cluster_embeddings,
-                is_noise=is_noise,
-            )
-
+        # Per-cluster rollups live in get_summary()['cluster_details'].
         detail = summary["cluster_details"].get(cluster_name, {})
+
         clusters.append(
             ClusterItem(
                 cluster_id=cluster_id,
                 label="Noise/Outliers" if is_noise else None,
                 size=len(items),
-                full_size=full_size,
                 centroid_similarity=centroid_sim,
                 consistency_score=float(detail.get("consistency_score", 0.0)),
                 avg_silhouette=float(detail.get("avg_silhouette_score", 0.0)),
                 misplaced_items_count=int(detail.get("misplaced_items_count", 0)),
                 is_noise=is_noise,
-                diversified=diversified,
                 items=items,
             )
         )
 
-    # Rank on full_size (stable irrespective of any display cap).
-    clusters.sort(
-        key=lambda c: (c.is_noise, -((c.consistency_score or 0.0) * c.full_size))
-    )
+    # Cluster ordering: cohesion × size, noise last. Member ordering inside
+    # each cluster is already handled by get_detailed_analysis().
+    clusters.sort(key=lambda c: (c.is_noise, -((c.consistency_score or 0.0) * c.size)))
 
     took = (time.perf_counter() - t0) * 1000
     logger.info(
-        "search_clustered ok query=%s limit=%d rows=%d k=%d noise=%d "
-        "diversify=%s cap=%s took=%.1fms",
+        "search_clustered ok query=%s limit=%d rows=%d k=%d noise=%d took=%.1fms",
         bool(req.query),
         limit,
         len(rows),
         summary["summary"]["n_clusters"],
         summary["summary"]["n_noise"],
-        req.diversify_items,
-        req.items_per_cluster,
         took,
     )
     return ClusteredSearchResponse(

@@ -416,17 +416,17 @@
           <!-- active filter pills -->
           <div class="flex flex-wrap items-center gap-1.5">
             <!--
-  Clustered-mode config.
-  Core knobs: min_cluster_size (-s), epsilon (-e), candidate pool, and
-  candidate_source when the query is blank.
-  Diversification controls are behind a "Diversify" popover and off by
-  default, so the toolbar stays compact until the user opts in.
--->
+              Clustered-mode config.
+              No "groups" field — the server picks k. Instead we expose the
+              cluster_utils knobs: min_cluster_size (-s), epsilon (-e),
+              candidate pool, and candidate_source when the query is blank.
+            -->
             <div
               x-show="mode === 'clustered'"
               class="inline-flex flex-wrap items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-200"
             >
               <i data-lucide="layers" class="h-3 w-3"></i>
+
               <!-- Presets -->
               <select
                 @change="applyClusterPreset($event.target.value); $event.target.value = ''"
@@ -438,6 +438,7 @@
                 <option value="balanced">Balanced</option>
                 <option value="loose">Loose groups</option>
               </select>
+
               <span class="text-violet-400/60">|</span>
               <label
                 class="flex items-center gap-1"
@@ -486,6 +487,7 @@
                   class="w-16 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 placeholder:text-violet-400/40 focus:outline-none"
                 />
               </label>
+
               <!-- Candidate source — only meaningful when there's no query -->
               <span
                 x-show="!lastQuery"
@@ -505,200 +507,6 @@
                   </select>
                 </label>
               </span>
-
-              <!-- ── NEW: diversification controls ── -->
-              <span class="text-violet-400/60">|</span>
-              <div class="relative" x-data="{ open: false }">
-                <button
-                  @click="open = !open"
-                  :class="clusterDiversifyActive()
-      ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40'
-      : 'border-violet-500/30 text-violet-100 hover:bg-violet-500/10'"
-                  class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition"
-                  title="Per-cluster item diversification"
-                >
-                  <i data-lucide="shuffle" class="h-3 w-3"></i>
-                  <span
-                    x-text="clusterDiversifyActive() ? 'diversified' : 'diversify'"
-                  ></span>
-                  <template
-                    x-if="clusterDiversifyActive() && clusterPrefs.itemsPerCluster"
-                  >
-                    <span
-                      class="rounded bg-emerald-500/30 px-1 text-[10px]"
-                      x-text="`≤${clusterPrefs.itemsPerCluster}`"
-                    ></span>
-                  </template>
-                </button>
-
-                <!-- Popover -->
-                <div
-                  x-show="open"
-                  @click.outside="open = false"
-                  x-transition
-                  class="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border border-white/10 bg-ink-900 p-3 shadow-2xl"
-                >
-                  <div class="mb-2 flex items-center justify-between">
-                    <span
-                      class="text-[11px] font-bold uppercase tracking-wider text-slate-400"
-                    >
-                      Diversify per cluster
-                    </span>
-                    <button
-                      @click="applyDiversifyPreset('off'); open = false"
-                      class="rounded p-1 text-slate-500 hover:bg-white/5 hover:text-slate-300"
-                      title="Reset to off"
-                    >
-                      <i data-lucide="rotate-ccw" class="h-3 w-3"></i>
-                    </button>
-                  </div>
-
-                  <!-- Enable toggle -->
-                  <label
-                    class="mb-2 flex items-center justify-between rounded-lg bg-ink-800 px-2 py-1.5"
-                  >
-                    <span class="text-[11px] text-slate-300">Enable MMR</span>
-                    <input
-                      type="checkbox"
-                      x-model="clusterPrefs.diversifyItems"
-                      @change="applyClusterPrefs()"
-                      class="h-4 w-4 rounded border-white/20 bg-ink-900 text-emerald-500 focus:ring-emerald-500/40"
-                    />
-                  </label>
-
-                  <!-- Presets -->
-                  <div class="mb-2 flex flex-wrap gap-1">
-                    <template
-                      x-for="p in ['off','reorder','capped','paged']"
-                      :key="p"
-                    >
-                      <button
-                        @click="applyDiversifyPreset(p)"
-                        class="rounded border border-white/10 px-2 py-0.5 text-[10px] font-medium text-slate-300 hover:border-violet-400/40 hover:bg-violet-500/10 hover:text-violet-200"
-                        x-text="p"
-                      ></button>
-                    </template>
-                  </div>
-
-                  <!-- Items per cluster -->
-                  <label class="mb-2 flex items-center justify-between">
-                    <span
-                      class="text-[11px] text-slate-400"
-                      title="items_per_cluster"
-                    >
-                      Max items / cluster
-                    </span>
-                    <input
-                      type="number"
-                      min="1"
-                      max="100"
-                      placeholder="no cap"
-                      x-model.number="clusterPrefs.itemsPerCluster"
-                      @change="applyClusterPrefs()"
-                      :disabled="!clusterPrefs.diversifyItems"
-                      class="w-20 rounded bg-ink-800 px-1.5 py-0.5 text-center text-[11px] text-slate-200 placeholder:text-slate-600 disabled:opacity-40 focus:outline-none"
-                    />
-                  </label>
-
-                  <!-- Diversity slider -->
-                  <label class="mb-2 block">
-                    <span
-                      class="flex items-center justify-between text-[11px] text-slate-400"
-                    >
-                      <span title="item_diversity">Diversity</span>
-                      <span
-                        class="font-mono text-slate-300"
-                        x-text="(clusterPrefs.itemDiversity ?? 0.6).toFixed(2)"
-                      ></span>
-                    </span>
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.05"
-                      x-model.number="clusterPrefs.itemDiversity"
-                      @change="applyClusterPrefs()"
-                      :disabled="!clusterPrefs.diversifyItems"
-                      class="w-full accent-emerald-500 disabled:opacity-40"
-                    />
-                    <span
-                      class="mt-0.5 flex justify-between text-[9px] text-slate-600"
-                    >
-                      <span>relevance</span><span>variety</span>
-                    </span>
-                  </label>
-
-                  <!-- Shuffle toggle -->
-                  <label
-                    class="mb-1 flex items-center justify-between rounded-lg bg-ink-800 px-2 py-1.5"
-                  >
-                    <span
-                      class="text-[11px] text-slate-300"
-                      title="item_shuffle + item_seed"
-                    >
-                      Paged results
-                    </span>
-                    <input
-                      type="checkbox"
-                      x-model="clusterPrefs.itemShuffle"
-                      @change="applyClusterPrefs()"
-                      :disabled="!clusterPrefs.diversifyItems"
-                      class="h-4 w-4 rounded border-white/20 bg-ink-900 text-emerald-500 focus:ring-emerald-500/40 disabled:opacity-40"
-                    />
-                  </label>
-                  <p class="mb-1 text-[10px] leading-snug text-slate-500">
-                    When paged, use “Next page” to rotate the per-cluster
-                    sample.
-                  </p>
-
-                  <!-- Noise toggle -->
-                  <label
-                    class="flex items-center justify-between rounded-lg bg-ink-800 px-2 py-1.5"
-                  >
-                    <span
-                      class="text-[11px] text-slate-300"
-                      title="diversify_noise"
-                    >
-                      Include outliers
-                    </span>
-                    <input
-                      type="checkbox"
-                      x-model="clusterPrefs.diversifyNoise"
-                      @change="applyClusterPrefs()"
-                      :disabled="!clusterPrefs.diversifyItems"
-                      class="h-4 w-4 rounded border-white/20 bg-ink-900 text-emerald-500 focus:ring-emerald-500/40 disabled:opacity-40"
-                    />
-                  </label>
-                </div>
-              </div>
-
-              <!-- Prev and Next page buttons — only meaningful when paged -->
-              <template x-if="clusterItemsArePaged()">
-                <div class="inline-flex items-center gap-1">
-                  <button
-                    @click="prevClusterPage()"
-                    :disabled="!canPrevClusterPage()"
-                    class="inline-flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-                    title="Previous page per cluster (item_seed -= 1)"
-                  >
-                    <i data-lucide="chevron-left" class="h-3 w-3"></i>
-                    Prev
-                  </button>
-
-                  <button
-                    @click="nextClusterPage()"
-                    class="inline-flex items-center gap-1 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-200 hover:bg-emerald-500/20"
-                    title="Fetch a different page per cluster (item_seed += 1)"
-                  >
-                    <i data-lucide="refresh-cw" class="h-3 w-3"></i>
-                    Next page
-                    <span
-                      class="rounded bg-emerald-500/30 px-1 text-[10px]"
-                      x-text="`#${clusterPrefs.itemSeed}`"
-                    ></span>
-                  </button>
-                </div>
-              </template>
             </div>
 
             <!-- Sort & Order selector (browse + search) -->
@@ -870,30 +678,14 @@
                       ></span>
                     </template>
                   </span>
-
-                  <!--
-                    Size label:
-                      * full membership when diversify_items=false
-                      * "10 of 31" when items_per_cluster caps a cluster
-                      * plus a tiny "diversified" chip when MMR actually ran on this cluster
-                  -->
                   <span class="text-[11px] text-slate-500">
-                    <span x-text="clusterSizeLabel(c)"></span> items
+                    <span x-text="c.size"></span> items
                     <template x-if="(c.misplaced_items_count ?? 0) > 0">
                       <span class="text-amber-400/80">
                         · <span x-text="c.misplaced_items_count"></span> fringe
                       </span>
                     </template>
                   </span>
-                  <span
-                    x-show="clusterWasDiversified(c)"
-                    class="inline-flex items-center gap-0.5 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300"
-                    title="This cluster's items were MMR-diversified"
-                  >
-                    <i data-lucide="shuffle" class="h-2.5 w-2.5"></i>
-                    <span>diverse</span>
-                  </span>
-
                   <button
                     @click="toggleClusterCoreOnly(c.cluster_id)"
                     class="ml-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition"
