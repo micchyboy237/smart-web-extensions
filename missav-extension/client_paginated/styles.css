@@ -69,7 +69,6 @@ body {
   backdrop-filter: blur(6px);
   background: rgba(5, 7, 12, 0.72);
 }
-
 [x-cloak] {
   display: none !important;
 }
@@ -91,7 +90,6 @@ body {
 /* ─── clustered-mode carousel ─── */
 .carousel-mask {
   position: relative;
-  /* right-edge fade so the user sees there's more to scroll */
   -webkit-mask-image: linear-gradient(
     to right,
     black 0,
@@ -113,7 +111,6 @@ body {
 .carousel > article {
   scroll-snap-align: start;
 }
-/* slight refinement when a row is hidden */
 .cluster-row[class*="opacity-70"] {
   transition: opacity 0.2s ease;
 }

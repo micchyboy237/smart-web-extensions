@@ -1,14 +1,19 @@
 """
 Video Search API (FastAPI + psycopg 3 + pgvector).
 Target Table: public.videos
+
 Endpoints:
-  POST /search     semantic search + filters + cursor pagination
-  POST /similar    similar-to-video (reuses stored embedding)
-  POST /hybrid     FTS + vector RRF hybrid
-  GET  /browse     plain listing (release_date / created_at)
+  POST /search          semantic search + filters + cursor pagination
+  POST /search_clustered semantic search + dynamic clustering (cluster_utils)
+  POST /similar         similar-to-video (reuses stored embedding)
+  POST /hybrid          FTS + vector RRF hybrid
+  GET  /browse          plain listing (release_date / created_at)
   GET  /videos/{id}
+  GET  /videos
   GET  /facets
+  GET  /facets/codes
   GET  /health
+  POST /ingest
 """
 
 import base64
@@ -26,10 +31,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from jet.adapters.llama_cpp.chunking_utils import truncate_texts
-from jet.adapters.llama_cpp.cluster_utils import (
-    TextsClusterer,
-    calculate_custom_confidence,
-)
+from jet.adapters.llama_cpp.cluster_utils import TextsClusterer
 from jet.adapters.llama_cpp.config import (
     EMBED_DOC_PREFIX,
     EMBED_MODEL,
@@ -40,24 +42,17 @@ from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, Field, model_validator
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_samples
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import normalize
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
 )
 logger = logging.getLogger("video_search_api")
+
 DB_CONNINFO = "dbname=missav_db1 user=jethroestrada host=localhost port=5432"
 ITERATIVE_SCAN_MODE: Optional[str] = "strict_order"
 MAX_SCAN_TUPLES = 20000
 INGEST_MAX_TOKENS = 512
 
-# Single shared pattern for both title and details.
-# Matches a leading "<code>-<digits>" followed by optional punctuation
-# (colon / hyphen / en-dash / em-dash) and whitespace.
-# Group 1 = the code as written in the text.
 _PREFIX_RE = re.compile(r"^\s*([A-Za-z0-9]+)-\d+\s*[:\-\u2013\u2014]?\s*")
 
 
@@ -65,7 +60,6 @@ def _strip_code_prefix(text: Optional[str], code: str) -> Optional[str]:
     """
     Remove a leading "<code>-<episode>" prefix from `text` when the embedded
     code matches the row's `code` (case-insensitive).
-
     Only strips when the code in the text equals the row's code, so unrelated
     leading tokens are left alone. Safe for None / empty inputs.
     """
@@ -147,6 +141,9 @@ GenreCodeInput = Optional[Union[str, List[str]]]
 CompletionFilter = Literal["all", "complete", "incomplete"]
 
 
+# --------------------------------------------------------------------------- #
+# /search, /similar, /hybrid — request models
+# --------------------------------------------------------------------------- #
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1)
     limit: int = Field(20, ge=1, le=100)
@@ -187,6 +184,11 @@ class HybridRequest(BaseModel):
     completion_filter: CompletionFilter = "all"
 
 
+# --------------------------------------------------------------------------- #
+# Video model — used by every endpoint.
+# The cluster metric fields (probability, silhouette, distance_to_centroid) are
+# only populated by /search_clustered; other endpoints leave them None.
+# --------------------------------------------------------------------------- #
 class VideoItem(BaseModel):
     id: str
     title: Optional[str]
@@ -198,29 +200,28 @@ class VideoItem(BaseModel):
     thumbnail: Optional[str]
     release_date: Optional[datetime]
     genres: Optional[List[str]]
-
     similarity: Optional[float] = Field(
         None,
         description="Cosine similarity to the query; None when no query was provided.",
     )
 
-    # --- display / ranking signals (populated by /search_clustered) ---
+    # Cluster metrics — populated by /search_clustered only.
     probability: Optional[float] = Field(
         None,
         ge=0.0,
         le=1.0,
-        description="Membership confidence in its cluster (cosine sim to centroid).",
+        description="Membership confidence in its cluster (cluster_utils probabilities).",
     )
     silhouette: Optional[float] = Field(
         None,
         ge=-1.0,
         le=1.0,
-        description="Per-item silhouette; negative = likely misplaced.",
+        description="Per-item silhouette (cluster_utils silhouette_scores).",
     )
     distance_to_centroid: Optional[float] = Field(
         None,
         ge=0.0,
-        description="Cosine distance to its cluster centroid (0 = perfectly typical).",
+        description="Cosine distance to its cluster centroid (cluster_utils distances_to_centroid).",
     )
 
 
@@ -243,6 +244,9 @@ class FacetsResponse(BaseModel):
     years: List[dict]
 
 
+# --------------------------------------------------------------------------- #
+# Ingest models
+# --------------------------------------------------------------------------- #
 class VideoIngestItem(BaseModel):
     id: str
     url: str
@@ -269,6 +273,14 @@ class IngestResponse(BaseModel):
     took_ms: float
 
 
+# --------------------------------------------------------------------------- #
+# Clustered search — request
+#
+# NOTE: `n_clusters` is intentionally absent. The clusterer (TextsClusterer,
+# same as cluster_utils.main()) picks k dynamically via HDBSCAN or Spectral
+# based on `min_cluster_size` and `cluster_selection_epsilon`, which map 1:1
+# to the CLI's `-s / --min-cluster-size` and `-e / --epsilon` flags.
+# --------------------------------------------------------------------------- #
 class ClusteredSearchRequest(BaseModel):
     query: Optional[str] = Field(
         None,
@@ -276,56 +288,44 @@ class ClusteredSearchRequest(BaseModel):
         description=(
             "Optional semantic query. When omitted, candidates are drawn from "
             "the filtered pool via `candidate_source` and clustered by mutual "
-            "embedding similarity — no query vector is used, so `similarity`, "
-            "`min_similarity`, and `centroid_similarity` are not populated."
+            "embedding similarity. When present, candidates are the top-N rows "
+            "by cosine distance and `similarity` is populated on each item."
         ),
     )
 
-    n_clusters: int = Field(
-        3,
-        ge=2,
-        le=10,
-        description=(
-            "Target number of semantic groups. The clusterer auto-selects k; "
-            "the endpoint then merges/splits to land exactly on this value."
-        ),
-    )
-    cluster_candidate_limit: int = Field(
-        100,
-        ge=10,
-        le=500,
-        description="Top-N candidates fetched before clustering.",
-    )
+    # cluster_utils tuning — mirrors the CLI flags.
     min_cluster_size: int = Field(
         2,
         ge=2,
         le=20,
-        description="HDBSCAN min_cluster_size; smaller = more, tighter groups.",
+        description="HDBSCAN min_cluster_size (-s / --min-cluster-size).",
     )
     cluster_selection_epsilon: float = Field(
         0.25,
         ge=0.0,
         le=1.0,
-        description="HDBSCAN cluster_selection_epsilon; lower = stricter, more noise.",
-    )
-    include_noise: bool = Field(
-        False,
         description=(
-            "If true, keep a separate 'Noise/Outliers' cluster in the response. "
-            "If false (default), noise items are folded into their nearest "
-            "centroid cluster so every result appears exactly once."
+            "HDBSCAN cluster_selection_epsilon (-e / --epsilon). "
+            "Lower = stricter, tighter groups with more noise."
         ),
     )
 
+    # Candidate fetching.
+    cluster_candidate_limit: int = Field(
+        100,
+        ge=10,
+        le=500,
+        description="How many candidate rows to fetch before clustering.",
+    )
     candidate_source: Literal["recent", "random"] = Field(
         "recent",
         description=(
             "Only used when `query` is omitted. 'recent' orders by "
-            "release_date/created_at desc; 'random' uses random() ordering for "
-            "variety across requests."
+            "release_date/created_at desc; 'random' uses random() ordering."
         ),
     )
 
+    # Standard filters.
     genre: GenreCodeInput = None
     genres_mode: Literal["any", "all"] = "any"
     min_release_date: Optional[datetime] = None
@@ -346,55 +346,71 @@ class ClusteredSearchRequest(BaseModel):
         return self
 
 
+# --------------------------------------------------------------------------- #
+# Clustered search — response
+# --------------------------------------------------------------------------- #
 class ClusterItem(BaseModel):
-    cluster_id: int
+    """One cluster, translated from cluster_utils.get_detailed_analysis()."""
+
+    cluster_id: int = Field(
+        ...,
+        description="-1 for the noise bucket, else the cluster_utils label.",
+    )
     label: Optional[str] = Field(
         None,
-        description="Human-readable label, when available (e.g. 'Noise/Outliers').",
+        description="'Noise/Outliers' for the -1 bucket, else None.",
     )
     size: int
     centroid_similarity: Optional[float] = Field(
         None,
-        description=(
-            "Mean query-similarity of members. None when no query was provided."
-        ),
+        description="Mean query-similarity of members; None when query is None.",
     )
     consistency_score: Optional[float] = Field(
         None,
         ge=0.0,
         le=1.0,
-        description="Cluster cohesion (L2 norm of mean unit embedding); higher = tighter.",
+        description="cluster_utils consistency_score (L2 norm of mean unit embedding).",
     )
     avg_silhouette: Optional[float] = Field(
         None,
         ge=-1.0,
         le=1.0,
-        description="Mean per-item silhouette of members.",
+        description="Mean per-item silhouette (cluster_utils avg_silhouette_score).",
     )
     misplaced_items_count: Optional[int] = Field(
         None,
         ge=0,
-        description="Members with negative silhouette (worth hiding or re-ranking).",
+        description="Members with negative silhouette (cluster_utils misplaced_items_count).",
     )
     is_noise: bool = Field(
         False,
-        description="True only for the optional 'Noise/Outliers' bucket.",
+        description="True only for the -1 bucket ('Noise/Outliers').",
     )
     items: List[VideoItem]
 
 
 class ClusteredSearchResponse(BaseModel):
-    query: str = Field(
-        "",
-        description="Echo of the request query; empty string when query was None.",
+    """Native cluster_utils output (analysis + summary), translated to JSON."""
+
+    query: str = Field("", description="Echo of the request query.")
+    total_results: int = Field(..., description="Candidates fetched before clustering.")
+    n_clusters: int = Field(
+        ..., description="Non-noise clusters returned (summary.n_clusters)."
     )
-    total_results: int
-    n_clusters: int = Field(..., description="Number of clusters actually returned.")
-    n_noise: int = Field(0, description="Items in the noise bucket (0 if folded).")
+    n_noise: int = Field(
+        0, description="Items in the -1 noise bucket (summary.n_noise)."
+    )
+    total_misplaced_items: int = Field(
+        0,
+        description="summary.total_misplaced_items (members with negative silhouette).",
+    )
     clusters: List[ClusterItem]
     took_ms: float
 
 
+# --------------------------------------------------------------------------- #
+# Shared helpers
+# --------------------------------------------------------------------------- #
 def _normalize_list_input(val: GenreCodeInput) -> Optional[List[str]]:
     if val is None:
         return None
@@ -490,6 +506,7 @@ def _apply_filters(req, params: dict, conds: List[str]) -> None:
         op = "@>" if mode == "all" else "&&"
         conds.append(f"genres {op} %(genres)s::text[]")
         params["genres"] = genre_list
+
     code_list = _normalize_list_input(getattr(req, "code", None))
     if code_list:
         if len(code_list) == 1:
@@ -498,12 +515,14 @@ def _apply_filters(req, params: dict, conds: List[str]) -> None:
         else:
             conds.append("code = ANY(%(codes)s)")
             params["codes"] = code_list
+
     if getattr(req, "min_release_date", None):
         conds.append("release_date >= %(min_release_date)s")
         params["min_release_date"] = req.min_release_date
     if getattr(req, "max_release_date", None):
         conds.append("release_date <= %(max_release_date)s")
         params["max_release_date"] = req.max_release_date
+
     completion_filter = getattr(req, "completion_filter", "all")
     if completion_filter == "complete":
         conds.append(
@@ -524,10 +543,8 @@ def _build_order_clause(
 ) -> Tuple[str, str]:
     """
     Returns (order_by_sql, sort_key_expr_sql).
-    - order_by_sql is the full ORDER BY clause.
-    - sort_key_expr_sql is the expression whose value is used in the cursor.
-    PostgreSQL forbids aliasing a SELECT-list output inside ORDER BY expressions,
-    so for similarity we substitute the raw distance expression.
+    PostgreSQL forbids aliasing a SELECT-list output inside ORDER BY
+    expressions, so for similarity we substitute the raw distance expression.
     """
     actual_dir = "ASC" if order_dir == "desc" else "DESC"
     if sort_col == "similarity":
@@ -552,8 +569,6 @@ def _cursor_predicate(
     conds: List[str],
     distance_sql: Optional[str] = None,
 ) -> None:
-    if not params.get("_cursor_key") and params.get("_cursor_key") is not None:
-        pass
     sort_key = params.get("_cursor_key")
     last_id = params.get("_cursor_id")
     if sort_key is None and last_id is None:
@@ -571,13 +586,46 @@ def _cursor_predicate(
             conds.append(f"(id {op} %(_cursor_id)s)")
         else:
             conds.append(
-                f"(({sort_col}, id) {op} (%(_cursor_key)s::{'timestamp with time zone' if sort_col in ('release_date', 'created_at') else 'float8'}, %(_cursor_id)s))"
-                f" OR {sort_col} IS NULL"
+                f"(({sort_col}, id) {op} (%(_cursor_key)s::"
+                f"{'timestamp with time zone' if sort_col in ('release_date', 'created_at') else 'float8'}"
+                f", %(_cursor_id)s)) OR {sort_col} IS NULL"
             )
         params["_cursor_key"] = sort_key
     params["_cursor_id"] = last_id
 
 
+def _to_float_list(value) -> List[float]:
+    """
+    Normalize a pgvector column value into a plain list[float].
+    Defensive against the several Vector variants across pgvector versions.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [float(x) for x in value]
+    for attr in ("to_list", "tolist"):
+        fn = getattr(value, attr, None)
+        if callable(fn):
+            return [float(x) for x in fn()]
+    fn = getattr(value, "to_numpy", None)
+    if callable(fn):
+        return [float(x) for x in fn().tolist()]
+    try:
+        return [float(x) for x in memoryview(value).cast("f")]
+    except Exception:
+        pass
+    if isinstance(value, str):
+        s = value.strip().strip("[]")
+        return [float(x) for x in s.split(",") if x.strip()]
+    raise TypeError(
+        f"Unsupported embedding value: type={type(value).__name__} "
+        f"dir={[a for a in dir(value) if not a.startswith('__')][:20]}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# /search
+# --------------------------------------------------------------------------- #
 @app.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest) -> SearchResponse:
     t0 = time.perf_counter()
@@ -620,6 +668,7 @@ def search(req: SearchRequest) -> SearchResponse:
     except Exception as e:
         logger.error("DB error: %s", e)
         raise HTTPException(500, f"Search failed: {e}")
+
     has_more = len(rows) > req.limit
     rows = rows[: req.limit]
     next_cursor = None
@@ -646,164 +695,24 @@ def search(req: SearchRequest) -> SearchResponse:
 
 
 # --------------------------------------------------------------------------- #
-# Subclass: make TextsClusterer safe for a request handler.
+# /search_clustered
+#
+# The endpoint has exactly two responsibilities:
+#   1. Fetch candidate rows from Postgres (the only DB concern).
+#   2. Hand the embeddings to TextsClusterer and translate its native
+#      output (FitPredictResult + DetailedAnalysis + SummaryData) into the
+#      response shape.
+#
+# Everything else — k selection, HDBSCAN vs Spectral, noise (-1) bucket,
+# probabilities, centroids, consistency scores, silhouettes, and per-item
+# ordering inside a cluster — comes from cluster_utils unchanged.
 # --------------------------------------------------------------------------- #
-class _RequestSafeClusterer(TextsClusterer):
-    """
-    TextsClusterer with the two request-hostile behaviours removed:
-      - no t-SNE (hundreds of ms, fragile perplexity for small N, unused)
-      - no extra stdout chatter beyond what super() already emits
-    Everything else — HDBSCAN/Spectral selection, probabilities, centroids,
-    consistency scores, silhouette — is inherited unchanged.
-    """
-
-    def _generate_2d_coordinates(self) -> None:
-        n = len(self.embeddings) if self.embeddings is not None else 0
-        self.coordinates_2d = np.zeros((n, 2), dtype=np.float32)
-
-
-# --------------------------------------------------------------------------- #
-# Cluster-count reconciliation: honor req.n_clusters even when the auto-pick
-# (HDBSCAN / Spectral) lands on a different k.
-# --------------------------------------------------------------------------- #
-def _reconcile_k(
-    embeddings: np.ndarray,
-    labels: np.ndarray,
-    target_k: int,
-    rng_seed: int = 42,
-) -> np.ndarray:
-    """
-    Force `labels` to contain exactly `target_k` non-noise clusters.
-      - Too many: merge the two whose centroids are most cosine-similar.
-      - Too few: split the largest cluster with a 2-way KMeans.
-      - Noise (-1) is left alone; folding happens later in the endpoint.
-    """
-    labels = labels.copy()
-
-    def _centroids(lbl: np.ndarray) -> Dict[int, np.ndarray]:
-        out: Dict[int, np.ndarray] = {}
-        for cid in np.unique(lbl):
-            if cid == -1:
-                continue
-            c = embeddings[lbl == cid].mean(axis=0)
-            n = np.linalg.norm(c)
-            out[int(cid)] = c / n if n > 0 else c
-        return out
-
-    # --- merge down ---
-    while True:
-        cents = _centroids(labels)
-        if len(cents) <= target_k:
-            break
-        cids = list(cents.keys())
-        mat = np.vstack([cents[c] for c in cids])
-        sim = cosine_similarity(mat)
-        np.fill_diagonal(sim, -np.inf)
-        i, j = np.unravel_index(np.argmax(sim), sim.shape)
-        keep, drop = cids[i], cids[j]
-        labels[labels == drop] = keep
-
-    # --- split up ---
-    while True:
-        cids = [c for c in np.unique(labels) if c != -1]
-        if len(cids) >= target_k:
-            break
-        sizes = {c: int((labels == c).sum()) for c in cids}
-        biggest = max(sizes, key=sizes.get)
-        mask = labels == biggest
-        sub = embeddings[mask]
-        if sub.shape[0] < 2:
-            break
-        km = KMeans(n_clusters=2, random_state=rng_seed, n_init="auto").fit(sub)
-        next_id = max(int(c) for c in np.unique(labels)) + 1
-        labels[mask] = np.where(km.labels_ == 0, biggest, next_id)
-
-    return labels
-
-
-# --------------------------------------------------------------------------- #
-# Fold noise back into the nearest centroid cluster.
-# --------------------------------------------------------------------------- #
-def _fold_noise(
-    embeddings: np.ndarray,
-    labels: np.ndarray,
-) -> Tuple[np.ndarray, int]:
-    """
-    Reassign every -1 label to the non-noise cluster whose centroid is
-    cosine-closest to that item. Returns (new_labels, n_folded).
-    If there are no non-noise clusters, everything becomes cluster 0.
-    """
-    labels = labels.copy()
-    noise_mask = labels == -1
-    n_folded = int(noise_mask.sum())
-    if n_folded == 0:
-        return labels, 0
-
-    cids = [c for c in np.unique(labels) if c != -1]
-    if not cids:
-        labels[noise_mask] = 0
-        return labels, n_folded
-
-    cents = np.vstack([embeddings[labels == c].mean(axis=0) for c in cids])
-    norms = np.linalg.norm(cents, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    cents = cents / norms
-
-    sims = cosine_similarity(embeddings[noise_mask], cents)
-    nearest = np.argmax(sims, axis=1)
-    labels[noise_mask] = np.asarray(cids)[nearest]
-    return labels, n_folded
-
-
-# --------------------------------------------------------------------------- #
-# Recompute metric bundle after a label change (reconcile / fold).
-# Mirrors cluster_utils' _calculate_centroids + _calculate_silhouette_scores
-# so the numbers stay consistent with what TextsClusterer would produce.
-# --------------------------------------------------------------------------- #
-def _refresh_cluster_metrics(
-    clusterer: "_RequestSafeClusterer",
-    matrix: np.ndarray,
-    labels: np.ndarray,
-) -> None:
-    normalized = normalize(matrix)
-    clusterer.labels = labels
-    clusterer.probabilities = calculate_custom_confidence(normalized, labels)
-
-    centroids: Dict[int, np.ndarray] = {}
-    consistency: Dict[int, float] = {}
-    for cid in np.unique(labels):
-        if cid == -1:
-            continue
-        sub = normalized[labels == cid]
-        raw = sub.mean(axis=0)
-        n = np.linalg.norm(raw)
-        consistency[int(cid)] = float(n)
-        centroids[int(cid)] = raw / n if n > 0 else raw
-    clusterer.centroids = centroids
-    clusterer.cluster_consistency = consistency
-
-    sil = np.zeros(len(labels), dtype=np.float32)
-    mask = labels != -1
-    if mask.sum() >= 2 and np.unique(labels[mask]).size >= 2:
-        try:
-            sil[mask] = silhouette_samples(
-                normalized[mask], labels[mask], metric="cosine"
-            )
-        except Exception:
-            pass
-    clusterer.silhouette_scores = sil
-
-
-# --------------------------------------------------------------------------- #
-# Candidate fetch — query branch and query-less branch.
-# --------------------------------------------------------------------------- #
-def _fetch_clustered_candidates(
-    req: ClusteredSearchRequest,
-) -> List[dict]:
+def _fetch_clustered_candidates(req: ClusteredSearchRequest) -> List[dict]:
     params: dict = {"limit": req.cluster_candidate_limit}
     conds: List[str] = ["embedding IS NOT NULL"]
     _apply_filters(req, params, conds)
 
+    # Query branch: top-N by cosine distance.
     if req.query is not None:
         emb = _to_float_list(_embed_query(req.query))
         params["emb"] = emb
@@ -827,7 +736,7 @@ def _fetch_clustered_candidates(
                 conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {int(MAX_SCAN_TUPLES)}")
             return conn.execute(sql, params).fetchall()
 
-    # query-less branch
+    # Query-less branch: recent or random.
     where_sql = " AND ".join(conds)
     if req.candidate_source == "random":
         order_sql = "ORDER BY random()"
@@ -848,9 +757,6 @@ def _fetch_clustered_candidates(
         return conn.execute(sql, params).fetchall()
 
 
-# --------------------------------------------------------------------------- #
-# Endpoint
-# --------------------------------------------------------------------------- #
 @app.post("/search_clustered", response_model=ClusteredSearchResponse)
 def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
     t0 = time.perf_counter()
@@ -868,227 +774,125 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
             total_results=0,
             n_clusters=0,
             n_noise=0,
+            total_misplaced_items=0,
             clusters=[],
             took_ms=(time.perf_counter() - t0) * 1000,
         )
 
-    # ---- 2. Embedding matrix ----
+    # ---- 2. Build the embedding matrix once ----
     matrix = np.asarray(
         [_to_float_list(r["embedding"]) for r in rows], dtype=np.float32
     )
 
-    # ---- 3. Degenerate: fewer rows than requested clusters ----
-    if len(rows) < req.n_clusters:
-        items: List[VideoItem] = []
-        for r in rows:
-            sim = (1.0 - r["distance"]) if r["distance"] is not None else None
-            item = _row_to_item(r, similarity=sim)
-            item.probability = 1.0 if len(rows) == 1 else None
-            item.silhouette = 0.0
-            item.distance_to_centroid = 0.0
-            items.append(item)
-        clusters = (
-            [
-                ClusterItem(
-                    cluster_id=0,
-                    size=len(items),
-                    centroid_similarity=(
-                        float(
-                            np.mean(
-                                [
-                                    i.similarity
-                                    for i in items
-                                    if i.similarity is not None
-                                ]
-                            )
-                        )
-                        if req.query is not None and items
-                        else None
-                    ),
-                    consistency_score=1.0 if len(items) == 1 else None,
-                    avg_silhouette=0.0,
-                    misplaced_items_count=0,
-                    is_noise=False,
-                    items=items,
-                )
-            ]
-            if items
-            else []
-        )
-        return ClusteredSearchResponse(
-            query=req.query or "",
-            total_results=len(rows),
-            n_clusters=len(clusters),
-            n_noise=0,
-            clusters=clusters,
-            took_ms=(time.perf_counter() - t0) * 1000,
-        )
-
-    # ---- 4. Cluster: pass DB embeddings straight in (no re-embedding) ----
+    # ---- 3. Hand everything to cluster_utils ----
+    #
+    # `texts` are only used as labels by get_detailed_analysis(); the
+    # embeddings drive clustering. Dedup is off because row ids are unique
+    # and `original_indices` must line up 1:1 with `rows`.
+    #
+    # TextsClusterer picks `k` automatically via HDBSCAN (n >= 10) or
+    # Spectral (n < 10), exactly like cluster_utils.main() does. It also
+    # computes probabilities, centroids, cluster_consistency, and silhouette
+    # scores — the endpoint never touches any of that.
     texts = [f"{r['id']}" for r in rows]
-    clusterer = _RequestSafeClusterer(
+    clusterer = TextsClusterer(
         min_cluster_size=req.min_cluster_size,
         cluster_selection_epsilon=req.cluster_selection_epsilon,
     )
-    try:
-        clusterer.fit_predict(
-            texts,
-            indices=list(range(len(rows))),
-            deduplicate=False,
-            embeddings=matrix,
-        )
-    except Exception:
-        logger.exception("clustering failed; falling back to single cluster")
-        _refresh_cluster_metrics(clusterer, matrix, np.zeros(len(rows), dtype=int))
+    clusterer.fit_predict(
+        texts,
+        indices=list(range(len(rows))),
+        deduplicate=False,
+        embeddings=matrix,
+    )
 
-    # ---- 5. Force exactly req.n_clusters non-noise groups ----
-    labels = np.asarray(clusterer.labels)
-    auto_k = len([c for c in np.unique(labels) if c != -1])
-    if auto_k != req.n_clusters:
-        labels = _reconcile_k(matrix, labels, req.n_clusters)
-        _refresh_cluster_metrics(clusterer, matrix, labels)
+    analysis = clusterer.get_detailed_analysis()
+    summary = clusterer.get_summary(analysis)
 
-    # ---- 6. Handle the noise bucket ----
-    labels = np.asarray(clusterer.labels)
-    n_noise_raw = int((labels == -1).sum())
-    if req.include_noise:
-        n_noise = n_noise_raw
-    else:
-        labels, _ = _fold_noise(normalize(matrix), labels)
-        _refresh_cluster_metrics(clusterer, matrix, labels)
-        n_noise = 0
+    # ---- 4. Translate cluster_utils output to the response shape ----
+    #
+    # For each analysis entry:
+    #   - "original_indices" → row indices (we passed indices=range(len(rows)))
+    #   - "all_texts"        → row ids, same order as original_indices
+    #   - "probabilities", "distances_to_centroid", "silhouette_scores"
+    #     are aligned with all_texts.
+    # get_detailed_analysis already sorts members by (silhouette, probability)
+    # descending, so items within each cluster come out core-first.
+    by_id: Dict[str, dict] = {r["id"]: r for r in rows}
 
-    # ---- 7. Assemble per-item items with metric annotations ----
-    normalized_matrix = normalize(matrix)
-    items_by_cluster: Dict[int, List[VideoItem]] = {}
-    for i, r in enumerate(rows):
-        cid = int(labels[i])
-        sim = (1.0 - r["distance"]) if r["distance"] is not None else None
-        item = _row_to_item(r, similarity=sim)
-        item.probability = (
-            float(clusterer.probabilities[i])
-            if clusterer.probabilities is not None
-            else None
-        )
-        item.silhouette = (
-            float(clusterer.silhouette_scores[i])
-            if clusterer.silhouette_scores is not None
-            else None
-        )
-        if cid in clusterer.centroids:
-            cent = clusterer.centroids[cid].reshape(1, -1)
-            sim_centroid = float(
-                cosine_similarity(normalized_matrix[i : i + 1], cent)[0, 0]
-            )
-            item.distance_to_centroid = 1.0 - sim_centroid
-        else:
-            item.distance_to_centroid = 0.0
-        items_by_cluster.setdefault(cid, []).append(item)
-
-    # ---- 8. Sort items inside each cluster: core items first ----
-    for items in items_by_cluster.values():
-        items.sort(
-            key=lambda it: (
-                it.silhouette if it.silhouette is not None else 0.0,
-                it.probability if it.probability is not None else 0.0,
-                it.similarity if it.similarity is not None else 0.0,
-            ),
-            reverse=True,
-        )
-
-    # ---- 9. Build ClusterItem list ----
     clusters: List[ClusterItem] = []
-    for cid, items in items_by_cluster.items():
-        sils = [it.silhouette for it in items if it.silhouette is not None]
-        misplaced = sum(1 for s in sils if s < 0)
+    for cluster_name, info in analysis.items():
+        is_noise = cluster_name == "Noise/Outliers"
+        cluster_id = -1 if is_noise else int(cluster_name.split(" ")[1])
+
+        texts_in_cluster = info["all_texts"]
+        probs = info["probabilities"]
+        dists = info["distances_to_centroid"]
+        sils = info["silhouette_scores"]
+
+        items: List[VideoItem] = []
+        for row_id, prob, dist, sil in zip(texts_in_cluster, probs, dists, sils):
+            row = by_id.get(row_id)
+            if row is None:
+                continue
+            sim = (1.0 - row["distance"]) if row["distance"] is not None else None
+            item = _row_to_item(row, similarity=sim)
+            item.probability = float(prob)
+            item.distance_to_centroid = float(dist)
+            item.silhouette = float(sil)
+            items.append(item)
+
+        # Query-dependent cluster field. None when no query was provided.
         centroid_sim = None
         if req.query is not None and items:
             sims = [it.similarity for it in items if it.similarity is not None]
             if sims:
                 centroid_sim = float(np.mean(sims))
+
+        # Per-cluster rollups live in get_summary()['cluster_details'].
+        detail = summary["cluster_details"].get(cluster_name, {})
+
         clusters.append(
             ClusterItem(
-                cluster_id=cid,
-                label="Noise/Outliers" if cid == -1 else None,
+                cluster_id=cluster_id,
+                label="Noise/Outliers" if is_noise else None,
                 size=len(items),
                 centroid_similarity=centroid_sim,
-                consistency_score=(
-                    clusterer.cluster_consistency.get(cid) if cid != -1 else 0.0
-                ),
-                avg_silhouette=float(np.mean(sils)) if sils else None,
-                misplaced_items_count=misplaced,
-                is_noise=(cid == -1),
+                consistency_score=float(detail.get("consistency_score", 0.0)),
+                avg_silhouette=float(detail.get("avg_silhouette_score", 0.0)),
+                misplaced_items_count=int(detail.get("misplaced_items_count", 0)),
+                is_noise=is_noise,
                 items=items,
             )
         )
 
-    # ---- 10. Sort clusters: cohesion-weighted, noise bucket last ----
-    clusters.sort(
-        key=lambda c: (
-            c.is_noise,
-            -((c.consistency_score or 0.0) * c.size),
-        )
-    )
+    # Cluster ordering: cohesion × size, noise last. Member ordering inside
+    # each cluster is already handled by get_detailed_analysis().
+    clusters.sort(key=lambda c: (c.is_noise, -((c.consistency_score or 0.0) * c.size)))
 
     took = (time.perf_counter() - t0) * 1000
     logger.info(
         "search_clustered ok query=%s rows=%d k=%d noise=%d took=%.1fms",
         bool(req.query),
         len(rows),
-        len(clusters),
-        n_noise,
+        summary["summary"]["n_clusters"],
+        summary["summary"]["n_noise"],
         took,
     )
     return ClusteredSearchResponse(
         query=req.query or "",
         total_results=len(rows),
-        n_clusters=len(clusters),
-        n_noise=n_noise,
+        n_clusters=summary["summary"]["n_clusters"],
+        n_noise=summary["summary"]["n_noise"],
+        total_misplaced_items=summary["summary"]["total_misplaced_items"],
         clusters=clusters,
         took_ms=took,
     )
 
 
-def _to_float_list(value) -> List[float]:
-    """
-    Normalize a pgvector column value into a plain list[float].
-
-    pgvector has shipped several Vector variants across versions:
-      - pgvector.Vector           -> has .to_list() (and sometimes .tolist())
-      - pgvector._vector.Vector   -> C-extension, has .to_numpy() / .to_list()
-      - plain list/tuple of floats
-      - str like "[0.1,0.2,...]"  (rare, but seen with some cursor/dict paths)
-    Be defensive so we never fall into `list(Vector)` which raises TypeError.
-    """
-    if value is None:
-        return []
-    # Native python sequence
-    if isinstance(value, (list, tuple)):
-        return [float(x) for x in value]
-    # pgvector.Vector variants
-    for attr in ("to_list", "tolist"):
-        fn = getattr(value, attr, None)
-        if callable(fn):
-            return [float(x) for x in fn()]
-    # numpy-backed variants
-    fn = getattr(value, "to_numpy", None)
-    if callable(fn):
-        return [float(x) for x in fn().tolist()]
-    # Last resort: buffer protocol (C ext Vector in some builds)
-    try:
-        return [float(x) for x in memoryview(value).cast("f")]
-    except Exception:
-        pass
-    # Textual form
-    if isinstance(value, str):
-        s = value.strip().strip("[]")
-        return [float(x) for x in s.split(",") if x.strip()]
-    raise TypeError(
-        f"Unsupported embedding value: type={type(value).__name__} "
-        f"dir={[a for a in dir(value) if not a.startswith('__')][:20]}"
-    )
-
-
+# --------------------------------------------------------------------------- #
+# /similar
+# --------------------------------------------------------------------------- #
 @app.post("/similar", response_model=SearchResponse)
 def similar(req: SimilarRequest) -> SearchResponse:
     t0 = time.perf_counter()
@@ -1096,38 +900,16 @@ def similar(req: SimilarRequest) -> SearchResponse:
         src = conn.execute(
             "SELECT embedding FROM public.videos WHERE id = %s", (req.video_id,)
         ).fetchone()
-
-    # ---- DEBUG: inspect what the driver actually returns ----
     raw_emb = src["embedding"] if src else None
     logger.info(
-        "similar debug: video_id=%r src_present=%s raw_emb_type=%s mro=%s "
-        "has_tolist=%s has_to_list=%s has_to_numpy=%s has_iter=%s has_getitem=%s "
-        "dir_sample=%s",
+        "similar debug: video_id=%r src_present=%s raw_emb_type=%s",
         req.video_id,
         src is not None,
-        type(raw_emb).__name__,
-        [c.__name__ for c in type(raw_emb).__mro__] if raw_emb is not None else None,
-        hasattr(raw_emb, "tolist"),
-        hasattr(raw_emb, "to_list"),
-        hasattr(raw_emb, "to_numpy"),
-        hasattr(raw_emb, "__iter__"),
-        hasattr(raw_emb, "__getitem__"),
-        [a for a in dir(raw_emb) if not a.startswith("__")][:40]
-        if raw_emb is not None
-        else None,
+        type(raw_emb).__name__ if raw_emb is not None else None,
     )
-    # ---------------------------------------------------------
-
     if not src or raw_emb is None:
         raise HTTPException(404, "Source video or embedding not found")
-
     emb = _to_float_list(raw_emb)
-    logger.info(
-        "similar debug: emb resolved type=%s len=%s sample=%s",
-        type(emb).__name__,
-        len(emb),
-        emb[:3],
-    )
 
     class SyntheticReq:
         def __init__(self, source_req):
@@ -1175,6 +957,7 @@ def similar(req: SimilarRequest) -> SearchResponse:
             conn.execute(f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}")
             conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {int(MAX_SCAN_TUPLES)}")
         rows = conn.execute(sql, params).fetchall()
+
     has_more = len(rows) > req.limit
     rows = rows[: req.limit]
     next_cursor = None
@@ -1199,6 +982,9 @@ def similar(req: SimilarRequest) -> SearchResponse:
     )
 
 
+# --------------------------------------------------------------------------- #
+# /hybrid
+# --------------------------------------------------------------------------- #
 @app.post("/hybrid", response_model=SearchResponse)
 def hybrid(req: HybridRequest) -> SearchResponse:
     t0 = time.perf_counter()
@@ -1268,6 +1054,9 @@ def hybrid(req: HybridRequest) -> SearchResponse:
     return SearchResponse(items=items, next_cursor=None, has_more=False, took_ms=took)
 
 
+# --------------------------------------------------------------------------- #
+# /browse
+# --------------------------------------------------------------------------- #
 @app.get("/browse", response_model=SearchResponse)
 def browse(
     limit: int = Query(20, ge=1, le=100),
@@ -1317,6 +1106,9 @@ def browse(
     )
 
 
+# --------------------------------------------------------------------------- #
+# /videos/{id}
+# --------------------------------------------------------------------------- #
 @app.get("/videos/{video_id}", response_model=VideoItem)
 def get_video(video_id: str):
     with pool.connection() as conn:
@@ -1333,6 +1125,9 @@ def get_video(video_id: str):
     return _row_to_item(r, similarity=None)
 
 
+# --------------------------------------------------------------------------- #
+# /videos
+# --------------------------------------------------------------------------- #
 _VLIST_FIELDS = {
     "id": "id",
     "summary": "id, code, episode, title, release_date, complete",
@@ -1408,6 +1203,9 @@ def list_videos(
     )
 
 
+# --------------------------------------------------------------------------- #
+# /facets
+# --------------------------------------------------------------------------- #
 def _completion_filter_sql(completion_filter: CompletionFilter) -> str:
     if completion_filter == "complete":
         return (
@@ -1472,11 +1270,11 @@ def facets_codes():
     with pool.connection() as conn:
         codes = conn.execute(
             """
-            SELECT code, 
+            SELECT code,
                    COUNT(*)::int AS count,
-                   SUM(CASE 
-                       WHEN COALESCE(NULLIF(title, ''), NULL) IS NOT NULL 
-                            AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL 
+                   SUM(CASE
+                       WHEN COALESCE(NULLIF(title, ''), NULL) IS NOT NULL
+                            AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL
                        THEN 1 ELSE 0 END)::int AS completed
             FROM public.videos
             WHERE code IS NOT NULL
@@ -1493,6 +1291,9 @@ def facets_codes():
     }
 
 
+# --------------------------------------------------------------------------- #
+# /health
+# --------------------------------------------------------------------------- #
 @app.get("/health")
 def health():
     t0 = time.perf_counter()
@@ -1501,6 +1302,9 @@ def health():
     return {"ok": True, "db_ms": (time.perf_counter() - t0) * 1000}
 
 
+# --------------------------------------------------------------------------- #
+# /ingest
+# --------------------------------------------------------------------------- #
 def _format_for_embedding(item: VideoIngestItem) -> Optional[str]:
     parts: List[str] = []
     clean_title, clean_details = _clean_fields(item.title, item.details, item.code)

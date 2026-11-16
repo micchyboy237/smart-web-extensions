@@ -1,953 +1,611 @@
 # Video Search API — Usage
 
-Complete sample `curl` commands covering **every** endpoint and **every**
-parameter of `serve_missav.py` (port 9001). All responses are piped through
-`python3 -m json.tool` for readability.
+FastAPI server backed by Postgres + pgvector. All semantic search, similarity,
+hybrid retrieval, and dynamic clustering is served from a single process.
 
-Base URL: `http://localhost:9001`
+- **Base URL:** `http://localhost:9001`
+- **Content type:** `application/json` (POST bodies), query strings (GET)
+- **Auth:** none (local service; CORS is open)
+- **Embedding model:** `EMBED_MODEL` from `jet.adapters.llama_cpp.config`
+  (default `nomic-embed:2-moe`, 768-dim)
 
-Endpoints:
-`GET /health` · `POST /search` · `POST /search_clustered` · `POST /similar` ·
-`POST /hybrid` · `GET /browse` · `GET /videos/{id}` · `GET /facets` ·
-`GET /facets/codes` · `POST /ingest`
+```
+POST  /search
+POST  /search_clustered
+POST  /similar
+POST  /hybrid
+GET   /browse
+GET   /videos/{id}
+GET   /videos
+GET   /facets
+GET   /facets/codes
+GET   /health
+POST  /ingest
+```
 
 ---
 
-## 0. Health check
+## Conventions
 
-Confirm the server is up and the DB is reachable.
+### Filters (shared by `/search`, `/search_clustered`, `/similar`, `/hybrid`, `/browse`, `/videos`)
 
-```bash
-curl -s localhost:9001/health | python3 -m json.tool
+| Field                                   | Type                                  | Notes                                                 |
+| --------------------------------------- | ------------------------------------- | ----------------------------------------------------- |
+| `genre`                                 | `string \| string[]`                  | Comma-separated strings are accepted and split.       |
+| `genres_mode`                           | `"any" \| "all"`                      | Default `"any"`. `"all"` requires every listed genre. |
+| `code`                                  | `string \| string[]`                  | Series code(s); comma-separated accepted.             |
+| `min_release_date` / `max_release_date` | ISO-8601 timestamp                    | Inclusive.                                            |
+| `completion_filter`                     | `"all" \| "complete" \| "incomplete"` | `"complete"` = title **and** details present.         |
+
+### Pagination
+
+`/search`, `/similar`, `/browse` use a **cursor** or **offset**. The cursor is
+opaque — round-trip `next_cursor` verbatim. Cursors are bound to the request
+filters; changing them invalidates the cursor (`400 Cursor does not match filters`).
+
+`/search_clustered` is **not paginated**. It fetches up to
+`cluster_candidate_limit` rows and returns the full grouped result in one
+response.
+
+### Sort / order
+
+| Endpoint              | `sort`                                     | `order`       |
+| --------------------- | ------------------------------------------ | ------------- |
+| `/search`, `/similar` | `similarity \| release_date \| created_at` | `asc \| desc` |
+| `/hybrid`             | `release_date \| created_at`               | `asc \| desc` |
+| `/browse`             | `release_date \| created_at`               | `asc \| desc` |
+| `/search_clustered`   | — (order is cohesion-weighted server-side) | —             |
+
+### The `VideoItem` shape
+
+Returned by every search-ish endpoint.
+
+```jsonc
+{
+  "id": "jav-100hszg",
+  "title": "A Married Woman's ...",
+  "details": "Nana is living ...",
+  "code": "juc",
+  "episode": "707",
+  "url": "https://missav.ws/...",
+  "preview": "https://fourhoi.com/.../preview.mp4",
+  "thumbnail": "https://fourhoi.com/.../cover-n.jpg",
+  "release_date": "2011-12-29T11:00:38+08:00",
+  "genres": ["Wife", "Mature Woman"],
+
+  // query-dependent — null when the endpoint has no query
+  "similarity": 0.8123,
+
+  // /search_clustered only — null elsewhere
+  "probability": 0.93,
+  "silhouette": 0.71,
+  "distance_to_centroid": 0.07,
+}
 ```
 
-```json
-{ "ok": true, "db_ms": 1.83 }
-```
+| Field                  | Meaning                                                                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `similarity`           | `1 - cosine_distance` to the query vector. `null` on `/browse`, `/hybrid`, and on `/search_clustered` without a query. |
+| `probability`          | Cluster membership confidence in `[0,1]` — `cluster_utils.probabilities`.                                              |
+| `silhouette`           | Per-item silhouette in `[-1,1]` — negative means "probably in the wrong cluster".                                      |
+| `distance_to_centroid` | `1 - cosine(item, centroid)` — `0` = perfectly typical member.                                                         |
 
 ---
 
-## 1. Semantic search (basic)
+## `POST /search`
 
-Search by concept — no filters, first page.
+Semantic search with cursor pagination.
 
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "sensual story",
-    "limit": 20
-  }' | python3 -m json.tool
+### Request
+
+```jsonc
+{
+  "query": "lonely wife, rainy night",
+  "limit": 20,
+  "cursor": null,
+  "genre": ["Wife", "Drama"],
+  "genres_mode": "any",
+  "code": null,
+  "min_release_date": "2000-01-01T00:00:00Z",
+  "max_release_date": null,
+  "min_similarity": 0.3,
+  "sort": "similarity",
+  "order": "desc",
+  "completion_filter": "all",
+}
 ```
 
-Response shape (trimmed):
+| Field            | Required | Default | Notes                      |
+| ---------------- | -------- | ------- | -------------------------- |
+| `query`          | ✅       | —       | `min_length=1`             |
+| `limit`          | —        | `20`    | `1..100`                   |
+| `cursor`         | —        | `null`  | Opaque; from `next_cursor` |
+| `min_similarity` | —        | `null`  | `0..1`; cosine floor       |
 
-```json
+### Response
+
+```jsonc
 {
   "items": [
-    {
-      "id": "jav-63v9uv",
-      "title": "Invitation of a mannequin Nanami Hirose",
-      "details": "A shock runs to Nanami...",
-      "code": "mdyd",
-      "episode": "948",
-      "url": "https://missav.ws/dm2/en/mdyd-948-english-subtitle",
-      "preview": "https://fourhoi.com/.../preview.mp4",
-      "thumbnail": "https://fourhoi.com/.../cover-t.jpg",
-      "release_date": "2014-09-07T12:00:28+08:00",
-      "genres": ["English subtitle", "Mature Woman", "Wife"],
-      "similarity": 0.8123
-    }
+    /* VideoItem[] */
   ],
-  "next_cursor": "eyJkIjowLjE4NzcsImkiOiJqYXYtNjN2OXV2IiwiZiI6ImFiYzEyMyJ9",
+  "next_cursor": "eyJrIjoiMC...",
   "has_more": true,
-  "took_ms": 42.17
+  "took_ms": 41.2,
 }
 ```
 
-`similarity` is `1 - cosine_distance` (higher = closer).
+### Example
+
+```bash
+curl -s http://localhost:9001/search -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"lonely wife, rainy night","limit":20}' | jq
+```
 
 ---
 
-## 1b. Semantic search with semantic clustering
+## `POST /search_clustered`
 
-Fetch a pool of top semantic matches, then group them into `n_clusters`
-semantic clusters (K-Means on the item embeddings). Each cluster is returned
-as its own list of items, ordered by similarity inside the cluster, with
-clusters ordered largest-first.
+Semantic grouping — fetches a candidate pool, hands the embeddings to
+`jet.adapters.llama_cpp.cluster_utils.TextsClusterer`, and returns clusters with
+full per-item and per-cluster metrics.
 
-New params on top of `/search`:
+**The cluster count is chosen dynamically by `cluster_utils`** (HDBSCAN when
+`n_candidates ≥ 10`, Spectral otherwise) from `min_cluster_size` and
+`cluster_selection_epsilon`. There is **no `n_clusters` field** — this matches
+`cluster_utils.main()` and its `-s` / `-e` CLI flags 1:1.
 
-| Param                     | Default | Range  | Meaning                                         |
-| ------------------------- | ------- | ------ | ----------------------------------------------- |
-| `n_clusters`              | `3`     | 2–10   | Number of semantic groups to form               |
-| `cluster_candidate_limit` | `100`   | 10–500 | How many top matches to fetch before clustering |
+Noise is **first-class**: items the clusterer labels `-1` come back as a
+`"Noise/Outliers"` cluster (`is_noise: true`). The client decides whether to
+render it, dim it, or hide it.
 
-Basic:
+### Request
 
-```bash
-curl -s -X POST localhost:9001/search_clustered \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "sensual story",
-    "n_clusters": 3
-  }' | python3 -m json.tool
+```jsonc
+{
+  "query": "mother and son", // optional
+  "min_cluster_size": 2, // HDBSCAN -s
+  "cluster_selection_epsilon": 0.25, // HDBSCAN -e
+  "cluster_candidate_limit": 100, // rows fetched before clustering
+  "candidate_source": "recent", // used only when query is null
+
+  // shared filters
+  "genre": null,
+  "genres_mode": "any",
+  "code": null,
+  "min_release_date": null,
+  "max_release_date": null,
+  "min_similarity": null,
+  "completion_filter": "all",
+}
 ```
 
-Response shape (trimmed):
+| Field                       | Required | Default    | Notes                                                                                                                 |
+| --------------------------- | -------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
+| `query`                     | —        | `null`     | When omitted, `candidate_source` decides the pool and `similarity` is `null` on every item.                           |
+| `min_cluster_size`          | —        | `2`        | `2..20`. Raise to get fewer/tighter groups; lower to get more/smaller groups. Maps to `-s` in `cluster_utils.main()`. |
+| `cluster_selection_epsilon` | —        | `0.25`     | `0..1`. Lower = stricter (more noise, tighter groups). Maps to `-e`.                                                  |
+| `cluster_candidate_limit`   | —        | `100`      | `10..500`. Pool size fetched from Postgres before clustering.                                                         |
+| `candidate_source`          | —        | `"recent"` | `"recent"` (newest release / created desc) or `"random"`. Ignored when `query` is present.                            |
+| `min_similarity`            | —        | `null`     | Rejected (`422`) when `query` is `null`.                                                                              |
 
-```json
+### Response
+
+```jsonc
 {
-  "query": "sensual story",
-  "total_results": 100,
-  "n_clusters": 3,
+  "query": "mother and son",
+  "total_results": 100, // rows fetched before clustering
+  "n_clusters": 4, // summary.n_clusters (non-noise only)
+  "n_noise": 6, // summary.n_noise
+  "total_misplaced_items": 11, // summary.total_misplaced_items
   "clusters": [
     {
-      "cluster_id": 0,
-      "label": null,
-      "size": 47,
-      "centroid_similarity": 0.7811,
-      "items": [
-        {
-          "id": "jav-63v9uv",
-          "title": "Invitation of a mannequin Nanami Hirose",
-          "details": "A shock runs to Nanami...",
-          "code": "mdyd",
-          "episode": "948",
-          "url": "https://missav.ws/dm2/en/mdyd-948-english-subtitle",
-          "preview": "https://fourhoi.com/.../preview.mp4",
-          "thumbnail": "https://fourhoi.com/.../cover-t.jpg",
-          "release_date": "2014-09-07T12:00:28+08:00",
-          "genres": ["English subtitle", "Mature Woman", "Wife"],
-          "similarity": 0.8123
-        }
-      ]
-    },
-    {
-      "cluster_id": 1,
-      "label": null,
-      "size": 31,
-      "centroid_similarity": 0.7521,
-      "items": []
-    },
-    {
       "cluster_id": 2,
-      "label": null,
-      "size": 22,
-      "centroid_similarity": 0.7104,
-      "items": []
-    }
+      "label": null, // "Noise/Outliers" for the -1 bucket
+      "size": 31,
+      "centroid_similarity": 0.71, // mean query-similarity of members; null without query
+      "consistency_score": 0.84, // cluster_utils: L2 norm of mean unit embedding
+      "avg_silhouette": 0.42, // cluster_utils: mean per-item silhouette
+      "misplaced_items_count": 2, // members with negative silhouette
+      "is_noise": false,
+      "items": [
+        /* VideoItem[] — pre-sorted by (silhouette, probability) desc */
+      ],
+    },
+    {
+      "cluster_id": -1,
+      "label": "Noise/Outliers",
+      "size": 6,
+      "centroid_similarity": 0.19,
+      "consistency_score": 0.0,
+      "avg_silhouette": 0.0,
+      "misplaced_items_count": 0,
+      "is_noise": true,
+      "items": [
+        /* VideoItem[] */
+      ],
+    },
   ],
-  "took_ms": 188.4
+  "took_ms": 112.6,
 }
 ```
 
-Notes:
+### Per-cluster metric glossary
 
-- `n_clusters` in the response is the **actual** number of clusters returned
-  (may be smaller than requested if the pool was tiny or K-Means merged groups).
-- `centroid_similarity` is the mean `similarity` of members in the cluster — a
-  quick "how relevant is this group" signal.
-- If the candidate pool is smaller than `n_clusters`, the endpoint returns a
-  **single** cluster (`cluster_id: 0`) with everything, rather than erroring.
-- `/search_clustered` is **single-shot**: there is no cursor pagination. Use
-  `/search` for paging.
+Mirrors the module docstring of `cluster_utils`.
 
-Clustered search with filters + more clusters:
+| Field                   | Range    | Meaning                                                                                                                     |
+| ----------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `consistency_score`     | `[0,1]`  | L2 norm of the cluster's mean unit embedding. `1` = all members point the same direction (tight); `0` = orthogonal (loose). |
+| `avg_silhouette`        | `[-1,1]` | Mean per-item silhouette. `>0` = members are better explained by their own cluster than by neighbors.                       |
+| `misplaced_items_count` | `≥0`     | Members with **negative** silhouette — likely mis-assigned.                                                                 |
+| `centroid_similarity`   | `[0,1]`  | Mean of members' `similarity` to the query. Only meaningful when `query` is present.                                        |
+| `is_noise`              | `bool`   | `true` only for the `-1` bucket.                                                                                            |
 
-```bash
-curl -s -X POST localhost:9001/search_clustered \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "romantic encounter",
-    "n_clusters": 5,
-    "cluster_candidate_limit": 200,
-    "genres": ["Wife", "Individual"],
-    "genres_mode": "any",
-    "complete_only": true
-  }' | python3 -m json.tool
-```
+### Cluster ordering
 
-Clustered search with code + date filters:
+Clusters are sorted server-side by **`consistency_score × size` descending**,
+with the noise bucket always last. The intent is "tight and substantive first".
+Clients should preserve this order.
 
-```bash
-curl -s -X POST localhost:9001/search_clustered \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "leak",
-    "n_clusters": 4,
-    "code": ["sprd", "mdyd"],
-    "min_release_date": "2020-01-01T00:00:00Z"
-  }' | python3 -m json.tool
-```
+Item order inside a cluster is whatever `cluster_utils.get_detailed_analysis()`
+produced — already sorted by `(silhouette, probability)` **descending**, so
+representative members come first and fringe members come last.
 
-`/search_clustered` accepts every filter that `/search` accepts (`query`,
-`limit`, `genre`/`genres`, `genres_mode`, `code`, `min_release_date`,
-`max_release_date`, `min_similarity`, `sort`, `order`, `complete_only`) plus
-the two clustering params above. `sort`/`order` control the **order results
-are fetched in before clustering**; `clusters` themselves are always ordered
-by cluster size, and `items` inside a cluster are always similarity-descending.
+### Cluster quality tiers (client helper)
 
----
+The UI derives a tier from `consistency_score` and `centroid_similarity`:
 
-## 2. Filter by single genre
+| Tier  | Rule (query present)                                     | Rule (no query)          | Label                                                 |
+| ----- | -------------------------------------------------------- | ------------------------ | ----------------------------------------------------- |
+| green | `consistency ≥ 0.75` **and** `centroid_similarity ≥ 0.7` | `consistency ≥ 0.75`     | "Very relevant · tightly grouped" / "Tightly grouped" |
+| amber | `consistency ≥ 0.55` **or** `centroid_similarity ≥ 0.6`  | `consistency ≥ 0.55`     | "Related · grouped" / "Loosely grouped"               |
+| grey  | otherwise, or `is_noise`                                 | otherwise, or `is_noise` | "Tangential · mixed" / "Mixed"                        |
+
+### Examples
+
+**Semantic grouping (query present):**
 
 ```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "family drama",
-    "limit": 20,
-    "genre": "Mature Woman"
-  }' | python3 -m json.tool
-```
-
-`genre` accepts either a single string **or** a JSON array. Use the plural
-`genres` key for arrays in the examples below; both keys behave identically.
-
----
-
-## 3. Filter by multiple genres — OR logic (default)
-
-Videos that contain **either** "Wife" **or** "Individual".
-
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "romantic encounter",
-    "limit": 20,
-    "genres": ["Wife", "Individual"],
-    "genres_mode": "any"
-  }' | python3 -m json.tool
-```
-
-## 3b. Filter by multiple genres — AND logic
-
-Videos that contain **both** "Wife" **and** "Individual".
-(`genres_mode` defaults to `"any"`; set it to `"all"` for strict containment.)
-
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "romantic encounter",
-    "limit": 20,
-    "genres": ["Wife", "Individual"],
-    "genres_mode": "all"
-  }' | python3 -m json.tool
-```
-
----
-
-## 4. Filter by date range
-
-Videos released between 2014 and 2016.
-
-⚠️ `release_date` is **~80% NULL** in this schema (`genres` is ~80% NULL too)
-— expect a small result set.
-
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "english subtitle",
-    "limit": 20,
-    "min_release_date": "2014-01-01T00:00:00Z",
-    "max_release_date": "2016-12-31T23:59:59Z"
-  }' | python3 -m json.tool
-```
-
----
-
-## 5. Filter by code (single)
-
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "leak",
-    "limit": 10,
-    "code": "sprd"
-  }' | python3 -m json.tool
-```
-
-> **Note:** `code` values are stored lowercase (`mdyd`, `sprd`, …) —
-> match the casing returned by `/facets`.
-
-## 5b. Filter by code (multiple)
-
-`code` accepts a single string **or** an array. Arrays match **any** of the
-listed series (`code = ANY(...)`).
-
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "leak",
-    "limit": 10,
-    "code": ["sprd", "mdyd"]
-  }' | python3 -m json.tool
-```
-
----
-
-## 5c. Combined filters (code + genre + date)
-
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "leak",
-    "limit": 10,
-    "code": ["sprd", "mdyd"],
-    "genre": "Uncensored leak",
-    "genres_mode": "any",
-    "min_release_date": "2020-01-01T00:00:00Z"
-  }' | python3 -m json.tool
-```
-
----
-
-## 5d. Only complete rows (`complete_only`)
-
-Most rows in the DB are incomplete — `details` is ~78% NULL and many `title`s
-are empty. Pass `complete_only: true` to restrict results to items that have
-**both** a non-empty `title` **and** a non-empty `details` (rows that have
-already been enriched).
-
-The filter is applied alongside your other filters, so combine it with
-`genre`/`code`/`sort` as usual. It is supported on `/search`,
-`/search_clustered`, `/similar`, `/hybrid`, `/browse`, `/facets`, and
-`/facets/codes`.
-
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "leak",
-    "limit": 10,
-    "code": ["sprd", "mdyd"],
-    "complete_only": true
-  }' | python3 -m json.tool
-```
-
-Because the flag is part of the filter fingerprint, a cursor issued under one
-value of `complete_only` is invalid for another (HTTP 400
-`"Cursor does not match filters"`).
-
----
-
-## 6. Minimum similarity threshold
-
-Only return results whose cosine similarity is ≥ 0.30.
-Server-side translates to `distance <= 1 - min_similarity` (inclusive `>=`).
-
-```bash
-curl -s -X POST localhost:9001/search \
+curl -s http://localhost:9001/search_clustered -X POST \
   -H 'Content-Type: application/json' \
   -d '{
     "query": "mother and son",
-    "limit": 20,
-    "min_similarity": 0.30
-  }' | python3 -m json.tool
+    "cluster_candidate_limit": 120,
+    "min_cluster_size": 3,
+    "cluster_selection_epsilon": 0.2
+  }' | jq '.n_clusters, .n_noise, [.clusters[] | {id:.cluster_id, size, cons:.consistency_score}]'
 ```
+
+**Browse by topic (query-less, recent pool):**
+
+```bash
+curl -s http://localhost:9001/search_clustered -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"candidate_source":"recent","cluster_candidate_limit":150}' | jq
+```
+
+**Surprise me (query-less, random pool):**
+
+```bash
+curl -s http://localhost:9001/search_clustered -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"candidate_source":"random","cluster_candidate_limit":100}' | jq
+```
+
+**Tuning recipes**
+
+| Goal                       | Knob                                 |
+| -------------------------- | ------------------------------------ |
+| Fewer, larger groups       | Increase `min_cluster_size`          |
+| More, smaller groups       | Decrease `min_cluster_size`          |
+| Tighter groups, more noise | Decrease `cluster_selection_epsilon` |
+| Looser groups, less noise  | Increase `cluster_selection_epsilon` |
+| More candidates to cluster | Increase `cluster_candidate_limit`   |
+
+### Errors
+
+| Status | When                                                                   |
+| ------ | ---------------------------------------------------------------------- |
+| `422`  | `min_similarity` set while `query` is `null` (validation error).       |
+| `422`  | Any field fails its constraints (e.g. `cluster_candidate_limit < 10`). |
+| `500`  | DB error while fetching candidates.                                    |
 
 ---
 
-## 6b. Sorting and order
+## `POST /similar`
 
-`sort` accepts `"similarity"` (default), `"release_date"`, or `"created_at"`.
-`order` accepts `"desc"` (default) or `"asc"`.
+Returns videos semantically close to an existing `video_id`, reusing its stored
+embedding (no re-embedding).
 
-> **Similarity direction is flipped:** for `sort:"similarity"`,
-> `order:"desc"` means _closest first_ (server maps desc → `distance ASC`);
-> `order:"asc"` means _farthest first_.
+### Request
 
-```bash
-# newest releases first (same as default for release_date)
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "sensual story",
-    "limit": 5,
-    "sort": "release_date",
-    "order": "desc"
-  }' | python3 -m json.tool
-
-# oldest releases first
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "sensual story",
-    "limit": 5,
-    "sort": "release_date",
-    "order": "asc"
-  }' | python3 -m json.tool
-
-# most recently ingested first
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "sensual story",
-    "limit": 5,
-    "sort": "created_at",
-    "order": "desc"
-  }' | python3 -m json.tool
-```
-
----
-
-## 7. Pagination via cursor (search)
-
-**Step 1** — first page; capture `next_cursor`:
-
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "sensual story",
-    "limit": 20
-  }' | python3 -c 'import sys,json;print(json.load(sys.stdin)["next_cursor"])'
-```
-
-**Step 2** — next page. Cursors are bound to the exact query + filter set
-(fingerprint), so reuse **all** the same parameters:
-
-```bash
-curl -s -X POST localhost:9001/search \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "sensual story",
-    "limit": 20,
-    "cursor": "<PASTE_CURSOR_HERE>"
-  }' | python3 -m json.tool
-```
-
-**Step 3** — stop when `has_more` is `false` and `next_cursor` is `null`.
-
-Changing `query`, `genre`, `genres`, `genres_mode`, `code`,
-`min/max_release_date`, `min_similarity`, `sort`, `order`, or `complete_only`
-invalidates the cursor and returns:
-
-```json
-{ "detail": "Cursor does not match filters" } // HTTP 400
-```
-
-Send `"cursor": null` to start over with fresh parameters.
-
----
-
-## 8. Hybrid search (FTS + vector RRF)
-
-Blends full-text ranking (uses `videos_title_fts_idx` with
-`ts_rank_cd`/`plainto_tsquery`) with vector similarity via Reciprocal Rank
-Fusion (k=60). Great for named-keyword queries like "Nanami Hirose".
-
-```bash
-curl -s -X POST localhost:9001/hybrid \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "Nanami Hirose",
-    "limit": 20,
-    "genres": ["English subtitle"]
-  }' | python3 -m json.tool
-```
-
-Hybrid is a **single-shot** endpoint: no cursor, `next_cursor` is always
-`null`, `has_more` is always `false`. Increase `limit` (max 100) if you need
-more than 20.
-
-> **Note:** `/hybrid` has **no `genres_mode`** — genre filtering always behaves
-> as `"any"` internally.
-
-## 8b. Hybrid with date range + multi-code
-
-`/hybrid` also supports `min_release_date`, `max_release_date`, `code`
-(single or list), `sort` (`"release_date"`/`"created_at"`), and `order`.
-
-```bash
-curl -s -X POST localhost:9001/hybrid \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "Nanami",
-    "limit": 20,
-    "code": ["mdyd", "sprd"],
-    "min_release_date": "2014-01-01T00:00:00Z",
-    "max_release_date": "2016-12-31T23:59:59Z",
-    "sort": "release_date",
-    "order": "asc"
-  }' | python3 -m json.tool
-```
-
-## 8c. Hybrid — only complete rows
-
-```bash
-curl -s -X POST localhost:9001/hybrid \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "query": "Nanami",
-    "limit": 20,
-    "complete_only": true
-  }' | python3 -m json.tool
-```
-
----
-
-## 9. Similar videos ("more like this")
-
-Uses the video's stored embedding — no query text needed.
-
-**Step 1** — pick any video id:
-
-```bash
-curl -s localhost:9001/videos/jav-63v9uv | python3 -m json.tool
-```
-
-**Step 2** — find neighbors:
-
-```bash
-curl -s -X POST localhost:9001/similar \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "video_id": "jav-63v9uv",
-    "limit": 20
-  }' | python3 -m json.tool
-```
-
-**Step 3** — similar with genre filter:
-
-```bash
-curl -s -X POST localhost:9001/similar \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "video_id": "jav-63v9uv",
-    "limit": 20,
-    "genres": ["Wife"],
-    "genres_mode": "any"
-  }' | python3 -m json.tool
-```
-
-## 9b. Similar with AND genres + multi-code + sort
-
-```bash
-curl -s -X POST localhost:9001/similar \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "video_id": "jav-63v9uv",
-    "limit": 20,
-    "genres": ["Wife", "Individual"],
-    "genres_mode": "all",
-    "code": ["mdyd", "sprd"],
-    "sort": "release_date",
-    "order": "asc"
-  }' | python3 -m json.tool
-```
-
-## 9c. Similar — only complete rows
-
-```bash
-curl -s -X POST localhost:9001/similar \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "video_id": "jav-63v9uv",
-    "limit": 20,
-    "complete_only": true
-  }' | python3 -m json.tool
-```
-
-## 9d. Similar with cursor pagination
-
-Cursors are fingerprint-bound (same rules as `/search`). Reuse identical
-filters + the same `video_id`.
-
-```bash
-# page 1 — save response
-curl -s -X POST localhost:9001/similar \
-  -H 'Content-Type: application/json' \
-  -d '{"video_id":"jav-63v9uv","limit":5,"genres":["Wife","Individual"],"genres_mode":"all"}' \
-  | tee /tmp/sim1.json | python3 -m json.tool
-
-# page 2 — same filters + cursor
-CURSOR=$(python3 -c 'import json;print(json.load(open("/tmp/sim1.json"))["next_cursor"])')
-curl -s -X POST localhost:9001/similar \
-  -H 'Content-Type: application/json' \
-  -d "{\"video_id\":\"jav-63v9uv\",\"limit\":5,\"genres\":[\"Wife\",\"Individual\"],\"genres_mode\":\"all\",\"cursor\":\"$CURSOR\"}" \
-  | python3 -m json.tool
-```
-
-`similar` accepts `video_id`, `limit`, `cursor`, `genre`/`genres`,
-`genres_mode`, `code` (single or list), `sort`, `order`, and `complete_only`
-— but **no** date or similarity filters. The source video is always excluded
-from results.
-
----
-
-## 10. Browse (no embedding needed)
-
-Plain listing sorted by `release_date DESC` (or `created_at`). Uses
-`offset` pagination. Useful when the search box is empty.
-
-> ⚠️ The endpoint's declared query params are `genre` and `genres_mode`
-> (singular `genre`, repeatable). There is **no** `genres` param on `/browse`
-> — pass `genre=...` multiple times for OR logic.
-
-**Newest releases:**
-
-```bash
-curl -s 'localhost:9001/browse?limit=20&offset=0' | python3 -m json.tool
-```
-
-**Browse a specific code (series):**
-
-```bash
-curl -s 'localhost:9001/browse?code=sprd&limit=20' | python3 -m json.tool
-```
-
-**Browse by multiple genres (OR) — repeat `genre`:**
-
-```bash
-curl -s -G localhost:9001/browse \
-  --data-urlencode 'limit=20' \
-  --data-urlencode 'genre=Wife' \
-  --data-urlencode 'genre=Individual' | python3 -m json.tool
-```
-
-**Browse by multiple genres (AND) — add `genres_mode=all`:**
-
-```bash
-curl -s -G localhost:9001/browse \
-  --data-urlencode 'limit=20' \
-  --data-urlencode 'genres_mode=all' \
-  --data-urlencode 'genre=Wife' \
-  --data-urlencode 'genre=Individual' | python3 -m json.tool
-```
-
-**Browse multiple codes — repeat `code`:**
-
-```bash
-curl -s -G localhost:9001/browse \
-  --data-urlencode 'limit=20' \
-  --data-urlencode 'code=sprd' \
-  --data-urlencode 'code=mdyd' | python3 -m json.tool
-```
-
-**Sort by ingestion time** (useful for "what's new in the DB" views):
-
-```bash
-curl -s 'localhost:9001/browse?limit=20&sort=created_at' | python3 -m json.tool
-```
-
-**Oldest releases first (`order=asc`):**
-
-```bash
-curl -s 'localhost:9001/browse?limit=20&sort=release_date&order=asc' | python3 -m json.tool
-```
-
-**Only complete rows:**
-
-```bash
-curl -s 'localhost:9001/browse?limit=20&complete_only=true' | python3 -m json.tool
-```
-
-`complete_only` is a plain boolean query param here (no JSON body on GET).
-Pass `true`/`false`; omission defaults to `false`.
-
-**Next page** (`next_cursor` on `/browse` is just the next numeric offset):
-
-```bash
-curl -s 'localhost:9001/browse?limit=20&offset=20' | python3 -m json.tool
-```
-
-`offset` is capped at 100,000.
-
----
-
-## 11. Video detail
-
-```bash
-curl -s localhost:9001/videos/jav-63v9uv | python3 -m json.tool
-```
-
-404 if the id doesn't exist:
-
-```bash
-curl -s -o /dev/null -w '%{http_code}\n' localhost:9001/videos/does-not-exist
-# → 404
-```
-
----
-
-## 12. Facets (for the filter sidebar)
-
-Returns the most-used genres, the top codes, and a per-year histogram of
-non-NULL `release_date`s.
-
-```bash
-curl -s localhost:9001/facets | python3 -m json.tool
-```
-
-```json
+```jsonc
 {
-  "genres": [
-    { "name": "English subtitle", "count": 21488 },
-    { "name": "Mature Woman", "count": 9871 }
-  ],
-  "codes": [
-    { "code": "mdyd", "count": 1211 },
-    { "code": "sprd", "count": 986 }
-  ],
-  "years": [
-    { "year": 2013, "count": 401 },
-    { "year": 2014, "count": 588 }
-  ]
+  "video_id": "jav-100hszg",
+  "limit": 20,
+  "cursor": null,
+  "genre": null,
+  "genres_mode": "any",
+  "code": null,
+  "sort": "similarity",
+  "order": "desc",
+  "completion_filter": "all",
 }
 ```
 
-Tune sizes (`top_genres` default 60, `top_codes` default 40):
+### Response
+
+Same `SearchResponse` as `/search`. The source video is excluded from results.
+
+### Example
 
 ```bash
-curl -s 'localhost:9001/facets?top_genres=100&top_codes=60' | python3 -m json.tool
+curl -s http://localhost:9001/similar -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"video_id":"jav-100hszg","limit":10}' | jq
 ```
-
-**Facets over complete rows only** — useful for sidebar counts that match a
-`complete_only=true` view:
-
-```bash
-curl -s 'localhost:9001/facets?complete_only=true' | python3 -m json.tool
-```
-
-`complete_only` (boolean query param, default `false`) applies the same "title
-AND details both non-empty" predicate before aggregating, so counts reflect
-the filtered subset only.
 
 ---
 
-## 13. All codes (complete list)
+## `POST /hybrid`
 
-Unlike `/facets` (which caps to `top_codes`), `/facets/codes` returns **every**
-distinct code with its count. No size parameter — with ~3,200 distinct codes
-this is still small enough to send whole.
+FTS (title) + vector (cosine) fused with Reciprocal Rank Fusion (`k = 60`). Not
+paginated — the fusion shortlist is returned in one shot.
 
-```bash
-curl -s localhost:9001/facets/codes | python3 -m json.tool
+### Request
+
+```jsonc
+{
+  "query": "married wife drama",
+  "limit": 20,
+  "genre": null,
+  "genres_mode": "any",
+  "code": null,
+  "min_release_date": null,
+  "max_release_date": null,
+  "sort": "release_date",
+  "order": "desc",
+  "completion_filter": "all",
+}
 ```
 
-```json
+### Response
+
+Same `SearchResponse`; `next_cursor` is always `null`, `has_more` always
+`false`, and `similarity` is `null` on every item (ranking is RRF, not cosine).
+
+---
+
+## `GET /browse`
+
+Plain listing with offset pagination. Default sort is `release_date`.
+
+### Query parameters
+
+| Param               | Default        | Notes                           |
+| ------------------- | -------------- | ------------------------------- |
+| `limit`             | `20`           | `1..100`                        |
+| `offset`            | `0`            | `0..100000`                     |
+| `genre`             | —              | Repeatable (`?genre=A&genre=B`) |
+| `genres_mode`       | `any`          | `any \| all`                    |
+| `code`              | —              | Repeatable                      |
+| `sort`              | `release_date` | `release_date \| created_at`    |
+| `order`             | `desc`         | `asc \| desc`                   |
+| `completion_filter` | `all`          | `all \| complete \| incomplete` |
+
+### Response
+
+`SearchResponse` with `next_cursor` containing the next `offset` as a string.
+
+### Example
+
+```bash
+curl -s 'http://localhost:9001/browse?limit=20&sort=release_date&order=desc' | jq
+```
+
+---
+
+## `GET /videos/{id}`
+
+Single video.
+
+```bash
+curl -s http://localhost:9001/videos/jav-100hszg | jq
+```
+
+`404` when the id is unknown.
+
+---
+
+## `GET /videos`
+
+Stable, id-ordered listing for sync/export. Offset pagination only — never a
+keyset cursor. Caps at `5000` rows.
+
+### Query parameters
+
+| Param                                   | Default   | Notes                   |
+| --------------------------------------- | --------- | ----------------------- |
+| `code`                                  | —         | Repeatable              |
+| `genre`                                 | —         | Repeatable              |
+| `genres_mode`                           | `any`     |                         |
+| `completion_filter`                     | `all`     |                         |
+| `min_release_date` / `max_release_date` | —         | ISO-8601                |
+| `limit`                                 | `5000`    | `1..5000`               |
+| `offset`                                | `0`       |                         |
+| `fields`                                | `summary` | `id \| summary \| full` |
+
+### Response
+
+```jsonc
+{
+  "count": 20,
+  "items": [
+    {
+      "id": "...",
+      "code": "juc",
+      "episode": "707",
+      "title": "...",
+      "release_date": "...",
+      "complete": true,
+    },
+  ],
+  "took_ms": 8.1,
+}
+```
+
+The `summary` payload also includes `complete: bool` — `true` when title **and**
+details are present.
+
+---
+
+## `GET /facets`
+
+Genre / code / year counts for building filter UIs.
+
+### Query parameters
+
+| Param               | Default |
+| ------------------- | ------- |
+| `top_genres`        | `60`    |
+| `top_codes`         | `40`    |
+| `completion_filter` | `all`   |
+
+### Response
+
+```jsonc
+{
+  "genres": [{"name": "Wife", "count": 4821}, ...],
+  "codes":  [{"code": "juc", "count": 210}, ...],
+  "years":  [{"year": 2011, "count": 1024}, ...]
+}
+```
+
+---
+
+## `GET /facets/codes`
+
+All codes (uncapped), plus a completion count per code.
+
+```jsonc
 {
   "code_count": 3199,
-  "codes": [
-    { "code": "mdyd", "count": 1211 },
-    { "code": "sprd", "count": 986 }
-  ]
+  "codes": [{"code": "juc", "count": 210, "completed": 187}, ...]
 }
 ```
 
-Use this to populate a complete series/code picker; use `/facets?top_codes=N`
-when you only need a truncated sidebar.
-
-**Codes for complete rows only:**
-
-```bash
-curl -s 'localhost:9001/facets/codes?complete_only=true' | python3 -m json.tool
-```
-
-Same boolean query param as `/facets`; counts reflect only rows with a
-non-empty `title` and `details`.
-
 ---
 
-## 14. Ingest (bulk insert / upsert)
+## `GET /health`
 
-Insert or upsert 1–500 rows into `public.videos`. **Embeddings are always
-regenerated server-side** from the item fields (title/details/code/episode/
-genres) using the same `|`-joined format as the ChromaDB→Postgres migration,
-so ingested rows stay comparable to migrated ones for semantic search.
+Liveness + round-trip to Postgres.
 
-Embedding inputs are additionally **truncated with `truncate_texts`** to a
-token budget (`INGEST_MAX_TOKENS`, default 2048) before being sent to the
-embedding server, so very long `title`/`details` combinations cannot exceed the
-model's context window. The stored `title`/`details` columns are unaffected —
-only the text fed to `embed()` is truncated.
-
-### 14a. Single item (upsert)
-
-```bash
-curl -s -X POST localhost:9001/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "items": [
-      {
-        "id": "jav-example-001",
-        "url": "https://missav.ws/dm2/en/exm-001",
-        "code": "exm",
-        "episode": "001",
-        "video_id": "exm-001",
-        "title": "Example Title",
-        "thumbnail": "https://fourhoi.com/exm-001/cover-n.jpg",
-        "preview": "https://fourhoi.com/exm-001/preview.mp4",
-        "details": "Example details text.",
-        "release_date": "2024-01-01T00:00:00Z",
-        "genres": ["Drama", "Wife"]
-      }
-    ],
-    "upsert": true
-  }' | python3 -m json.tool
-```
-
-```json
-{ "inserted": 1, "updated": 0, "skipped": 0, "took_ms": 312.5 }
-```
-
-### 14b. Batch with an intentionally skipped item
-
-Items with **neither** `title` nor `details` have nothing to embed and land in
-`skipped` (not inserted).
-
-```bash
-curl -s -X POST localhost:9001/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "items": [
-      {"id":"jav-ex-002","url":"https://missav.ws/dm2/en/exm-002","code":"exm","episode":"002","video_id":"exm-002","title":"Batch A"},
-      {"id":"jav-ex-003","url":"https://missav.ws/dm2/en/exm-003","code":"exm","episode":"003","video_id":"exm-003","title":"Batch B"},
-      {"id":"jav-ex-004","url":"https://missav.ws/dm2/en/exm-004","code":"exm","episode":"004","video_id":"exm-004"}
-    ],
-    "upsert": true
-  }' | python3 -m json.tool
-```
-
-```json
-{ "inserted": 2, "updated": 0, "skipped": 1, "took_ms": 401.2 }
-```
-
-### 14c. Insert-only (`upsert: false`)
-
-Existing ids are **not** modified and count as `skipped`.
-
-```bash
-curl -s -X POST localhost:9001/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "items": [
-      {"id":"jav-ex-002","url":"https://missav.ws/dm2/en/exm-002","code":"exm","episode":"002","video_id":"exm-002","title":"Ignored (exists)"}
-    ],
-    "upsert": false
-  }' | python3 -m json.tool
-```
-
-```json
-{ "inserted": 0, "updated": 0, "skipped": 1, "took_ms": 88.4 }
-```
-
-### Ingest semantics
-
-- **Skipped rows:** items with neither `title` nor `details`.
-- **`upsert: true`** (default) — `ON CONFLICT (id) DO UPDATE`; nullable fields
-  use `COALESCE(EXCLUDED.*, videos.*)` so a sparse update never nulls out
-  existing data. `embedding` and `updated_at` are always overwritten.
-- **`upsert: false`** — `ON CONFLICT (id) DO NOTHING`; existing ids count as
-  `skipped`.
-- **Required fields per item:** `id`, `url`, `code`, `episode`, `video_id`.
-- **Batch size:** 1–500 items (`400` if outside).
-- **Truncation:** embedding inputs longer than `INGEST_MAX_TOKENS` tokens
-  (title+details+code+episode+genres combined) are truncated by
-  `truncate_texts` before embedding; the stored columns are untouched.
-- Whole batch runs in one transaction.
-
----
-
-## 15. End-to-end smoke test
-
-Run every endpoint in one go:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-H=http://localhost:9001
-
-echo "== health ==";            curl -sf $H/health | jq .
-echo "== facets ==";            curl -sf $H/facets | jq '.genres[:3]'
-echo "== facets codes ==";      curl -sf $H/facets/codes | jq '.code_count'
-echo "== search ==";            curl -sf -X POST $H/search -H 'Content-Type: application/json' \
-                                     -d '{"query":"sensual story","limit":5}' | jq '.items[0].id'
-echo "== search sorted ==";     curl -sf -X POST $H/search -H 'Content-Type: application/json' \
-                                     -d '{"query":"sensual story","limit":3,"sort":"release_date","order":"asc"}' | jq '.items|length'
-echo "== search complete ==";   curl -sf -X POST $H/search -H 'Content-Type: application/json' \
-                                     -d '{"query":"sensual story","limit":3,"complete_only":true}' | jq '.items|length'
-echo "== search clustered ==";  curl -sf -X POST $H/search_clustered -H 'Content-Type: application/json' \
-                                     -d '{"query":"sensual story","n_clusters":3}' | jq '{total_results,n_clusters,sizes:[.clusters[].size]}'
-echo "== similar ==";           curl -sf -X POST $H/similar -H 'Content-Type: application/json' \
-                                     -d '{"video_id":"jav-63v9uv","limit":3}' | jq '.items | length'
-echo "== hybrid ==";            curl -sf -X POST $H/hybrid -H 'Content-Type: application/json' \
-                                     -d '{"query":"Nanami","limit":3}' | jq '.items | length'
-echo "== browse ==";            curl -sf "$H/browse?limit=3" | jq '.items | length'
-echo "== browse complete ==";   curl -sf "$H/browse?limit=3&complete_only=true" | jq '.items | length'
-echo "== browse multi ==" ;     curl -sf -G "$H/browse" --data-urlencode 'limit=3' \
-                                     --data-urlencode 'code=sprd' --data-urlencode 'code=mdyd' | jq '.items|length'
-echo "== detail ==";            curl -sf $H/videos/jav-63v9uv | jq '.code'
-echo "== ingest ==";            curl -sf -X POST $H/ingest -H 'Content-Type: application/json' \
-                                     -d '{"items":[{"id":"jav-smoke-001","url":"https://example/x","code":"smk","episode":"001","video_id":"smk-001","title":"Smoke Test"}]}' \
-                                     | jq '{inserted,updated,skipped}'
-
-echo "OK"
+```jsonc
+{ "ok": true, "db_ms": 1.42 }
 ```
 
 ---
 
-## Tips
+## `POST /ingest`
 
-- **Pretty print:** every command above pipes through `python3 -m json.tool`;
-  if you have `jq`, swap in `| jq .` for colorized output.
-- **Case sensitivity:** `genres` values and `code` values are **case-sensitive**
-  in the DB (e.g. `"Mature Woman"` ≠ `"mature woman"`). Use `/facets` to see
-  canonical values.
-- **NULL-heavy columns:** `release_date` and `genres` are **~80% NULL** — any
-  filter on them can drastically shrink the result set. Drop the filter first
-  if you're getting empty pages.
-- **Complete rows:** most rows have a NULL `details` (~78%) and some have an
-  empty `title`. Pass `complete_only: true` (JSON body) or
-  `?complete_only=true` (query param) to restrict any endpoint to items whose
-  `title` **and** `details` are both non-empty.
-- **Multi-value filters:** `genre`/`genres` and `code` accept either a single
-  string **or** a list in all JSON bodies (`/search`, `/search_clustered`,
-  `/similar`, `/hybrid`). On `/browse`, repeat the query param (`genre=...&genre=...`,
-  `code=...&code=...`) instead.
-- **`genres_mode`:** `"any"` = overlap (OR, default), `"all"` = strict
-  containment (AND). Supported on `/search`, `/search_clustered`, `/similar`,
-  `/browse` — **not** `/hybrid` (always `"any"`).
-- **Two kinds of cursor:**
-  - `/search` and `/similar` use opaque, **fingerprint-bound** cursors. Reusing
-    one with a different query/filter set (including a different
-    `complete_only` value) returns HTTP 400
-    `"Cursor does not match filters"`. Send `"cursor": null` to start over.
-  - `/browse` uses **offset** pagination; its `next_cursor` is just the next
-    integer offset (`"20"`, `"40"`, …). It is not fingerprint-bound.
-- **Hybrid has no pagination:** `next_cursor` is always `null` and `has_more`
-  always `false`. Raise `limit` (max 100) instead.
-- **Clustered search has no pagination:** `/search_clustered` is single-shot
-  (`next_cursor` is not part of its response). Bump `cluster_candidate_limit`
-  and `n_clusters` instead; the `limit` field still bounds the pre-clustering
-  candidate fetch indirectly via `cluster_candidate_limit`.
-- **`similar` request body:** uses `video_id` (the source video's id), not
-  `id`.
-- **`/browse` uses `genre`, not `genres`:** repeat the `genre` param for OR
-  logic; add `genres_mode=all` for AND.
-- **Empty query:** `search` requires a non-empty `query`. To browse without a
-  query, use `GET /browse`.
-- **Ingest regenerates embeddings:** you cannot supply your own embedding — the
-  server computes it from the item text. Rows with no `title` and no `details`
-  are skipped.
-- **Ingest truncates embedding input:** the `|`-joined embedding text is
-  truncated with `truncate_texts` to `INGEST_MAX_TOKENS` (default 2048), so
-  long inputs don't blow past the embedding model context. Stored `title` and
-  `details` are not truncated.
-- **Similarity direction flip:** for `sort:"similarity"`, `order:"desc"` means
-  closest first; `order:"asc"` means farthest first.
-- **Clustering semantics:** `/search_clustered` runs K-Means on the
-  pre-clustering candidate embeddings (normalized, so Euclidean = cosine). The
-  `clusters` array is ordered by cluster **size** (largest first); `items`
-  inside each cluster are ordered by **similarity** (highest first). Use
-  `centroid_similarity` to spot which cluster is "tight and on-topic" versus
-  which one is a grab-bag.
+Batch insert / upsert of videos. Embeds missing vectors with
+`EMBED_DOC_PREFIX` before writing. Deduplicates the input by `id`.
+
+### Request
+
+```jsonc
+{
+  "upsert": true,
+  "items": [
+    {
+      "id": "jav-100hszg",
+      "url": "https://missav.ws/...",
+      "code": "juc",
+      "episode": "707",
+      "video_id": "juc-707",
+      "title": "A Married Woman's ...",
+      "thumbnail": "https://.../cover-n.jpg",
+      "preview": "https://.../preview.mp4",
+      "details": "Nana is living ...",
+      "release_date": "2011-12-29T11:00:38+08:00",
+      "genres": ["Wife", "Mature Woman"],
+    },
+  ],
+}
+```
+
+| Field              | Notes                                                            |
+| ------------------ | ---------------------------------------------------------------- |
+| `items`            | `1..500` entries.                                                |
+| `upsert`           | `true` (default) updates existing rows; `false` skips conflicts. |
+| `title`, `details` | Code prefix (`juc-707 ...`) is stripped before embedding.        |
+
+### Response
+
+```jsonc
+{ "inserted": 12, "updated": 480, "skipped": 8, "took_ms": 1820.4 }
+```
+
+`skipped` counts items with no embeddable text.
+
+---
+
+## Error model
+
+All errors return FastAPI's standard envelope:
+
+```jsonc
+{ "detail": "Cursor does not match filters" }
+```
+
+`422` errors from Pydantic validation include a structured `detail[]` with
+`loc`, `msg`, and `type` per field.
+
+---
+
+## Client integration cheat-sheet
+
+### Clustered view — quick map
+
+```
+mode = "clustered"
+  ├─ POST /search_clustered
+  │    ├─ query present   → ranked candidates + clusters with centroid_similarity
+  │    └─ query null      → recent/random candidates, similarity == null
+  ├─ render clusters in response order (tight+big first, noise last)
+  ├─ tier = green | amber | grey  (see Cluster quality tiers)
+  └─ per item:
+       ├─ probability       → confidence bar
+       ├─ silhouette < 0    → dim (fringe)
+       └─ silhouette ≥ 0.4 && probability ≥ 0.7 → "core" badge
+```
+
+### Tuning the clustered view from the UI
+
+```jsonc
+{
+  "min_cluster_size": 2, // fewer/larger groups ← higher
+  "cluster_selection_epsilon": 0.25, // tighter/more-noise ← lower
+  "cluster_candidate_limit": 100, // more candidates   ← higher
+}
+```
+
+The three knobs above are the **only** tuning controls exposed to end users.
+`n_clusters` no longer exists — it was replaced by `cluster_utils`' dynamic
+selection. If a client previously exposed "groups = 3..10", replace it with
+"min_cluster_size" + "epsilon", or with a coarse preset:
+
+| Preset   | `min_cluster_size` | `cluster_selection_epsilon` | Effect                              |
+| -------- | ------------------ | --------------------------- | ----------------------------------- |
+| Tight    | `4`                | `0.15`                      | Few, cohesive groups, more noise.   |
+| Balanced | `2`                | `0.25`                      | Default.                            |
+| Loose    | `2`                | `0.45`                      | Fewer noise points, broader groups. |
+
+### Reproducibility
+
+Clustering is deterministic for a given `(candidate pool, query, candidate_source)`:
+`TextsClusterer` seeds Spectral with `random_state=42` and HDBSCAN is
+deterministic. The only non-determinism is `candidate_source: "random"`
+(server-side `random()` ordering).

@@ -2,8 +2,9 @@
 function app() {
   const API = "http://localhost:9001";
 
-  // Cluster quality tiers (shared by header + card badges).
-  // Thresholds are dataset-tunable; keep them in one place.
+  // Cluster quality tiers (client-side display mapping — server sends raw
+  // numbers only). The "core" thresholds are the only ones the client decides;
+  // every other metric is read verbatim from /search_clustered.
   const CLUSTER_TIER_THRESHOLDS = {
     green: { consistency: 0.75, centroidSim: 0.7 },
     amber: { consistency: 0.55, centroidSim: 0.6 },
@@ -37,25 +38,31 @@ function app() {
     detail: { open: false, loading: false, video: null },
     similarOf: null,
     toasts: [],
-    _gen: 0,
+
+    // ── generation counters ──
+    // Kept separate so a paginated fetch can never cancel a clustered one
+    // (and vice versa). The clustered skeleton is cleared only by the latest
+    // clustered request, never by a paginated response.
+    _gen: 0, // paginated (/search, /similar, /browse)
+    _genClustered: 0, // clustered (/search_clustered)
 
     // ── clustered-mode state ──
     clustered: {
-      // null when not in clustered mode; otherwise the response payload
       data: null,
       loading: false,
       error: null,
+      _inflight: false,
     },
+    // Server-side knobs passed verbatim to /search_clustered.
+    // There is no n_clusters — the server picks k via cluster_utils.
     clusterPrefs: {
-      nClusters: 3,
-      candidateLimit: 100,
-      minClusterSize: 2,
-      epsilon: 0.25,
-      includeNoise: false,
-      candidateSource: "recent", // used only when query is blank
+      candidateLimit: 100, // cluster_candidate_limit
+      minClusterSize: 2, // min_cluster_size (-s)
+      epsilon: 0.25, // cluster_selection_epsilon (-e)
+      candidateSource: "recent", // used only when query is null
     },
-    // per-cluster UI state (keyed by cluster_id)
-    clusterUi: {}, // { [id]: { coreOnly: bool, hidden: bool, expanded: bool } }
+    // Client-only: visibility prefs per cluster.
+    clusterUi: {}, // { [cluster_id]: { coreOnly, hidden } }
 
     // ── lifecycle ──
     boot() {
@@ -63,6 +70,7 @@ function app() {
       this.refreshIcons();
       this.$nextTick(() => this.refreshIcons());
       this.fetchFacets();
+
       if (this.mode === "clustered") {
         this.fetchClustered();
       } else {
@@ -80,7 +88,6 @@ function app() {
         }
       });
 
-      // Infinite scroll only applies to non-clustered modes.
       const io = new IntersectionObserver(
         (entries) => {
           if (
@@ -142,15 +149,17 @@ function app() {
         cf === "complete" || cf === "incomplete" ? cf : "all";
       this.similarOf = p.get("sim") || null;
 
-      // Cluster prefs from URL (so refreshes / shares keep the config).
+      // Clustered knobs — mirror the server's defaults when absent.
       if (this.mode === "clustered") {
-        const k = parseInt(p.get("k") || "", 10);
-        if (Number.isFinite(k))
-          this.clusterPrefs.nClusters = Math.min(10, Math.max(2, k));
         const cl = parseInt(p.get("cl") || "", 10);
         if (Number.isFinite(cl))
           this.clusterPrefs.candidateLimit = Math.min(500, Math.max(10, cl));
-        this.clusterPrefs.includeNoise = p.get("noise") === "1";
+        const ms = parseInt(p.get("msize") || "", 10);
+        if (Number.isFinite(ms))
+          this.clusterPrefs.minClusterSize = Math.min(20, Math.max(2, ms));
+        const eps = parseFloat(p.get("eps") || "");
+        if (Number.isFinite(eps))
+          this.clusterPrefs.epsilon = Math.min(1, Math.max(0, eps));
         const src = p.get("src");
         if (src === "random" || src === "recent")
           this.clusterPrefs.candidateSource = src;
@@ -174,12 +183,11 @@ function app() {
       if (this.mode === "clustered") {
         p.set("mode", "clustered");
         if (this.lastQuery) p.set("q", this.lastQuery);
-        p.set("k", String(this.clusterPrefs.nClusters));
         p.set("cl", String(this.clusterPrefs.candidateLimit));
-        if (this.clusterPrefs.includeNoise) p.set("noise", "1");
-        if (this.clusterPrefs.candidateSource !== "recent") {
+        p.set("msize", String(this.clusterPrefs.minClusterSize));
+        p.set("eps", String(this.clusterPrefs.epsilon));
+        if (this.clusterPrefs.candidateSource !== "recent")
           p.set("src", this.clusterPrefs.candidateSource);
-        }
       }
       if (this.mode === "browse") p.set("mode", "browse");
       if (this.mode === "similar" && this.similarOf) {
@@ -193,9 +201,8 @@ function app() {
         p.set("gmode", this.filters.genresMode);
       if (this.filters.genres.length)
         p.set("genres", this.filters.genres.join(","));
-      if (this.filters.completionFilter !== "all") {
+      if (this.filters.completionFilter !== "all")
         p.set("cf", this.filters.completionFilter);
-      }
       if (this.mode === "browse") {
         if (this.sort !== "similarity") p.set("sort", this.sort);
         if (this.order !== "desc") p.set("order", this.order);
@@ -204,26 +211,18 @@ function app() {
     },
 
     // ── actions ──
-    onQueryInput() {
-      clearTimeout(this._deb);
-      this._deb = setTimeout(() => {
-        if (this.mode === "clustered") {
-          // Re-run clustering with the new query (or clear it → blank).
-          this.lastQuery = this.query.trim();
-          this.syncURL();
-          this.fetchClustered();
-          return;
-        }
-        if (this.query.trim()) {
-          this.doSearch();
-        } else if (this.mode === "search" || this.mode === "similar") {
-          this.doBrowse();
-        }
-      }, 400);
-    },
-
     doSearch() {
       const q = this.query.trim();
+      // When "Group by topic" is active, submitting a search must not
+      // switch away from clustered mode. Re-run the clustered fetch with
+      // the current query (empty query = browse-by-topic).
+      if (this.mode === "clustered") {
+        clearTimeout(this._deb);
+        this.lastQuery = q;
+        this.syncURL();
+        this.fetchClustered();
+        return;
+      }
       if (!q) {
         if (this.mode !== "browse") this.doBrowse();
         return;
@@ -251,12 +250,9 @@ function app() {
       this.refetch();
     },
 
-    // New: enter/leave clustered mode. Keeps the current query (if any)
-    // so the user can flip between "flat results" and "grouped results"
-    // without retyping.
     toggleClusterMode() {
+      clearTimeout(this._deb);
       if (this.mode === "clustered") {
-        // leave clustered → back to search (or browse if no query)
         if (this.lastQuery) this.doSearch();
         else this.doBrowse();
         return;
@@ -268,14 +264,27 @@ function app() {
       this.fetchClustered();
     },
 
-    // Re-run clustered fetch when the user tweaks the cluster config
-    // from the header (k, candidate limit, noise toggle).
     applyClusterPrefs() {
       this.syncURL();
       if (this.mode === "clustered") this.fetchClustered();
     },
 
+    // Preset helpers used by the preset selector in the header.
+    applyClusterPreset(name) {
+      const presets = {
+        tight: { minClusterSize: 4, epsilon: 0.15 },
+        balanced: { minClusterSize: 2, epsilon: 0.25 },
+        loose: { minClusterSize: 2, epsilon: 0.45 },
+      };
+      const p = presets[name];
+      if (!p) return;
+      this.clusterPrefs.minClusterSize = p.minClusterSize;
+      this.clusterPrefs.epsilon = p.epsilon;
+      this.applyClusterPrefs();
+    },
+
     findSimilar(id) {
+      clearTimeout(this._deb);
       this.closeDetail();
       this.mode = "similar";
       this.similarOf = id;
@@ -385,9 +394,10 @@ function app() {
 
     // ── fetching (clustered mode) ──
     async fetchClustered() {
+      this.clustered._inflight = true;
       this.clustered.loading = true;
       this.clustered.error = null;
-      const gen = ++this._gen;
+      const gen = ++this._genClustered;
 
       const params = this.buildClusteredParams();
       try {
@@ -396,37 +406,38 @@ function app() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(params),
         });
-        if (gen !== this._gen) return;
+        if (gen !== this._genClustered) return;
         this.online = true;
         if (!res.ok) {
           const txt = await res.text();
           throw new Error(`${res.status}: ${txt}`);
         }
         const data = await res.json();
-        if (gen !== this._gen) return;
+        if (gen !== this._genClustered) return;
+
         this.clustered.data = data;
         this.lastTook = data.took_ms ?? null;
 
-        // Reset per-cluster UI state for clusters that no longer exist,
-        // and ensure every returned cluster has a default entry.
+        // Preserve per-cluster UI state for clusters that still exist;
+        // reset entries for clusters that were dropped.
         const next = {};
         for (const c of data.clusters || []) {
           next[c.cluster_id] = this.clusterUi[c.cluster_id] || {
             coreOnly: false,
             hidden: false,
-            expanded: false,
           };
         }
         this.clusterUi = next;
 
         this.$nextTick(() => this.refreshIcons());
       } catch (e) {
-        if (gen !== this._gen) return;
+        if (gen !== this._genClustered) return;
         this.online = false;
         this.clustered.error = e.message;
         this.toast("error", e.message);
       } finally {
-        if (gen === this._gen) this.clustered.loading = false;
+        this.clustered._inflight = false;
+        if (gen === this._genClustered) this.clustered.loading = false;
       }
     },
 
@@ -449,13 +460,16 @@ function app() {
       };
       const q = this.lastQuery?.trim() || null;
       return {
-        query: q, // nullable — server branches on presence
-        n_clusters: this.clusterPrefs.nClusters,
-        cluster_candidate_limit: this.clusterPrefs.candidateLimit,
+        // Query is optional; server branches on presence.
+        query: q,
+
+        // cluster_utils knobs — no n_clusters, no include_noise.
         min_cluster_size: this.clusterPrefs.minClusterSize,
         cluster_selection_epsilon: this.clusterPrefs.epsilon,
-        include_noise: this.clusterPrefs.includeNoise,
+        cluster_candidate_limit: this.clusterPrefs.candidateLimit,
         candidate_source: this.clusterPrefs.candidateSource,
+
+        // Shared filters.
         genre: getGenreParam(),
         genres_mode: this.filters.genresMode,
         code: getCodeParam(),
@@ -465,8 +479,7 @@ function app() {
         max_release_date: this.filters.to
           ? new Date(this.filters.to + "T23:59:59Z").toISOString()
           : null,
-        // min_similarity only when a query is present (server rejects otherwise)
-        min_similarity: null,
+        min_similarity: null, // server rejects when query is null
         completion_filter: this.filters.completionFilter,
       };
     },
@@ -587,10 +600,8 @@ function app() {
 
     // ── cluster view helpers ──
 
-    // Map server scores → one of "green" | "amber" | "grey".
-    // Works with or without a query: centroid_similarity is null when absent.
     clusterTier(c) {
-      if (c.is_noise) return "grey";
+      if (!c || c.is_noise) return "grey";
       const hasQuery = c.centroid_similarity != null;
       const consistency = c.consistency_score ?? 0;
       const centroidSim = c.centroid_similarity ?? 0;
@@ -608,14 +619,13 @@ function app() {
           return "amber";
         return "grey";
       }
-      // No query: consistency only.
       if (consistency >= t.green.consistency) return "green";
       if (consistency >= t.amber.consistency) return "amber";
       return "grey";
     },
 
     clusterLabel(c) {
-      if (c.is_noise) return "Tangential · mixed";
+      if (!c || c.is_noise) return "Tangential · mixed";
       const tier = this.clusterTier(c);
       const hasQuery = c.centroid_similarity != null;
       if (hasQuery) {
@@ -636,12 +646,10 @@ function app() {
       }[this.clusterTier(c)];
     },
 
-    // 0..5 segments for the mini bar under the header.
     clusterSegments(c) {
-      return Math.round((c.consistency_score ?? 0) * 5);
+      return Math.round((c?.consistency_score ?? 0) * 5);
     },
 
-    // "core" per the UX spec: high silhouette AND high membership.
     isCoreItem(it) {
       const t = CLUSTER_TIER_THRESHOLDS.core;
       return (
@@ -654,26 +662,16 @@ function app() {
       return (it.silhouette ?? 0) < 0;
     },
 
-    // Items to render for a cluster, respecting per-cluster UI prefs.
+    // Server already sorts items by (silhouette, probability) desc, so this
+    // only filters — no re-sort. "core only" hides fringe and boundary items.
     visibleItems(c) {
-      const ui = this.clusterUi[c.cluster_id] || {};
-      let list = c.items || [];
+      if (!c || !Array.isArray(c.items)) return [];
+      const ui = this.clusterUiFor(c.cluster_id);
+      let list = c.items;
       if (ui.coreOnly) list = list.filter((it) => this.isCoreItem(it));
       return list;
     },
 
-    // Every item rendered in clustered mode — used for "loaded" counts.
-    clusteredItemCount() {
-      if (!this.clustered.data) return 0;
-      return (this.clustered.data.clusters || []).reduce(
-        (n, c) => n + (c.items?.length || 0),
-        0,
-      );
-    },
-
-    // In clustered mode, find-similar should preserve the *query-less vs query*
-    // context. If we got here with a query, keep it; otherwise still call
-    // /similar (which doesn't need one).
     findSimilarFromCluster(id) {
       this.findSimilar(id);
     },
@@ -683,7 +681,6 @@ function app() {
         this.clusterUi[id] || {
           coreOnly: false,
           hidden: false,
-          expanded: false,
         }
       );
     },
@@ -701,14 +698,6 @@ function app() {
       this.clusterUi = {
         ...this.clusterUi,
         [id]: { ...cur, hidden: !cur.hidden },
-      };
-    },
-
-    toggleClusterExpanded(id) {
-      const cur = this.clusterUiFor(id);
-      this.clusterUi = {
-        ...this.clusterUi,
-        [id]: { ...cur, expanded: !cur.expanded },
       };
     },
 

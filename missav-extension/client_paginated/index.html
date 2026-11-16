@@ -4,8 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>MissAV Explorer</title>
-
-    <!-- Tailwind (JIT via CDN) -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
@@ -33,28 +31,19 @@
         },
       };
     </script>
-
-    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-
-    <!-- Alpine.js -->
     <script
       defer
       src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"
     ></script>
-
-    <!-- Lucide icons -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-
-    <!-- Custom Styles -->
     <link rel="stylesheet" href="styles.css" />
   </head>
-
   <body
     class="bg-ink-950 text-slate-200 min-h-screen bg-grain antialiased"
     x-data="app()"
@@ -68,7 +57,6 @@
       <div
         class="mx-auto flex max-w-[1600px] items-center gap-4 px-4 py-3 md:px-6"
       >
-        <!-- logo -->
         <a href="/" class="flex shrink-0 items-center gap-2">
           <div
             class="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-accent-500 to-violet-500 shadow-glow"
@@ -80,7 +68,6 @@
           </span>
         </a>
 
-        <!-- search -->
         <form
           @submit.prevent="doSearch()"
           class="flex flex-1 items-center gap-2"
@@ -132,7 +119,6 @@
           </button>
         </form>
 
-        <!-- right status -->
         <div class="hidden items-center gap-2 md:flex">
           <span
             class="flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/60 px-2.5 py-1 text-[11px] font-medium text-slate-400"
@@ -146,7 +132,6 @@
           </span>
         </div>
 
-        <!-- mobile filters trigger -->
         <button
           @click="filtersOpen = !filtersOpen"
           class="rounded-xl border border-white/10 p-2.5 text-slate-300 lg:hidden"
@@ -182,7 +167,6 @@
             </button>
           </div>
 
-          <!-- code -->
           <label class="mb-4 block">
             <span class="mb-1.5 block text-xs font-medium text-slate-500"
               >Series code</span
@@ -211,7 +195,6 @@
             </span>
           </label>
 
-          <!-- completion filter -->
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -245,7 +228,6 @@
             </div>
           </div>
 
-          <!-- date range -->
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -269,7 +251,6 @@
             </div>
           </div>
 
-          <!-- genres mode toggle -->
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -296,7 +277,6 @@
             </div>
           </div>
 
-          <!-- genres chips -->
           <div class="mb-4">
             <span
               class="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -323,7 +303,6 @@
             </div>
           </div>
 
-          <!-- year quick-pick -->
           <div class="mb-4">
             <span
               class="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -403,6 +382,11 @@
                   <span x-text="clustered.data?.total_results ?? 0"></span>
                   results ·
                   <span x-text="clustered.data?.n_clusters ?? 0"></span> groups
+                  <template x-if="(clustered.data?.n_noise ?? 0) > 0">
+                    <span class="text-slate-600">
+                      · <span x-text="clustered.data.n_noise"></span> outliers
+                    </span>
+                  </template>
                   <span
                     x-show="lastTook != null"
                     class="text-slate-600"
@@ -431,25 +415,66 @@
 
           <!-- active filter pills -->
           <div class="flex flex-wrap items-center gap-1.5">
-            <!-- clustered-mode config -->
+            <!--
+              Clustered-mode config.
+              No "groups" field — the server picks k. Instead we expose the
+              cluster_utils knobs: min_cluster_size (-s), epsilon (-e),
+              candidate pool, and candidate_source when the query is blank.
+            -->
             <div
               x-show="mode === 'clustered'"
-              class="inline-flex items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-200"
+              class="inline-flex flex-wrap items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-200"
             >
               <i data-lucide="layers" class="h-3 w-3"></i>
-              <label class="flex items-center gap-1">
-                groups
+
+              <!-- Presets -->
+              <select
+                @change="applyClusterPreset($event.target.value); $event.target.value = ''"
+                class="cursor-pointer rounded bg-ink-900/80 px-1.5 py-0.5 text-[11px] font-medium text-violet-100 focus:outline-none [color-scheme:dark]"
+                title="Preset for min_cluster_size / epsilon"
+              >
+                <option value="">Preset…</option>
+                <option value="tight">Tight groups</option>
+                <option value="balanced">Balanced</option>
+                <option value="loose">Loose groups</option>
+              </select>
+
+              <span class="text-violet-400/60">|</span>
+              <label
+                class="flex items-center gap-1"
+                title="min_cluster_size (-s)"
+              >
+                min size
                 <input
                   type="number"
                   min="2"
-                  max="10"
-                  x-model.number="clusterPrefs.nClusters"
+                  max="20"
+                  x-model.number="clusterPrefs.minClusterSize"
                   @change="applyClusterPrefs()"
                   class="w-10 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
                 />
               </label>
               <span class="text-violet-400/60">|</span>
-              <label class="flex items-center gap-1">
+              <label
+                class="flex items-center gap-1"
+                title="cluster_selection_epsilon (-e)"
+              >
+                ε
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  x-model.number="clusterPrefs.epsilon"
+                  @change="applyClusterPrefs()"
+                  class="w-14 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
+                />
+              </label>
+              <span class="text-violet-400/60">|</span>
+              <label
+                class="flex items-center gap-1"
+                title="cluster_candidate_limit"
+              >
                 pool
                 <input
                   type="number"
@@ -461,16 +486,26 @@
                   class="w-12 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
                 />
               </label>
-              <span class="text-violet-400/60">|</span>
-              <label class="flex cursor-pointer items-center gap-1">
-                <input
-                  type="checkbox"
-                  x-model="clusterPrefs.includeNoise"
-                  @change="applyClusterPrefs()"
-                  class="h-3 w-3 rounded border-white/20 bg-ink-900"
-                />
-                show outliers
-              </label>
+
+              <!-- Candidate source — only meaningful when there's no query -->
+              <span
+                x-show="!lastQuery"
+                class="flex items-center gap-1"
+                title="Used only when the query is blank"
+              >
+                <span class="text-violet-400/60">|</span>
+                <label class="flex items-center gap-1">
+                  pool
+                  <select
+                    x-model="clusterPrefs.candidateSource"
+                    @change="applyClusterPrefs()"
+                    class="cursor-pointer rounded bg-ink-900/80 px-1 py-0.5 text-[11px] text-violet-100 focus:outline-none [color-scheme:dark]"
+                  >
+                    <option value="recent">recent</option>
+                    <option value="random">random</option>
+                  </select>
+                </label>
+              </span>
             </div>
 
             <!-- Sort & Order selector (browse + search) -->
@@ -631,8 +666,6 @@
                     class="text-sm font-bold tracking-tight text-slate-200"
                     x-text="clusterLabel(c)"
                   ></h2>
-
-                  <!-- 5-segment cohesion bar -->
                   <span
                     class="flex items-center gap-0.5"
                     :title="`Cohesion ${(c.consistency_score ?? 0).toFixed(2)}`"
@@ -644,7 +677,6 @@
                       ></span>
                     </template>
                   </span>
-
                   <span class="text-[11px] text-slate-500">
                     <span x-text="c.size"></span> items
                     <template x-if="(c.misplaced_items_count ?? 0) > 0">
@@ -653,7 +685,6 @@
                       </span>
                     </template>
                   </span>
-
                   <button
                     @click="toggleClusterCoreOnly(c.cluster_id)"
                     class="ml-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition"
@@ -667,7 +698,6 @@
                       x-text="clusterUiFor(c.cluster_id).coreOnly ? 'core only' : 'show core'"
                     ></span>
                   </button>
-
                   <button
                     @click="toggleClusterHidden(c.cluster_id)"
                     class="rounded-full border border-white/10 p-1 text-slate-400 hover:text-rose-300"
@@ -692,7 +722,6 @@
                         :class="{ 'opacity-60': isFringeItem(v) }"
                         :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
                       >
-                        <!-- thumbnail -->
                         <div
                           class="relative aspect-[4/3] overflow-hidden bg-ink-800"
                         >
@@ -707,8 +736,6 @@
                           <div
                             class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
                           ></div>
-
-                          <!-- similarity badge (only when a query exists) -->
                           <div
                             x-show="v.similarity != null"
                             class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-accent-300 backdrop-blur"
@@ -718,8 +745,6 @@
                               x-text="(v.similarity * 100).toFixed(0) + '%'"
                             ></span>
                           </div>
-
-                          <!-- core badge -->
                           <div
                             x-show="isCoreItem(v)"
                             class="absolute right-2 top-2 flex items-center gap-0.5 rounded-full bg-emerald-500/90 px-1.5 py-0.5 text-[9px] font-bold text-ink-950"
@@ -727,8 +752,6 @@
                           >
                             <i data-lucide="zap" class="h-2.5 w-2.5"></i>
                           </div>
-
-                          <!-- hover actions -->
                           <div
                             class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
                           >
@@ -747,8 +770,6 @@
                             </button>
                           </div>
                         </div>
-
-                        <!-- body -->
                         <div class="p-3">
                           <h3
                             @click="openDetail(v.id)"
@@ -764,8 +785,6 @@
                             ></span>
                             <span x-text="v.episode"></span>
                           </div>
-
-                          <!-- confidence bar (probability) -->
                           <div x-show="v.probability != null" class="mt-2">
                             <div
                               class="h-1 w-full overflow-hidden rounded-full bg-white/10"
@@ -781,7 +800,6 @@
                               ></div>
                             </div>
                           </div>
-
                           <div class="mt-2 flex flex-wrap gap-1">
                             <template
                               x-for="g in (v.genres ?? []).slice(0, 2)"
@@ -801,8 +819,6 @@
                         </div>
                       </article>
                     </template>
-
-                    <!-- empty (all core filtered out) -->
                     <div
                       x-show="visibleItems(c).length === 0"
                       class="flex h-[220px] w-full items-center justify-center rounded-2xl border border-dashed border-white/10 text-xs text-slate-500"
@@ -840,9 +856,8 @@
           </div>
         </div>
 
-        <!-- ═══════════════════ PAGINATED RESULTS (existing) ═══════════════════ -->
+        <!-- ═══════════════════ PAGINATED RESULTS ═══════════════════ -->
         <div x-show="mode !== 'clustered'">
-          <!-- skeleton on first load -->
           <div
             x-show="items.length === 0 && loading"
             class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
@@ -864,7 +879,6 @@
             </template>
           </div>
 
-          <!-- cards grid -->
           <div
             x-show="items.length > 0"
             class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
@@ -951,7 +965,6 @@
             </template>
           </div>
 
-          <!-- empty state -->
           <div
             x-show="!loading && items.length === 0"
             class="flex flex-col items-center justify-center py-24 text-center"
@@ -975,7 +988,6 @@
             </button>
           </div>
 
-          <!-- load more / sentinel -->
           <div
             x-show="items.length > 0"
             class="mt-8 flex flex-col items-center gap-4"
@@ -1000,12 +1012,11 @@
           </div>
         </div>
 
-        <!-- intersection sentinel (paginated modes only) -->
         <div x-ref="sentinel" class="h-1"></div>
       </section>
     </div>
 
-    <!-- ═══════════════════ DETAIL MODAL (unchanged) ═══════════════════ -->
+    <!-- ═══════════════════ DETAIL MODAL ═══════════════════ -->
     <div
       x-show="detail.open"
       x-cloak
@@ -1100,7 +1111,7 @@
       </div>
     </div>
 
-    <!-- ═══════════════════ TOASTS (unchanged) ═══════════════════ -->
+    <!-- ═══════════════════ TOASTS ═══════════════════ -->
     <div
       class="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2"
     >
@@ -1123,7 +1134,6 @@
       </template>
     </div>
 
-    <!-- App Logic -->
     <script src="app.js"></script>
   </body>
 </html>
