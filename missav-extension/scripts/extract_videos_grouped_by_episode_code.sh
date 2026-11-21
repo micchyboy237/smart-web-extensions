@@ -86,8 +86,11 @@ FROM (
       v.code IN ('ssni', 'ssis', 'snis')
       AND btrim(v.code)    <> ''
       AND btrim(v.episode) <> ''
+      AND v.title is not null
       AND v.details is not null
       AND v.release_date is not null
+      AND v.genres is not null
+      AND cardinality(v.genres) > 0
   GROUP BY
       v.code,
       v.episode
