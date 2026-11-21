@@ -1,8 +1,13 @@
 import argparse
+import json
+import math
 import shutil
 from pathlib import Path
+from typing import Dict, List, Optional, TypedDict
 
 from jet.adapters.llama_cpp.cluster_utils import (
+    NOISE_KEY,
+    DetailedAnalysis,
     TextsClusterer,
     print_cluster_analysis,
     save_cluster_results,
@@ -13,10 +18,122 @@ from jet.adapters.llama_cpp.config import (
     EMBED_QUERY_PREFIX,
 )
 from jet.libs.bertopic.examples.mock import load_missav_videos
+from jet.logger import logger
+from jet.wordnet.histogram import TextAnalysis
 
 OUTPUT_DIR = Path(__file__).parent / "generated" / Path(__file__).stem
 shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+class ClusterKeyword(TypedDict):
+    ngram: str
+    docs: int  # texts in the cluster containing this phrase
+    coverage: float  # docs / cluster size, in [0, 1]
+    collocations: int  # raw occurrence count
+    n: int  # words in the phrase
+
+
+class ClusterKeywordReport(TypedDict):
+    count: int
+    consistency_score: float
+    keywords: Dict[str, int]  # ngram -> number of docs containing it
+    documents: List[str]
+
+
+def extract_cluster_keywords(
+    analysis: DetailedAnalysis,
+    *,
+    ngram_range: tuple[int, int] = (1, 3),
+    min_doc_ratio: float = 0.5,
+    min_docs: int = 2,
+    top_n: Optional[int] = 10,
+) -> Dict[str, List[ClusterKeyword]]:
+    """
+    Find common words/phrases per cluster.
+
+    A phrase is kept if it appears in at least
+    max(min_docs, ceil(min_doc_ratio * cluster_size)) different texts.
+    Ranked by: coverage, then phrase length, then raw count.
+    """
+    keywords: Dict[str, List[ClusterKeyword]] = {}
+
+    for name, info in analysis.items():
+        if name == NOISE_KEY:
+            continue
+
+        texts: List[str] = info["all_texts"]
+        size = len(texts)
+        if size < min_docs:
+            logger.warning("[keywords] %s skipped: only %d text(s)", name, size)
+            continue
+
+        threshold = max(min_docs, math.ceil(min_doc_ratio * size))
+        logger.info("[keywords] %s: size=%d, need docs>=%d", name, size, threshold)
+
+        histogram = TextAnalysis(texts, lowercase=True).generate_histogram(
+            ngram_ranges=[ngram_range],
+            apply_tfidf=False,
+            is_top=True,
+            remove_stopwords=True,
+        )
+        rows = histogram[0]["results"] if histogram else []
+
+        kept: List[ClusterKeyword] = [
+            {
+                "ngram": r["ngram"],
+                "docs": r["docs"],
+                "coverage": round(r["docs"] / size, 3),
+                "collocations": r["collocations"],
+                "n": r["n"],
+            }
+            for r in rows
+            if r["docs"] >= threshold
+        ]
+        kept.sort(key=lambda k: (-k["coverage"], -k["n"], -k["collocations"]))
+        if top_n:
+            kept = kept[:top_n]
+
+        keywords[name] = kept
+        logger.info(
+            "[keywords] %s: %d candidates -> %d kept | top=%s",
+            name,
+            len(rows),
+            len(kept),
+            [k["ngram"] for k in kept[:3]],
+        )
+
+    return keywords
+
+
+def build_keywords_report(
+    analysis: DetailedAnalysis,
+    keywords: Dict[str, List[ClusterKeyword]],
+) -> Dict[str, ClusterKeywordReport]:
+    """
+    Merge keywords with cluster info into one report,
+    sorted by cluster count (largest first).
+    """
+    report: Dict[str, ClusterKeywordReport] = {}
+    for name, items in keywords.items():
+        info = analysis[name]
+        report[name] = {
+            "count": info["count"],
+            "consistency_score": round(info.get("consistency_score", 0.0), 4),
+            "keywords": {k["ngram"]: k["docs"] for k in items},
+            "documents": list(info["all_texts"]),
+        }
+
+    def sort_key(kv):
+        cluster_no = int(kv[0].split(" ")[1]) if kv[0].split(" ")[-1].isdigit() else 0
+        return (-kv[1]["count"], cluster_no)
+
+    report = dict(sorted(report.items(), key=sort_key))
+    logger.info(
+        "[keywords] report built: %s",
+        [(n, r["count"]) for n, r in report.items()],
+    )
+    return report
 
 
 def get_args():
@@ -59,7 +176,7 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     docs, embeddings = load_missav_videos(
-        code=["gvh"], limit=args.limit, include_embeddings=True
+        code=args.code, limit=args.limit, include_embeddings=True
     )
 
     clusterer = TextsClusterer(
@@ -86,6 +203,21 @@ if __name__ == "__main__":
     print(f"{'=' * 60}")
 
     summary = clusterer.get_summary(analysis)
+
+    keywords = extract_cluster_keywords(analysis)
+    keywords_report = build_keywords_report(analysis, keywords)
+
+    print("\n" + "=" * 60)
+    print("CLUSTER KEYWORDS (largest cluster first):")
+    print("=" * 60)
+    for name, rep in keywords_report.items():
+        shown = ", ".join(f"{ng} ({n})" for ng, n in rep["keywords"].items()) or "-"
+        print(f"{name} [{rep['count']} texts]: {shown}")
+
+    keywords_path = OUTPUT_DIR / "keywords.json"
+    keywords_path.write_text(json.dumps(keywords_report, indent=2, ensure_ascii=False))
+    print(f"Keywords saved to {keywords_path}")
+
     saved = save_cluster_results(
         OUTPUT_DIR,
         analysis,
