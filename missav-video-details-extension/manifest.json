@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "MissAV Video Opener & Ingestor",
+  "name": "MissAV Video Details Ingestor",
   "version": "1.3.5",
   "permissions": ["tabs", "activeTab", "storage", "scripting"],
   "host_permissions": ["https://missav.ws/*", "http://127.0.0.1:9001/*"],
