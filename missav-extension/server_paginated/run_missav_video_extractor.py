@@ -524,8 +524,10 @@ class MissAVExtractor:
             items = parse_search_page_html(html, url)
             existing = self.existing_ids.get(code, set())
             new_items = [item for item in items if item["id"] not in existing]
-            logger.info(f"Found {len(items)} items, {len(new_items)} new on page {url}")
             if new_items:
+                logger.info(
+                    f"Found {len(items)} items, {len(new_items)} new on page {url}"
+                )
                 self.incomplete_queue.extend(new_items)
                 await self.maybe_auto_ingest()
             return [item["url"] for item in new_items]
