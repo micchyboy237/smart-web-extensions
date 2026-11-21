@@ -65,6 +65,7 @@ def generate_id_from_url(url: str, video_id: str) -> str:
     input_str = url or video_id
     if not input_str:
         return f"unknown-{int(time.time() * 1000)}"
+
     normalized = input_str
     try:
         u = urlparse(input_str)
@@ -72,10 +73,12 @@ def generate_id_from_url(url: str, video_id: str) -> str:
             normalized = u.scheme + "://" + u.netloc + u.path
     except Exception:
         normalized = input_str
+
     hash_val = 0x811C9DC5
     for char in normalized:
         hash_val ^= ord(char)
         hash_val = (hash_val * 0x01000193) % (2**32)
+
     return f"jav-{_to_base36(hash_val)}"
 
 
@@ -93,6 +96,7 @@ def extract_jav_info(url: str, text: Optional[str] = None) -> Dict[str, Optional
             match = pattern.search(text)
         if match:
             break
+
     if match:
         full_match = match.group(0).lower()
         if "-" in full_match:
@@ -117,6 +121,7 @@ async def fetch_existing_video_ids(code: str) -> set:
     offset = 0
     max_pages = 20
     logger.info(f"Fetching existing IDs for code: {code}")
+
     async with httpx.AsyncClient() as client:
         for page in range(max_pages):
             url = f"{SERVER_URL}/videos?code={code}&completion_filter=complete&fields=id&limit={limit}&offset={offset}"
@@ -137,8 +142,52 @@ async def fetch_existing_video_ids(code: str) -> set:
             except Exception as e:
                 logger.error(f"Error fetching existing IDs: {e}")
                 break
+
     logger.info(f"Found {len(ids)} existing complete IDs for code {code}")
     return ids
+
+
+async def fetch_incomplete_videos(code: str) -> List[Dict[str, Any]]:
+    """Fetches all incomplete video items (full fields) for a code from the server.
+
+    Used by -i / --incomplete to bypass search-page discovery and scrape
+    only the URLs already known to be incomplete.
+    """
+    items: List[Dict[str, Any]] = []
+    limit = 5000
+    offset = 0
+    max_pages = 20
+    logger.info(f"📥 Fetching incomplete videos for code: {code}")
+
+    async with httpx.AsyncClient() as client:
+        for _ in range(max_pages):
+            url = (
+                f"{SERVER_URL}/videos?code={code}"
+                f"&completion_filter=incomplete&fields=full"
+                f"&limit={limit}&offset={offset}"
+            )
+            try:
+                resp = await client.get(url, timeout=60.0)
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"Failed to fetch incomplete videos for {code}: "
+                        f"HTTP {resp.status_code}"
+                    )
+                    break
+                data = resp.json()
+                page_items = data.get("items", [])
+                if not page_items:
+                    break
+                items.extend(page_items)
+                if len(page_items) < limit:
+                    break
+                offset += limit
+            except Exception as e:
+                logger.error(f"Error fetching incomplete videos for {code}: {e}")
+                break
+
+    logger.info(f"Found {len(items)} incomplete videos for code {code}")
+    return items
 
 
 def parse_search_page_html(html: str, base_url: str) -> List[Dict[str, Any]]:
@@ -147,6 +196,7 @@ def parse_search_page_html(html: str, base_url: str) -> List[Dict[str, Any]]:
     containers = soup.select(".thumbnail.group")
     items = []
     seen_urls = set()
+
     for container in containers:
         try:
             media_anchor = None
@@ -156,6 +206,7 @@ def parse_search_page_html(html: str, base_url: str) -> List[Dict[str, Any]]:
                     break
             if not media_anchor:
                 continue
+
             raw_url = media_anchor["href"]
             if raw_url.startswith("/"):
                 raw_url = urljoin(base_url, raw_url)
@@ -163,6 +214,7 @@ def parse_search_page_html(html: str, base_url: str) -> List[Dict[str, Any]]:
             if clean_url in seen_urls:
                 continue
             seen_urls.add(clean_url)
+
             title = ""
             inner_title_link = container.select_one(
                 ".text-sm.truncate a.text-secondary"
@@ -185,6 +237,7 @@ def parse_search_page_html(html: str, base_url: str) -> List[Dict[str, Any]]:
                     img = container.find("img")
                     if img:
                         title = img.get("alt", "")
+
             thumbnail = None
             preview = None
             img_el = container.find("img")
@@ -202,6 +255,7 @@ def parse_search_page_html(html: str, base_url: str) -> List[Dict[str, Any]]:
                     idx = thumbnail.rfind("/")
                     if idx != -1:
                         preview = thumbnail[: idx + 1] + "preview.mp4"
+
             jav_info = extract_jav_info(clean_url, title)
             if not jav_info["videoId"]:
                 continue
@@ -209,6 +263,7 @@ def parse_search_page_html(html: str, base_url: str) -> List[Dict[str, Any]]:
             code = jav_info["code"]
             episode = jav_info["episode"]
             id_hash = generate_id_from_url(clean_url, video_id)
+
             items.append(
                 {
                     "id": id_hash,
@@ -226,6 +281,7 @@ def parse_search_page_html(html: str, base_url: str) -> List[Dict[str, Any]]:
             )
         except Exception as e:
             logger.debug(f"Error parsing container: {e}")
+
     return items
 
 
@@ -243,6 +299,7 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
     video_id = s
     code = m.group(1)
     episode = m.group(2)
+
     title = None
     selectors_h1 = [
         "h1.text-base.lg\\:text-lg",
@@ -263,6 +320,7 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
             title = og_title.get("content", "").strip()
     if title is not None and not title.strip():
         title = None
+
     details = None
     selectors_details = [
         ".order-first .text-secondary.break-all",
@@ -285,6 +343,7 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
                 details = og_desc_prop.get("content", "").strip()
     if details is not None and not details.strip():
         details = None
+
     release_date = None
     time_el = soup.select_one(".order-first time[datetime]")
     if not time_el:
@@ -299,6 +358,7 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
                 y, mo, d = date_match.groups()
                 release_date = f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
                 break
+
     genres = []
     genre_containers = soup.select(".text-secondary")
     found_genres = False
@@ -317,6 +377,7 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
             for a in links
             if a.get_text(strip=True) and len(a.get_text(strip=True)) < 40
         ]
+
     thumbnail = None
     player = soup.find("video", class_="player")
     if player:
@@ -331,6 +392,7 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
         og_image = soup.find("meta", property="og:image")
         if og_image:
             thumbnail = og_image.get("content")
+
     preview = None
     if thumbnail:
         if thumbnail.endswith("/preview.mp4"):
@@ -339,7 +401,9 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
             idx = thumbnail.rfind("/")
             if idx != -1:
                 preview = thumbnail[: idx + 1] + "preview.mp4"
+
     id_hash = generate_id_from_url(url, video_id)
+
     return {
         "id": id_hash,
         "url": url.split("#")[0],
@@ -356,18 +420,30 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
 
 
 class MissAVExtractor:
-    def __init__(self, codes: List[str], headless: bool = False):
+    def __init__(
+        self,
+        codes: List[str],
+        headless: bool = False,
+        use_incomplete_only: bool = False,
+    ):
         self.codes = codes
         self.headless = headless
+        self.use_incomplete_only = use_incomplete_only
         self.incomplete_queue: List[Dict] = []
         self.complete_queue: List[Dict] = []
         self.existing_ids: Dict[str, set] = {}
         self.total_ingested = 0
-        # Background ingest tasks so /ingest POSTs never block scraping.
         self._inflight_ingests: set[asyncio.Task] = set()
         self._max_inflight_ingests = MAX_INFLIGHT_INGESTS
 
     async def initialize(self):
+        # In -i mode we don't need existing complete IDs since we are not
+        # discovering new items via search pages — we're re-scraping the
+        # already-known incomplete ones directly from the server.
+        if self.use_incomplete_only:
+            logger.info("🔁 Incomplete-only mode (-i): skipping existing-ID prefetch")
+            return
+
         tasks = [fetch_existing_video_ids(code) for code in self.codes]
         results = await asyncio.gather(*tasks)
         for code, ids in zip(self.codes, results):
@@ -410,7 +486,6 @@ class MissAVExtractor:
             self.total_ingested += result["inserted"] + result["updated"]
         except Exception as e:
             logger.error(f"❌ Background ingest failed for {queue_type}: {e}")
-            # Re-queue on failure so flush_queues()/next batch retries.
             if queue_type == "incomplete":
                 self.incomplete_queue.extend(items)
             else:
@@ -458,6 +533,7 @@ class MissAVExtractor:
             )
             self._ingest_in_background(self.incomplete_queue, "incomplete")
             self.incomplete_queue = []
+
         if self.complete_queue:
             logger.info(
                 f"💾 Scheduling final complete flush "
@@ -465,6 +541,7 @@ class MissAVExtractor:
             )
             self._ingest_in_background(self.complete_queue, "complete")
             self.complete_queue = []
+
         if self._inflight_ingests:
             logger.info(
                 f"⏳ Waiting for {len(self._inflight_ingests)} in-flight ingest(s)..."
@@ -479,14 +556,10 @@ class MissAVExtractor:
         and generating all intermediate URLs. Assumes all pages 1..max are valid.
         """
         base = BASE_SEARCH_URL.format(code)
-        page_urls = [base]  # Start with page 1 (no query param usually implies page 1)
-
+        page_urls = [base]
         max_seen = 1
-
         try:
-            # Wait briefly for pagination to render
             await page.wait_for_selector(".hidden.md\\:flex", timeout=5000)
-
             paginator = await page.query_selector(".hidden.md\\:flex")
             if paginator:
                 links = await paginator.query_selector_all('a[href*="page="]')
@@ -494,31 +567,24 @@ class MissAVExtractor:
                     href = await link.get_attribute("href")
                     if not href:
                         continue
-
                     m = re.search(r"[?&]page=(\d+)", href)
                     if m:
                         page_num = int(m.group(1))
                         if page_num > max_seen:
                             max_seen = page_num
-
         except Exception as e:
             logger.warning(f"Could not parse pagination DOM for {code}: {e}")
-            # If we can't find pagination, we just return page 1
             return page_urls
 
         if max_seen <= 1:
             logger.info(f"📄 Single search page detected for {code}")
             return page_urls
 
-        # Generate all URLs from 1 to max_seen
-        # We already have page 1, so start from 2
         generated_urls = []
         for p in range(2, max_seen + 1):
             url = f"{base}?page={p}"
             generated_urls.append(url)
-
         page_urls.extend(generated_urls)
-
         logger.info(
             f"📄 Generated {len(page_urls)} search pages for {code} (1-{max_seen})"
         )
@@ -543,42 +609,83 @@ class MissAVExtractor:
             logger.error(f"❌ Error processing search page {url}: {e}")
             return []
 
+    async def _collect_urls_via_search(
+        self, context: BrowserContext, code: str
+    ) -> List[str]:
+        """Original discovery path: crawl search pages and collect new URLs."""
+        search_url = BASE_SEARCH_URL.format(code)
+        page = await context.new_page()
+        try:
+            await page.goto(search_url, wait_until="domcontentloaded")
+            page_urls = await self.discover_page_urls(page, code, search_url)
+            all_video_urls: List[str] = []
+            for idx, p_url in enumerate(page_urls):
+                if idx > 0:
+                    await page.goto(p_url, wait_until="domcontentloaded")
+                urls = await self.process_search_page(page, code, p_url)
+                all_video_urls.extend(urls)
+        finally:
+            await page.close()
+        return all_video_urls
+
+    async def _collect_urls_via_incomplete_api(self, code: str) -> List[str]:
+        """-i path: bypass search crawling, use the server's incomplete list."""
+        items = await fetch_incomplete_videos(code)
+        urls: List[str] = []
+        seen: set = set()
+        for item in items:
+            url = item.get("url")
+            if not url:
+                continue
+            clean = url.split("#")[0]
+            if clean in seen:
+                continue
+            seen.add(clean)
+            urls.append(clean)
+        logger.info(
+            f"📋 Collected {len(urls)} incomplete video URLs for {code} from API"
+        )
+        return urls
+
     async def run(self):
         await self.initialize()
+        mode = "incomplete-only (-i)" if self.use_incomplete_only else "search+scrape"
+        logger.info(f"🚀 Starting extraction in {mode} mode")
+
         logger.info("🚀 Starting Playwright session...")
         playwright = await async_playwright().start()
         context: BrowserContext = await setup_async_browser_session(
             headless=self.headless
         )
+
         try:
             for code in self.codes:
                 logger.info(f"📦 Starting extraction for code: {code}")
-                search_url = BASE_SEARCH_URL.format(code)
-                page = await context.new_page()
-                await page.goto(search_url, wait_until="domcontentloaded")
-                page_urls = await self.discover_page_urls(page, code, search_url)
-                all_video_urls = []
-                for idx, p_url in enumerate(page_urls):
-                    if idx > 0:
-                        await page.goto(p_url, wait_until="domcontentloaded")
-                    urls = await self.process_search_page(page, code, p_url)
-                    all_video_urls.extend(urls)
-                await page.close()
-                logger.info(f"📋 Collected {len(all_video_urls)} video URLs for {code}")
-                if (
-                    self.incomplete_queue
-                    or self.complete_queue
-                    or self._inflight_ingests
-                ):
+
+                if self.use_incomplete_only:
+                    all_video_urls = await self._collect_urls_via_incomplete_api(code)
+                else:
+                    all_video_urls = await self._collect_urls_via_search(context, code)
                     logger.info(
-                        f"💾 Draining queues before video scrape "
-                        f"(incomplete={len(self.incomplete_queue)}, "
-                        f"complete={len(self.complete_queue)}, "
-                        f"inflight={len(self._inflight_ingests)})"
+                        f"📋 Collected {len(all_video_urls)} video URLs for {code}"
                     )
-                    await self.flush_queues()
+                    if (
+                        self.incomplete_queue
+                        or self.complete_queue
+                        or self._inflight_ingests
+                    ):
+                        logger.info(
+                            f"💾 Draining queues before video scrape "
+                            f"(incomplete={len(self.incomplete_queue)}, "
+                            f"complete={len(self.complete_queue)}, "
+                            f"inflight={len(self._inflight_ingests)})"
+                        )
+                        await self.flush_queues()
+
                 if not all_video_urls:
+                    logger.info(f"⏭️  No URLs to scrape for {code}, skipping")
                     continue
+
                 logger.info(
                     f"🚀 Starting fast-mode scrape for {len(all_video_urls)} videos..."
                 )
@@ -602,7 +709,6 @@ class MissAVExtractor:
                                 self.complete_queue.append(metadata)
                             else:
                                 self.incomplete_queue.append(metadata)
-                            # Schedules a background POST instead of blocking.
                             await self.maybe_auto_ingest()
                     elif result["status"] != "started":
                         logger.warning(
@@ -612,6 +718,7 @@ class MissAVExtractor:
                 logger.info(
                     f"✅ Finished fast-mode scrape for {code} in {elapsed:.2f}s"
                 )
+
                 if (
                     self.incomplete_queue
                     or self.complete_queue
@@ -624,11 +731,11 @@ class MissAVExtractor:
                         f"inflight={len(self._inflight_ingests)})"
                     )
                     await self.flush_queues()
+
             await self.flush_queues()
         except Exception as e:
             logger.error(f"❌ Critical error during extraction: {e}", exc_info=True)
         finally:
-            # Best-effort drain so partial progress is persisted on shutdown.
             try:
                 await self.flush_queues()
             except Exception as e:
@@ -636,11 +743,20 @@ class MissAVExtractor:
             logger.info("🛑 Closing browser context...")
             await context.close()
             await playwright.stop()
+
         logger.info(f"🏁 Extraction complete. Total ingested: {self.total_ingested}")
 
 
-async def run_missav_video_extractor(codes: List[str], headless: bool = False):
-    extractor = MissAVExtractor(codes=codes, headless=headless)
+async def run_missav_video_extractor(
+    codes: List[str],
+    headless: bool = False,
+    use_incomplete_only: bool = False,
+):
+    extractor = MissAVExtractor(
+        codes=codes,
+        headless=headless,
+        use_incomplete_only=use_incomplete_only,
+    )
     await extractor.run()
 
 
@@ -660,5 +776,23 @@ if __name__ == "__main__":
         default=False,
         help="Run browser in headless mode",
     )
+    parser.add_argument(
+        "-i",
+        "--incomplete",
+        dest="use_incomplete_only",
+        action="store_true",
+        default=False,
+        help=(
+            "Bypass search-page discovery and instead re-scrape all URLs "
+            "returned by the server's incomplete queue "
+            "(GET /videos?code=<code>&completion_filter=incomplete&fields=full)."
+        ),
+    )
     args = parser.parse_args()
-    asyncio.run(run_missav_video_extractor(args.codes, headless=args.headless))
+    asyncio.run(
+        run_missav_video_extractor(
+            args.codes,
+            headless=args.headless,
+            use_incomplete_only=args.use_incomplete_only,
+        )
+    )
