@@ -23,10 +23,9 @@ logger = logging.getLogger("missav_extractor")
 SERVER_URL = "http://127.0.0.1:9001"
 INGEST_ENDPOINT = f"{SERVER_URL}/ingest"
 MAX_CONCURRENT_TABS = 15
-INGEST_CHUNK_SIZE = 120
+INGEST_CHUNK_SIZE = 100
 BASE_SEARCH_URL = "https://missav.ws/en/search/{}-"
 MAX_SEARCH_PAGES = 500
-EMPTY_PAGE_STREAK_LIMIT = 1
 MAX_INFLIGHT_INGESTS = 8
 
 SINGLE_VIDEO_PATH_RE = re.compile(
@@ -476,15 +475,18 @@ class MissAVExtractor:
         self, page: Page, code: str, search_url: str
     ) -> List[str]:
         """
-        Discover all page URLs for a search.
-        The paginator only renders a small window of page links (e.g. 1-10 plus
-        the tail like 166-167). We parse the max link seen, but if the max looks
-        suspiciously like a tail anchor, we probe forward to find the true last
-        page. We also probe the first page to detect single-page results.
+        Discover all page URLs for a search by finding the max page number
+        and generating all intermediate URLs. Assumes all pages 1..max are valid.
         """
-        page_urls = [search_url]
+        base = BASE_SEARCH_URL.format(code)
+        page_urls = [base]  # Start with page 1 (no query param usually implies page 1)
+
         max_seen = 1
+
         try:
+            # Wait briefly for pagination to render
+            await page.wait_for_selector(".hidden.md\\:flex", timeout=5000)
+
             paginator = await page.query_selector(".hidden.md\\:flex")
             if paginator:
                 links = await paginator.query_selector_all('a[href*="page="]')
@@ -492,55 +494,34 @@ class MissAVExtractor:
                     href = await link.get_attribute("href")
                     if not href:
                         continue
+
                     m = re.search(r"[?&]page=(\d+)", href)
                     if m:
-                        max_seen = max(max_seen, int(m.group(1)))
-                    full_url = urljoin(search_url, href)
-                    if full_url not in page_urls:
-                        page_urls.append(full_url)
+                        page_num = int(m.group(1))
+                        if page_num > max_seen:
+                            max_seen = page_num
+
         except Exception as e:
-            logger.warning(f"Could not parse pagination DOM: {e}")
-        if max_seen <= 1 and len(page_urls) <= 1:
+            logger.warning(f"Could not parse pagination DOM for {code}: {e}")
+            # If we can't find pagination, we just return page 1
+            return page_urls
+
+        if max_seen <= 1:
             logger.info(f"📄 Single search page detected for {code}")
             return page_urls
-        base = BASE_SEARCH_URL.format(code)
-        probe_page_num = 2
-        consecutive_empty = 0
-        while probe_page_num <= MAX_SEARCH_PAGES:
-            probe_url = f"{base}?page={probe_page_num}"
-            if probe_url in page_urls:
-                probe_page_num += 1
-                continue
-            try:
-                await page.goto(probe_url, wait_until="domcontentloaded")
-                await page.wait_for_load_state("domcontentloaded", timeout=10000)
-                html = await page.content()
-                items = parse_search_page_html(html, probe_url)
-                if not items:
-                    consecutive_empty += 1
-                    logger.info(
-                        f"📄 Probe page {probe_page_num} empty "
-                        f"({consecutive_empty}/{EMPTY_PAGE_STREAK_LIMIT})"
-                    )
-                    if consecutive_empty >= EMPTY_PAGE_STREAK_LIMIT:
-                        logger.info(
-                            f"📄 Stopping pagination probe at page {probe_page_num}"
-                        )
-                        break
-                else:
-                    consecutive_empty = 0
-                    page_urls.append(probe_url)
-            except Exception as e:
-                logger.warning(f"Probe page {probe_page_num} failed: {e}")
-                break
-            probe_page_num += 1
 
-        def _page_key(u: str) -> int:
-            m = re.search(r"[?&]page=(\d+)", u)
-            return int(m.group(1)) if m else 1
+        # Generate all URLs from 1 to max_seen
+        # We already have page 1, so start from 2
+        generated_urls = []
+        for p in range(2, max_seen + 1):
+            url = f"{base}?page={p}"
+            generated_urls.append(url)
 
-        page_urls = sorted(set(page_urls), key=_page_key)
-        logger.info(f"📄 Discovered {len(page_urls)} search pages for {code}")
+        page_urls.extend(generated_urls)
+
+        logger.info(
+            f"📄 Generated {len(page_urls)} search pages for {code} (1-{max_seen})"
+        )
         return page_urls
 
     async def process_search_page(self, page: Page, code: str, url: str) -> List[Dict]:

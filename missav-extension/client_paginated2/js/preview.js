@@ -1,0 +1,80 @@
+// client_paginated/js/preview.js
+// Hover-preview controller.
+// - On card mouseenter: swap <img> for <video> (muted, looped) using v.preview.
+// - On mouseleave: swap back to thumbnail.
+// - Uses a small in-memory cache of <video> elements to avoid re-creating.
+// - Adds a 250ms delay so quick mouse sweeps don't fire loads.
+
+const cache = new Map(); // id -> HTMLVideoElement
+const HOVER_DELAY = 250;
+
+export function createPreviewManager() {
+  let hoverTimer = null;
+  let activeId = null;
+
+  function getOrCreateVideo(id, previewUrl) {
+    if (cache.has(id)) return cache.get(id);
+    const v = document.createElement("video");
+    v.src = previewUrl;
+    v.muted = true;
+    v.loop = true;
+    v.playsInline = true;
+    v.preload = "none";
+    v.className =
+      "h-full w-full object-cover transition duration-500 group-hover:scale-110";
+    cache.set(id, v);
+    return v;
+  }
+
+  function start(id, previewUrl, container) {
+    if (!previewUrl || !container) return;
+    stop();
+    hoverTimer = setTimeout(() => {
+      activeId = id;
+      const video = getOrCreateVideo(id, previewUrl);
+      // Remove existing media children (img / video) but keep overlays.
+      container
+        .querySelectorAll("img[data-preview-media], video[data-preview-media]")
+        .forEach((el) => el.remove());
+      video.dataset.previewMedia = "1";
+      container.prepend(video);
+      video.play().catch(() => {});
+    }, HOVER_DELAY);
+  }
+
+  function stop() {
+    if (hoverTimer) {
+      clearTimeout(hoverTimer);
+      hoverTimer = null;
+    }
+    if (activeId == null) return;
+    const video = cache.get(activeId);
+    if (video) {
+      video.pause();
+      video.currentTime = 0;
+    }
+    // Caller is responsible for restoring the <img>. See restoreMedia().
+    activeId = null;
+  }
+
+  // Restore the original thumbnail img (Alpine holds it in the x-if).
+  function restoreMedia(container, thumbnail, title) {
+    if (!container) return;
+    container
+      .querySelectorAll("video[data-preview-media]")
+      .forEach((el) => el.remove());
+    if (!container.querySelector("img[data-preview-media]")) {
+      const img = document.createElement("img");
+      img.src = thumbnail;
+      img.alt = title || "";
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.dataset.previewMedia = "1";
+      img.className =
+        "h-full w-full object-cover transition duration-500 group-hover:scale-110";
+      container.prepend(img);
+    }
+  }
+
+  return { start, stop, restoreMedia };
+}
