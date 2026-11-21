@@ -1,3 +1,4 @@
+# Jet_Apps/web-extensions/smart-web-extensions/missav-extension/server_paginated/run_missav_video_extractor.py
 import asyncio
 import logging
 import re
@@ -25,6 +26,11 @@ INGEST_ENDPOINT = f"{SERVER_URL}/ingest"
 MAX_CONCURRENT_TABS = 15
 INGEST_CHUNK_SIZE = 50
 BASE_SEARCH_URL = "https://missav.ws/en/search/{}-"
+
+# Safety limits for pagination discovery
+MAX_SEARCH_PAGES = 500  # hard upper bound to avoid infinite loops
+EMPTY_PAGE_STREAK_LIMIT = 1  # stop after N consecutive pages with 0 items
+
 SINGLE_VIDEO_PATH_RE = re.compile(
     r"^/(?:dm\d+/)?en/([a-z0-9]+-\d+(?:-[a-z0-9-]+)?)$", re.IGNORECASE
 )
@@ -38,7 +44,6 @@ DIGITS_THEN_LETTERS = re.compile(r"\b(\d+[a-z]+)(\d{3,6})\b", re.IGNORECASE)
 
 def _to_base36(n: int) -> str:
     """Converts a non-negative int to a lowercase base36 string.
-
     Mirrors JS Number.prototype.toString(36).
     """
     if n == 0:
@@ -53,7 +58,6 @@ def _to_base36(n: int) -> str:
 
 def generate_id_from_url(url: str, video_id: str) -> str:
     """Generates a deterministic ID based on URL path.
-
     Must stay byte-for-byte identical to generateIdFromUrl() in
     content_search.js / content_single.js:
       - FNV-1a 32-bit over scheme://netloc + path
@@ -63,20 +67,14 @@ def generate_id_from_url(url: str, video_id: str) -> str:
     """
     input_str = url or video_id
     if not input_str:
-        # JS: Date.now() is milliseconds
         return f"unknown-{int(time.time() * 1000)}"
-
     normalized = input_str
     try:
         u = urlparse(input_str)
-        # JS `new URL()` requires an absolute URL (scheme + host); urlparse
-        # accepts relative strings like "abc-123". Only normalize when we
-        # actually have both parts, mirroring the JS try/catch fallback.
         if u.scheme and u.netloc:
             normalized = u.scheme + "://" + u.netloc + u.path
     except Exception:
         normalized = input_str
-
     hash_val = 0x811C9DC5
     for char in normalized:
         hash_val ^= ord(char)
@@ -248,7 +246,6 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
     video_id = s
     code = m.group(1)
     episode = m.group(2)
-
     title = None
     selectors_h1 = [
         "h1.text-base.lg\\:text-lg",
@@ -263,16 +260,12 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
             title = el.get_text(strip=True)
             if title:
                 break
-
     if not title:
         og_title = soup.find("meta", property="og:title")
         if og_title:
             title = og_title.get("content", "").strip()
-
-    # Clean up title: set to None if empty
     if title is not None and not title.strip():
         title = None
-
     details = None
     selectors_details = [
         ".order-first .text-secondary.break-all",
@@ -285,7 +278,6 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
             details = el.get_text(strip=True)
             if details and len(details) > 10:
                 break
-
     if not details or len(details) <= 10:
         og_desc = soup.find("meta", attrs={"name": "description"})
         if og_desc:
@@ -294,11 +286,8 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
             og_desc_prop = soup.find("meta", property="og:description")
             if og_desc_prop:
                 details = og_desc_prop.get("content", "").strip()
-
-    # Clean up details: set to None if empty
     if details is not None and not details.strip():
         details = None
-
     release_date = None
     time_el = soup.select_one(".order-first time[datetime]")
     if not time_el:
@@ -313,7 +302,6 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
                 y, mo, d = date_match.groups()
                 release_date = f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
                 break
-
     genres = []
     genre_containers = soup.select(".text-secondary")
     found_genres = False
@@ -325,7 +313,6 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
             if genres:
                 found_genres = True
                 break
-
     if not found_genres:
         links = soup.find_all("a", class_="font-medium")
         genres = [
@@ -333,7 +320,6 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
             for a in links
             if a.get_text(strip=True) and len(a.get_text(strip=True)) < 40
         ]
-
     thumbnail = None
     player = soup.find("video", class_="player")
     if player:
@@ -348,7 +334,6 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
         og_image = soup.find("meta", property="og:image")
         if og_image:
             thumbnail = og_image.get("content")
-
     preview = None
     if thumbnail:
         if thumbnail.endswith("/preview.mp4"):
@@ -357,7 +342,6 @@ def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]
             idx = thumbnail.rfind("/")
             if idx != -1:
                 preview = thumbnail[: idx + 1] + "preview.mp4"
-
     id_hash = generate_id_from_url(url, video_id)
     return {
         "id": id_hash,
@@ -430,13 +414,107 @@ class MissAVExtractor:
             await self.ingest_batch(batch, "complete")
 
     async def flush_queues(self):
-        logger.info("Flushing remaining queues...")
+        """Flush any pending items in both queues."""
         if self.incomplete_queue:
+            logger.info(
+                f"💾 Flushing incomplete queue ({len(self.incomplete_queue)} items)..."
+            )
             await self.ingest_batch(self.incomplete_queue, "incomplete")
             self.incomplete_queue = []
         if self.complete_queue:
+            logger.info(
+                f"💾 Flushing complete queue ({len(self.complete_queue)} items)..."
+            )
             await self.ingest_batch(self.complete_queue, "complete")
             self.complete_queue = []
+
+    # ------------------------------------------------------------------
+    # Pagination discovery (fixed: DOM only exposes a window of page links,
+    # so we probe forward when the highest link looks truncated).
+    # ------------------------------------------------------------------
+    async def discover_page_urls(
+        self, page: Page, code: str, search_url: str
+    ) -> List[str]:
+        """
+        Discover all page URLs for a search.
+
+        The paginator only renders a small window of page links (e.g. 1-10 plus
+        the tail like 166-167). We parse the max link seen, but if the max looks
+        suspiciously like a tail anchor, we probe forward to find the true last
+        page. We also probe the first page to detect single-page results.
+        """
+        page_urls = [search_url]
+
+        # Parse whatever links are visible in the paginator window.
+        max_seen = 1
+        try:
+            paginator = await page.query_selector(".hidden.md\\:flex")
+            if paginator:
+                links = await paginator.query_selector_all('a[href*="page="]')
+                for link in links:
+                    href = await link.get_attribute("href")
+                    if not href:
+                        continue
+                    m = re.search(r"[?&]page=(\d+)", href)
+                    if m:
+                        max_seen = max(max_seen, int(m.group(1)))
+                    full_url = urljoin(search_url, href)
+                    if full_url not in page_urls:
+                        page_urls.append(full_url)
+        except Exception as e:
+            logger.warning(f"Could not parse pagination DOM: {e}")
+
+        # If the paginator only had the current page (or no paginator), we may
+        # have a single-page result — nothing to probe.
+        if max_seen <= 1 and len(page_urls) <= 1:
+            logger.info(f"📄 Single search page detected for {code}")
+            return page_urls
+
+        # Probe forward: fetch page=2, 3, ... sequentially until we get an empty
+        # page (or hit the hard cap). This handles the case where the paginator
+        # only exposed a window (e.g. 1-10 then 166-167) and the middle pages
+        # were never listed.
+        base = BASE_SEARCH_URL.format(code)
+        probe_page_num = 2
+        consecutive_empty = 0
+        while probe_page_num <= MAX_SEARCH_PAGES:
+            probe_url = f"{base}?page={probe_page_num}"
+            if probe_url in page_urls:
+                # Already have it from the DOM window; move on.
+                probe_page_num += 1
+                continue
+            try:
+                await page.goto(probe_url, wait_until="domcontentloaded")
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                html = await page.content()
+                items = parse_search_page_html(html, probe_url)
+                if not items:
+                    consecutive_empty += 1
+                    logger.info(
+                        f"📄 Probe page {probe_page_num} empty "
+                        f"({consecutive_empty}/{EMPTY_PAGE_STREAK_LIMIT})"
+                    )
+                    if consecutive_empty >= EMPTY_PAGE_STREAK_LIMIT:
+                        logger.info(
+                            f"📄 Stopping pagination probe at page {probe_page_num}"
+                        )
+                        break
+                else:
+                    consecutive_empty = 0
+                    page_urls.append(probe_url)
+            except Exception as e:
+                logger.warning(f"Probe page {probe_page_num} failed: {e}")
+                break
+            probe_page_num += 1
+
+        # Dedupe and sort numerically by page param.
+        def _page_key(u: str) -> int:
+            m = re.search(r"[?&]page=(\d+)", u)
+            return int(m.group(1)) if m else 1
+
+        page_urls = sorted(set(page_urls), key=_page_key)
+        logger.info(f"📄 Discovered {len(page_urls)} search pages for {code}")
+        return page_urls
 
     async def process_search_page(self, page: Page, code: str, url: str) -> List[Dict]:
         logger.info(f"🔍 Processing search page: {url}")
@@ -458,13 +536,10 @@ class MissAVExtractor:
     async def run(self):
         await self.initialize()
         logger.info("🚀 Starting Playwright session...")
-
-        # We still need a context for the search pages which require JS/Cloudflare solving
         playwright = await async_playwright().start()
         context: BrowserContext = await setup_async_browser_session(
             headless=self.headless
         )
-
         try:
             for code in self.codes:
                 logger.info(f"📦 Starting extraction for code: {code}")
@@ -472,24 +547,13 @@ class MissAVExtractor:
                 page = await context.new_page()
                 await page.goto(search_url, wait_until="domcontentloaded")
 
-                page_urls = [search_url]
-                try:
-                    paginator = await page.query_selector(".hidden.md\\:flex")
-                    if paginator:
-                        links = await paginator.query_selector_all('a[href*="page="]')
-                        for link in links:
-                            href = await link.get_attribute("href")
-                            if href:
-                                full_url = urljoin(search_url, href)
-                                if full_url not in page_urls:
-                                    page_urls.append(full_url)
-                except Exception as e:
-                    logger.warning(f"Could not parse pagination: {e}")
+                # FIXED: robust pagination discovery (probes forward past the
+                # DOM window so we don't miss pages 11-165).
+                page_urls = await self.discover_page_urls(page, code, search_url)
 
-                logger.info(f"📄 Found {len(page_urls)} search pages for {code}")
                 all_video_urls = []
-                for p_url in page_urls:
-                    if p_url != search_url:
+                for idx, p_url in enumerate(page_urls):
+                    if idx > 0:
                         await page.goto(p_url, wait_until="domcontentloaded")
                     urls = await self.process_search_page(page, code, p_url)
                     all_video_urls.extend(urls)
@@ -497,16 +561,25 @@ class MissAVExtractor:
                 await page.close()
                 logger.info(f"📋 Collected {len(all_video_urls)} video URLs for {code}")
 
+                # FIXED: flush pending search-page items BEFORE navigating to
+                # any individual video URL. This ensures the incomplete batch
+                # is persisted even if the per-video scrape crashes later.
+                if self.incomplete_queue or self.complete_queue:
+                    logger.info(
+                        f"💾 Flushing pending queues before video scrape "
+                        f"(incomplete={len(self.incomplete_queue)}, "
+                        f"complete={len(self.complete_queue)})"
+                    )
+                    await self.flush_queues()
+
                 if not all_video_urls:
+                    # Nothing to scrape for this code; move to next code.
                     continue
 
                 logger.info(
                     f"🚀 Starting fast-mode scrape for {len(all_video_urls)} videos..."
                 )
                 start_time = time.time()
-
-                # Use ascrape_urls in fast_mode to get HTML quickly without JS/Cloudflare overhead
-                # We disable screenshots and JS waiting for maximum speed
                 async for result in ascrape_urls(
                     urls=all_video_urls,
                     num_parallel=MAX_CONCURRENT_TABS,
@@ -531,12 +604,22 @@ class MissAVExtractor:
                         logger.warning(
                             f"Failed to scrape {result['url']}: {result['status']}"
                         )
-
                 elapsed = time.time() - start_time
                 logger.info(
                     f"✅ Finished fast-mode scrape for {code} in {elapsed:.2f}s"
                 )
 
+                # FIXED: flush after finishing this code's video scrape so the
+                # next code starts with empty queues.
+                if self.incomplete_queue or self.complete_queue:
+                    logger.info(
+                        f"💾 Flushing pending queues before next code "
+                        f"(incomplete={len(self.incomplete_queue)}, "
+                        f"complete={len(self.complete_queue)})"
+                    )
+                    await self.flush_queues()
+
+            # Final safety flush (should normally be empty).
             await self.flush_queues()
         except Exception as e:
             logger.error(f"❌ Critical error during extraction: {e}", exc_info=True)
@@ -544,7 +627,6 @@ class MissAVExtractor:
             logger.info("🛑 Closing browser context...")
             await context.close()
             await playwright.stop()
-
         logger.info(f"🏁 Extraction complete. Total ingested: {self.total_ingested}")
 
 
