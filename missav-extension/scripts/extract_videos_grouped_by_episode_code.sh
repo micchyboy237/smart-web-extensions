@@ -61,9 +61,11 @@ FROM (
         )
       )[1]                                                                 AS release_date,
 
-      -- Merged, deduplicated genres
+      -- Merged, deduplicated genres (excluding marker genres)
       array_agg(DISTINCT g.genre)
-        FILTER (WHERE g.genre IS NOT NULL AND g.genre <> '')               AS genres,
+        FILTER (WHERE g.genre IS NOT NULL
+                  AND g.genre <> ''
+                  AND lower(btrim(g.genre)) NOT IN ('uncensored leak', 'english subtitle')) AS genres,
 
       -- Bookkeeping
       min(v.created_at)                                                    AS created_at,
@@ -85,6 +87,7 @@ FROM (
       AND btrim(v.code)    <> ''
       AND btrim(v.episode) <> ''
       AND v.details is not null
+      AND v.release_date is not null
   GROUP BY
       v.code,
       v.episode
