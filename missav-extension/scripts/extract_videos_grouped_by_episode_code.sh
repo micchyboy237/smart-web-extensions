@@ -83,7 +83,7 @@ FROM (
   FROM public.videos v
   LEFT JOIN LATERAL unnest(v.genres) AS g(genre) ON true
   WHERE
-      v.code IN ('ssni', 'ssis', 'snis')
+      v.code IN ('roe', 'sprd')
       AND btrim(v.code)    <> ''
       AND btrim(v.episode) <> ''
       AND v.title is not null
@@ -97,7 +97,6 @@ FROM (
   ORDER BY
       v.code,
       v.episode
-  LIMIT 20
 ) t;
 "
 
