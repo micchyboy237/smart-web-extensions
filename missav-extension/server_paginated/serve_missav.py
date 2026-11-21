@@ -56,7 +56,7 @@ logger = logging.getLogger("video_search_api")
 DB_CONNINFO = "dbname=missav_db1 user=jethroestrada host=localhost port=5432"
 ITERATIVE_SCAN_MODE: Optional[str] = "strict_order"
 MAX_SCAN_TUPLES = 20000
-INGEST_MAX_TOKENS = 512
+INGEST_MAX_TOKENS = 500
 
 # --------------------------------------------------------------------------- #
 # /search_clustered caps.
@@ -167,6 +167,7 @@ app.add_middleware(
 
 GenreCodeInput = Optional[Union[str, List[str]]]
 CompletionFilter = Literal["all", "complete", "incomplete"]
+VideoSearchMode = Literal["fts", "semantic", "hybrid"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1402,12 +1403,58 @@ def list_videos(
     ),
     offset: int = Query(0, ge=0),
     fields: Literal["id", "summary", "full"] = "summary",
+    # --- NEW: optional free-text / semantic search ---
+    query: Optional[str] = Query(
+        None,
+        min_length=1,
+        description=(
+            "Optional free-text query. When omitted, the endpoint behaves "
+            "exactly like before (stable id ASC offset pagination). When "
+            "provided, results are ordered by relevance according to `mode`. "
+            "Use `search_sort=id` to fall back to deterministic id ordering "
+            "even when a query is present."
+        ),
+    ),
+    mode: VideoSearchMode = Query(
+        "semantic",
+        description=(
+            "Relevance mode when `query` is provided. "
+            "'fts' uses title full-text search. "
+            "'semantic' uses embedding cosine distance. "
+            "'hybrid' fuses FTS + vector via Reciprocal Rank Fusion."
+        ),
+    ),
+    search_sort: Literal["relevance", "id"] = Query(
+        "relevance",
+        description=(
+            "Ordering when `query` is provided. 'relevance' sorts by score "
+            "(best first). 'id' keeps deterministic id ASC ordering while "
+            "still filtering to matches."
+        ),
+    ),
+    min_similarity: Optional[float] = Query(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Optional similarity floor applied in 'semantic' and 'hybrid' "
+            "modes. Ignored in 'fts' mode."
+        ),
+    ),
 ):
     """
     Stable, id-ordered listing for sync/export tooling.
-    Unlike /browse, this never applies a `release_date IS NOT NULL` guard,
-    never uses a keyset cursor, and sorts by `id ASC` so offset pagination
-    is deterministic across concurrent inserts.
+
+    Behavior:
+      * Without `query`:
+          - No `release_date IS NOT NULL` guard, no keyset cursor.
+          - Sorted by `id ASC` so offset pagination is deterministic
+            across concurrent inserts.
+      * With `query`:
+          - Same filters are applied, plus a match predicate based on `mode`.
+          - Ordering is by relevance (`search_sort='relevance'`, default)
+            or by `id ASC` (`search_sort='id'`).
+          - Still supports offset pagination.
     """
     t0 = time.perf_counter()
     EFFECTIVE_CAP = 5000
@@ -1423,10 +1470,12 @@ def list_videos(
     req.min_release_date = min_release_date
     req.max_release_date = max_release_date
     req.completion_filter = completion_filter
+
     params: dict = {"limit": eff_limit, "offset": offset}
     conds: List[str] = []
     _apply_filters(req, params, conds)
-    where_sql = " AND ".join(conds) if conds else "TRUE"
+
+    # Resolve SELECT list (with optional distance column for semantic modes)
     select_cols = _VLIST_FIELDS[fields]
     if fields == "summary":
         select_cols = (
@@ -1436,15 +1485,160 @@ def list_videos(
             " AND release_date IS NOT NULL "
             " AND genres IS NOT NULL AND cardinality(genres) > 0) AS complete"
         )
+
+    extra_select: List[str] = []
+    order_sql = "ORDER BY id ASC"
+    use_semantic = query is not None and mode in ("semantic", "hybrid")
+    use_fts = query is not None and mode in ("fts", "hybrid")
+
+    # Embed the query once (cached) if any semantic mode is requested.
+    emb: Optional[List[float]] = None
+    if use_semantic:
+        emb = list(_embed_query(query))
+        params["emb"] = emb
+
+    # --- Relevance setup -------------------------------------------------
+    if query is not None:
+        if mode == "fts":
+            conds.append(
+                "title IS NOT NULL AND "
+                "to_tsvector('english', title) @@ plainto_tsquery('english', %(q)s)"
+            )
+            params["q"] = query
+            if search_sort == "relevance":
+                order_sql = (
+                    "ORDER BY ts_rank_cd("
+                    "to_tsvector('english', title), "
+                    "plainto_tsquery('english', %(q)s)"
+                    ") DESC, id ASC"
+                )
+
+        elif mode == "semantic":
+            conds.append("embedding IS NOT NULL")
+            distance_sql = "(embedding <=> %(emb)s::vector)"
+            # similarity is the user-facing score; distance stays internal
+            similarity_sql = f"GREATEST(0.0, LEAST(1.0, 1.0 - {distance_sql}))"
+            if min_similarity is not None:
+                conds.append(f"{distance_sql} <= %(max_dist)s")
+                params["max_dist"] = 1.0 - float(min_similarity)
+            # Only project the score when the caller asked for more than ids.
+            if fields != "id":
+                extra_select.append(f"{similarity_sql} AS similarity")
+            # Order by raw distance ASC (closest first); this is what the
+            # HNSW index is built to serve and matches /search's semantics.
+            if search_sort == "relevance":
+                order_sql = f"ORDER BY {distance_sql} ASC, id ASC"
+
+        elif mode == "hybrid":
+            # Hybrid is a two-pass RRF: fetch candidates from FTS and vector,
+            # then fuse. To keep this endpoint offset-paginatable and stable,
+            # we materialize the fused ranking in a CTE and then slice.
+            params["q"] = query
+            params["rrf_k"] = 60
+            params["cand_limit"] = max(eff_limit + offset, 200)
+
+            # Build the same base WHERE (filters only) for candidate CTEs,
+            # then add FTS/vector predicates per-CTE.
+            base_conds = list(conds)  # filters only; no query predicates yet
+            base_where = " AND ".join(base_conds) if base_conds else "TRUE"
+
+            # For hybrid we assemble the full SQL directly (not via the
+            # generic scaffold below), so do it and return early.
+            if min_similarity is not None:
+                sem_cond = (
+                    "(embedding IS NOT NULL AND "
+                    "(embedding <=> %(emb)s::vector) <= %(max_dist)s)"
+                )
+                params["max_dist"] = 1.0 - float(min_similarity)
+            else:
+                sem_cond = "embedding IS NOT NULL"
+
+            # For hybrid, semantic candidate selection always needs the emb.
+            params["emb"] = list(_embed_query(query))
+
+            sql = f"""
+                WITH vec AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               ORDER BY embedding <=> %(emb)s::vector, id
+                           ) AS rn
+                    FROM public.videos
+                    WHERE {base_where} AND {sem_cond}
+                    ORDER BY embedding <=> %(emb)s::vector, id
+                    LIMIT %(cand_limit)s
+                ),
+                fts AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               ORDER BY ts_rank_cd(
+                                   to_tsvector('english', title),
+                                   plainto_tsquery('english', %(q)s)
+                               ) DESC, id
+                           ) AS rn
+                    FROM public.videos
+                    WHERE {base_where}
+                      AND title IS NOT NULL
+                      AND to_tsvector('english', title)
+                          @@ plainto_tsquery('english', %(q)s)
+                    ORDER BY ts_rank_cd(
+                        to_tsvector('english', title),
+                        plainto_tsquery('english', %(q)s)
+                    ) DESC, id
+                    LIMIT %(cand_limit)s
+                ),
+                fused AS (
+                    SELECT id, SUM(1.0 / (%(rrf_k)s + rn))::float8 AS score
+                    FROM (
+                        SELECT id, rn FROM vec
+                        UNION ALL
+                        SELECT id, rn FROM fts
+                    ) u
+                    GROUP BY id
+                )
+                SELECT v.id, v.title, v.details, v.url, v.code, v.episode,
+                       v.release_date, v.genres, v.thumbnail, v.preview,
+                       f.score AS score
+                FROM fused f
+                JOIN public.videos v ON v.id = f.id
+                ORDER BY f.score DESC, v.id ASC
+                LIMIT %(limit)s OFFSET %(offset)s
+            """
+
+            with pool.connection() as conn:
+                if ITERATIVE_SCAN_MODE:
+                    conn.execute(
+                        f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}"
+                    )
+                    conn.execute(
+                        f"SET LOCAL hnsw.max_scan_tuples = {int(MAX_SCAN_TUPLES)}"
+                    )
+                rows = conn.execute(sql, params).fetchall()
+
+            took = (time.perf_counter() - t0) * 1000
+            return VideoListResponse(
+                items=[dict(r) for r in rows],
+                count=len(rows),
+                took_ms=took,
+            )
+
+    # --- Assemble generic SQL (no-query, fts, or semantic) --------------
+    where_sql = " AND ".join(conds) if conds else "TRUE"
+    select_full = ", ".join([select_cols] + extra_select)
+
     sql = f"""
-        SELECT {select_cols}
+        SELECT {select_full}
         FROM public.videos
         WHERE {where_sql}
-        ORDER BY id ASC
+        {order_sql}
         LIMIT %(limit)s OFFSET %(offset)s
     """
+
     with pool.connection() as conn:
+        if use_semantic and ITERATIVE_SCAN_MODE:
+            conn.execute(f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}")
+            conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {int(MAX_SCAN_TUPLES)}")
         rows = conn.execute(sql, params).fetchall()
+
     took = (time.perf_counter() - t0) * 1000
     return VideoListResponse(
         items=[dict(r) for r in rows],
