@@ -1,11 +1,7 @@
 // client_paginated/app.js
 function app() {
   const API = "http://localhost:9001";
-
-  // Cluster quality tiers — client-side display mapping only. The "core"
-  // thresholds are the only ones the client invents; every other number
-  // (probability, silhouette, consistency_score, etc.) is read verbatim
-  // from /search_clustered.
+  // Cluster quality tiers — client-side display mapping only.
   const CLUSTER_TIER_THRESHOLDS = {
     green: { consistency: 0.75, centroidSim: 0.7 },
     amber: { consistency: 0.55, centroidSim: 0.6 },
@@ -28,24 +24,35 @@ function app() {
     lastTook: null,
     filtersOpen: false,
     filters: {
-      code: "",
+      code: "", // Kept for URL sync, but UI uses codeChips
       from: "",
       to: "",
       genresMode: "any",
       genres: [],
       completionFilter: "all",
     },
+    // New state for Code Autocomplete
+    codeInput: "",
+    codeSuggestions: [],
+    showCodeDropdown: false,
+
+    // New state for Genres Modal
+    genresModalOpen: false,
+    genreSortBy: "count", // 'name' | 'count'
+    genreSortOrder: "desc", // 'asc' | 'desc'
+
     facets: { genres: [], years: [], codes: [] },
     detail: { open: false, loading: false, video: null },
     similarOf: null,
     toasts: [],
 
+    // History tracking for Back button
+    previousMode: null,
+    previousQuery: null,
+
     // ── generation counters ──
-    // Kept separate so a paginated fetch can never cancel a clustered one
-    // (and vice versa). The clustered skeleton is cleared only by the latest
-    // clustered request, never by a paginated response.
-    _gen: 0, // paginated (/search, /similar, /browse)
-    _genClustered: 0, // clustered (/search_clustered)
+    _gen: 0,
+    _genClustered: 0,
 
     // ── clustered-mode state ──
     clustered: {
@@ -54,21 +61,13 @@ function app() {
       error: null,
       _inflight: false,
     },
-
-    // Server-side knobs passed verbatim to /search_clustered.
-    //
-    // `candidateLimit: null` means "let the server decide" — the server uses
-    // CLUSTER_CANDIDATE_CAP_QUERY or CLUSTER_CANDIDATE_CAP_BROWSE.
-    // There is no n_clusters — the server picks k via cluster_utils.
     clusterPrefs: {
-      candidateLimit: null, // null = "auto" (server cap)
-      minClusterSize: 2, // min_cluster_size (-s)
-      epsilon: 0.25, // cluster_selection_epsilon (-e)
-      candidateSource: "recent", // used only when query is null
+      candidateLimit: null,
+      minClusterSize: 2,
+      epsilon: 0.25,
+      candidateSource: "recent",
     },
-
-    // Client-only: visibility prefs per cluster.
-    clusterUi: {}, // { [cluster_id]: { coreOnly, hidden } }
+    clusterUi: {},
 
     // ── lifecycle ──
     boot() {
@@ -77,6 +76,12 @@ function app() {
       this.$nextTick(() => this.refreshIcons());
       this.fetchFacets();
 
+      // Handle Browser Back/Forward
+      window.addEventListener("popstate", () => {
+        this.hydrateFromURL();
+        this.refetchOrCluster();
+      });
+
       if (this.mode === "clustered") {
         this.fetchClustered();
       } else {
@@ -84,7 +89,10 @@ function app() {
       }
 
       document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") this.closeDetail();
+        if (e.key === "Escape") {
+          if (this.genresModalOpen) this.genresModalOpen = false;
+          else this.closeDetail();
+        }
         if (
           e.key === "/" &&
           !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)
@@ -138,38 +146,35 @@ function app() {
     },
 
     // ── URL sync ──
-
     hydrateFromURL() {
       const p = new URLSearchParams(location.search);
       const urlMode = p.get("mode");
       const hasQ = !!p.get("q");
+
+      // Store previous state for back navigation logic if needed,
+      // but primarily we just restore state from URL.
       this.mode = urlMode || (hasQ ? "search" : "browse");
       this.query = p.get("q") || "";
       this.lastQuery = this.query;
 
       this.filters.code = p.get("code") || "";
+      // Sync chips from URL code param
+      if (this.filters.code) {
+        // We don't strictly need to populate codeChips here if we rely on filters.code for API,
+        // but for UI consistency we might want to parse it.
+        // For simplicity, we keep filters.code as the source of truth for API.
+      }
+
       this.filters.from = p.get("from") || "";
       this.filters.to = p.get("to") || "";
       this.filters.genresMode = p.get("gmode") || "any";
       this.filters.genres = (p.get("genres") || "").split(",").filter(Boolean);
-
       const cf = p.get("cf");
       this.filters.completionFilter =
         cf === "complete" || cf === "incomplete" ? cf : "all";
 
       this.similarOf = p.get("sim") || null;
 
-      // ── Clustered knobs ──
-      //
-      // URL contract:
-      //   cl     → cluster_candidate_limit. Omitted or empty ⇒ "auto" (null).
-      //   msize  → min_cluster_size.        Omitted ⇒ default (2).
-      //   eps    → cluster_selection_epsilon. Omitted ⇒ default (0.25).
-      //   src    → candidate_source.        Omitted ⇒ "recent".
-      //
-      // "auto" is encoded as ABSENCE of `cl` (not as `cl=`), so a shared
-      // link without the param reproduces "use the server cap". An empty
-      // `cl=` value is also treated as auto.
       if (this.mode === "clustered") {
         const clRaw = p.get("cl");
         if (clRaw == null || clRaw === "") {
@@ -178,7 +183,6 @@ function app() {
           const cl = parseInt(clRaw, 10);
           this.clusterPrefs.candidateLimit = Number.isFinite(cl) ? cl : null;
         }
-
         const msRaw = p.get("msize");
         if (msRaw != null && msRaw !== "") {
           const ms = parseInt(msRaw, 10);
@@ -186,7 +190,6 @@ function app() {
             this.clusterPrefs.minClusterSize = Math.min(20, Math.max(2, ms));
           }
         }
-
         const epsRaw = p.get("eps");
         if (epsRaw != null && epsRaw !== "") {
           const eps = parseFloat(epsRaw);
@@ -194,7 +197,6 @@ function app() {
             this.clusterPrefs.epsilon = Math.min(1, Math.max(0, eps));
           }
         }
-
         const src = p.get("src");
         if (src === "random" || src === "recent") {
           this.clusterPrefs.candidateSource = src;
@@ -213,16 +215,12 @@ function app() {
       this.order = p.get("order") || "desc";
     },
 
-    syncURL() {
+    syncURL(push = false) {
       const p = new URLSearchParams();
       if (this.mode === "search" && this.lastQuery) p.set("q", this.lastQuery);
-
       if (this.mode === "clustered") {
         p.set("mode", "clustered");
         if (this.lastQuery) p.set("q", this.lastQuery);
-
-        // `cl` is only serialized when the user has typed a concrete number.
-        // `null` (auto) is encoded by omitting the param entirely.
         if (Number.isFinite(this.clusterPrefs.candidateLimit)) {
           p.set("cl", String(this.clusterPrefs.candidateLimit));
         }
@@ -236,13 +234,15 @@ function app() {
           p.set("src", this.clusterPrefs.candidateSource);
         }
       }
-
       if (this.mode === "browse") p.set("mode", "browse");
       if (this.mode === "similar" && this.similarOf) {
         p.set("mode", "similar");
         p.set("sim", this.similarOf);
       }
+
+      // Serialize code chips/filters
       if (this.filters.code) p.set("code", this.filters.code);
+
       if (this.filters.from) p.set("from", this.filters.from);
       if (this.filters.to) p.set("to", this.filters.to);
       if (this.filters.genresMode !== "any")
@@ -251,11 +251,18 @@ function app() {
         p.set("genres", this.filters.genres.join(","));
       if (this.filters.completionFilter !== "all")
         p.set("cf", this.filters.completionFilter);
+
       if (this.mode === "browse") {
         if (this.sort !== "similarity") p.set("sort", this.sort);
         if (this.order !== "desc") p.set("order", this.order);
       }
-      history.replaceState(null, "", `${location.pathname}?${p}`);
+
+      const newUrl = `${location.pathname}?${p}`;
+      if (push) {
+        history.pushState(null, "", newUrl);
+      } else {
+        history.replaceState(null, "", newUrl);
+      }
     },
 
     // ── actions ──
@@ -282,6 +289,7 @@ function app() {
         if (this.mode !== "browse") this.doBrowse();
         return;
       }
+      this.previousMode = this.mode; // Track for back button if needed
       this.mode = "search";
       this.lastQuery = q;
       this.similarOf = null;
@@ -291,17 +299,18 @@ function app() {
       ) {
         this.sort = "similarity";
       }
-      this.syncURL();
+      this.syncURL(true); // Push state
       this.refetch();
     },
 
     doBrowse() {
+      this.previousMode = this.mode;
       this.mode = "browse";
       this.similarOf = null;
       if (!new URLSearchParams(location.search).get("sort")) {
         this.sort = "release_date";
       }
-      this.syncURL();
+      this.syncURL(true); // Push state
       this.refetch();
     },
 
@@ -312,10 +321,11 @@ function app() {
         else this.doBrowse();
         return;
       }
+      this.previousMode = this.mode;
       this.mode = "clustered";
       this.lastQuery = this.query.trim();
       this.similarOf = null;
-      this.syncURL();
+      this.syncURL(true); // Push state
       this.fetchClustered();
     },
 
@@ -324,7 +334,6 @@ function app() {
       if (this.mode === "clustered") this.fetchClustered();
     },
 
-    // Preset helpers used by the preset selector in the header.
     applyClusterPreset(name) {
       const presets = {
         tight: { minClusterSize: 4, epsilon: 0.15 },
@@ -341,10 +350,73 @@ function app() {
     findSimilar(id) {
       clearTimeout(this._deb);
       this.closeDetail();
+      this.previousMode = this.mode;
+      this.previousQuery = this.lastQuery; // Save context
       this.mode = "similar";
       this.similarOf = id;
-      this.syncURL();
+      this.syncURL(true); // Push state for Back button support
       this.refetch();
+    },
+
+    goBack() {
+      window.history.back();
+    },
+
+    // Code Autocomplete Logic
+    onCodeInputFocus() {
+      this.showCodeDropdown = true;
+      this.updateCodeSuggestions();
+    },
+
+    onCodeInputBlur() {
+      // Delay hiding to allow click selection
+      setTimeout(() => {
+        this.showCodeDropdown = false;
+      }, 200);
+    },
+
+    updateCodeSuggestions() {
+      const input = this.codeInput.toLowerCase();
+      if (!input) {
+        // Show top codes if empty
+        this.codeSuggestions = this.facets.codes.slice(0, 10);
+      } else {
+        this.codeSuggestions = this.facets.codes
+          .filter((c) => c.code.toLowerCase().includes(input))
+          .slice(0, 10);
+      }
+    },
+
+    addCodeChip(codeObj) {
+      const code = codeObj.code;
+      // Add to filters.code string (comma separated for backend compatibility)
+      const currentCodes = this.filters.code
+        ? this.filters.code
+            .split(",")
+            .map((c) => c.trim())
+            .filter(Boolean)
+        : [];
+      if (!currentCodes.includes(code)) {
+        currentCodes.push(code);
+        this.filters.code = currentCodes.join(", ");
+      }
+      this.codeInput = "";
+      this.showCodeDropdown = false;
+      this.syncURL();
+      this.mode === "clustered" ? this.fetchClustered() : this.refetch();
+    },
+
+    removeCodeChip(code) {
+      const currentCodes = this.filters.code
+        ? this.filters.code
+            .split(",")
+            .map((c) => c.trim())
+            .filter(Boolean)
+        : [];
+      const newCodes = currentCodes.filter((c) => c !== code);
+      this.filters.code = newCodes.join(", ");
+      this.syncURL();
+      this.mode === "clustered" ? this.fetchClustered() : this.refetch();
     },
 
     toggleGenre(name) {
@@ -378,6 +450,7 @@ function app() {
         genres: [],
         completionFilter: "all",
       };
+      this.codeInput = "";
       this.syncURL();
       this.mode === "clustered" ? this.fetchClustered() : this.refetch();
     },
@@ -389,6 +462,34 @@ function app() {
         .reverse();
     },
 
+    // Genre Modal Sorting
+    get sortedGenresForModal() {
+      let genres = [...this.facets.genres];
+      if (this.genreSortBy === "name") {
+        genres.sort((a, b) => a.name.localeCompare(b.name));
+      } else {
+        genres.sort((a, b) => b.count - a.count);
+      }
+      if (this.genreSortOrder === "asc" && this.genreSortBy === "count") {
+        genres.reverse();
+      }
+      // Note: name sort is usually asc by default, count desc.
+      // Simplified logic:
+      if (this.genreSortBy === "name") {
+        return this.genreSortOrder === "desc" ? genres.reverse() : genres;
+      }
+      return genres; // Default count desc
+    },
+
+    toggleGenreSort(by) {
+      if (this.genreSortBy === by) {
+        this.genreSortOrder = this.genreSortOrder === "asc" ? "desc" : "asc";
+      } else {
+        this.genreSortBy = by;
+        this.genreSortOrder = by === "count" ? "desc" : "asc";
+      }
+    },
+
     // ── fetching (paginated modes) ──
     refetch() {
       this.items = [];
@@ -396,6 +497,11 @@ function app() {
       this.page = 0;
       this.exhausted = false;
       this.fetchPage({ reset: true });
+    },
+
+    refetchOrCluster() {
+      if (this.mode === "clustered") this.fetchClustered();
+      else this.refetch();
     },
 
     loadMore() {
@@ -453,7 +559,6 @@ function app() {
       this.clustered.loading = true;
       this.clustered.error = null;
       const gen = ++this._genClustered;
-
       const params = this.buildClusteredParams();
       try {
         const res = await fetch(`${API}/search_clustered`, {
@@ -469,12 +574,8 @@ function app() {
         }
         const data = await res.json();
         if (gen !== this._genClustered) return;
-
         this.clustered.data = data;
         this.lastTook = data.took_ms ?? null;
-
-        // Preserve per-cluster UI state for clusters that still exist;
-        // reset entries for clusters that were dropped.
         const next = {};
         for (const c of data.clusters || []) {
           next[c.cluster_id] = this.clusterUi[c.cluster_id] || {
@@ -483,7 +584,6 @@ function app() {
           };
         }
         this.clusterUi = next;
-
         this.$nextTick(() => this.refreshIcons());
       } catch (e) {
         if (gen !== this._genClustered) return;
@@ -514,27 +614,17 @@ function app() {
         return this.filters.genres;
       };
       const q = this.lastQuery?.trim() || null;
-
-      // Auto mode: send `null` so the server uses its cap. Sending `100`
-      // (or any other client-invented number) would silently override the
-      // server's much larger default and shrink the pool.
       const limit =
         Number.isFinite(this.clusterPrefs.candidateLimit) &&
         this.clusterPrefs.candidateLimit >= 10
           ? this.clusterPrefs.candidateLimit
           : null;
-
       return {
-        // Query is optional; server branches on presence.
         query: q,
-
-        // cluster_utils knobs — no n_clusters, no include_noise.
         min_cluster_size: this.clusterPrefs.minClusterSize,
         cluster_selection_epsilon: this.clusterPrefs.epsilon,
-        cluster_candidate_limit: limit, // null → server cap
+        cluster_candidate_limit: limit,
         candidate_source: this.clusterPrefs.candidateSource,
-
-        // Shared filters.
         genre: getGenreParam(),
         genres_mode: this.filters.genresMode,
         code: getCodeParam(),
@@ -544,7 +634,7 @@ function app() {
         max_release_date: this.filters.to
           ? new Date(this.filters.to + "T23:59:59Z").toISOString()
           : null,
-        min_similarity: null, // server rejects when query is null
+        min_similarity: null,
         completion_filter: this.filters.completionFilter,
       };
     },
@@ -657,14 +747,16 @@ function app() {
           qs = `?completion_filter=${this.filters.completionFilter}`;
         }
         const r = await fetch(`${API}/facets${qs}`);
-        this.facets = await r.json();
+        const data = await r.json();
+        this.facets = data;
+        // Initialize suggestions
+        this.codeSuggestions = data.codes.slice(0, 10);
       } catch {
         /* ignore */
       }
     },
 
     // ── cluster view helpers ──
-
     clusterTier(c) {
       if (!c || c.is_noise) return "grey";
       const hasQuery = c.centroid_similarity != null;
@@ -688,7 +780,6 @@ function app() {
       if (consistency >= t.amber.consistency) return "amber";
       return "grey";
     },
-
     clusterLabel(c) {
       if (!c || c.is_noise) return "Tangential · mixed";
       const tier = this.clusterTier(c);
@@ -702,7 +793,6 @@ function app() {
       if (tier === "amber") return "Loosely grouped";
       return "Mixed";
     },
-
     clusterTierDotClass(c) {
       return {
         green: "bg-emerald-400",
@@ -710,11 +800,9 @@ function app() {
         grey: "bg-slate-500",
       }[this.clusterTier(c)];
     },
-
     clusterSegments(c) {
       return Math.round((c?.consistency_score ?? 0) * 5);
     },
-
     isCoreItem(it) {
       const t = CLUSTER_TIER_THRESHOLDS.core;
       return (
@@ -722,13 +810,9 @@ function app() {
         (it.probability ?? 0) >= t.probability
       );
     },
-
     isFringeItem(it) {
       return (it.silhouette ?? 0) < 0;
     },
-
-    // Server already sorts items by (silhouette, probability) desc, so this
-    // only filters — no re-sort. "core only" hides fringe and boundary items.
     visibleItems(c) {
       if (!c || !Array.isArray(c.items)) return [];
       const ui = this.clusterUiFor(c.cluster_id);
@@ -736,11 +820,9 @@ function app() {
       if (ui.coreOnly) list = list.filter((it) => this.isCoreItem(it));
       return list;
     },
-
     findSimilarFromCluster(id) {
       this.findSimilar(id);
     },
-
     clusterUiFor(id) {
       return (
         this.clusterUi[id] || {
@@ -749,7 +831,6 @@ function app() {
         }
       );
     },
-
     toggleClusterCoreOnly(id) {
       const cur = this.clusterUiFor(id);
       this.clusterUi = {
@@ -757,7 +838,6 @@ function app() {
         [id]: { ...cur, coreOnly: !cur.coreOnly },
       };
     },
-
     toggleClusterHidden(id) {
       const cur = this.clusterUiFor(id);
       this.clusterUi = {
@@ -782,7 +862,6 @@ function app() {
         this.$nextTick(() => this.refreshIcons());
       }
     },
-
     closeDetail() {
       this.detail = { open: false, loading: false, video: null };
     },

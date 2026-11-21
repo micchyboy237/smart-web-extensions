@@ -5,7 +5,6 @@ html {
 body {
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
-
 /* custom scrollbar */
 ::-webkit-scrollbar {
   width: 10px;
@@ -22,6 +21,18 @@ body {
   background: #3b4658;
 }
 
+/* Custom scrollbar for specific containers */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #293241;
+  border-radius: 4px;
+}
+
 /* film-grain background */
 .bg-grain::before {
   content: "";
@@ -33,7 +44,6 @@ body {
   opacity: 0.35;
   mix-blend-mode: overlay;
 }
-
 /* skeleton shimmer */
 .skeleton {
   background: linear-gradient(90deg, #1d2430 0%, #293241 50%, #1d2430 100%);
@@ -48,7 +58,6 @@ body {
     background-position: -200% 0;
   }
 }
-
 /* fade-in-up card */
 .card-enter {
   animation: cardEnter 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
@@ -63,7 +72,6 @@ body {
     transform: translateY(0) scale(1);
   }
 }
-
 /* modal backdrop */
 .modal-backdrop {
   backdrop-filter: blur(6px);
@@ -72,7 +80,6 @@ body {
 [x-cloak] {
   display: none !important;
 }
-
 /* line-clamp helper */
 .line-clamp-2 {
   display: -webkit-box;
@@ -86,7 +93,6 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-
 /* ─── clustered-mode carousel ─── */
 .carousel-mask {
   position: relative;

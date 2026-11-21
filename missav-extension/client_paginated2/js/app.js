@@ -35,7 +35,6 @@ window.__api = { normalizeCodeList, normalizeGenreList };
 
 function app() {
   const preview = createPreviewManager();
-
   return {
     // ── state ──
     mode: "browse",
@@ -120,8 +119,16 @@ function app() {
     isFringeItem,
 
     // ── lifecycle ──
+    // Called from <body x-init="boot()">.
     boot() {
+      console.log("[boot] start");
       hydrateFromURL(this);
+      console.log("[boot] hydrated from URL", {
+        mode: this.mode,
+        query: this.query,
+        similarOf: this.similarOf,
+        filters: { ...this.filters },
+      });
       this.refreshIcons();
       this.$nextTick(() => this.refreshIcons());
       this.fetchFacets();
@@ -133,7 +140,6 @@ function app() {
       if (this.mode === "similar" && this.similarOf) {
         this.loadSimilarSource();
       }
-
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
           if (this.genresModal.open) this.genresModal.open = false;
@@ -147,9 +153,9 @@ function app() {
           this.$refs.searchInput?.focus();
         }
       });
-
       // Handle browser back/forward.
       window.addEventListener("popstate", () => {
+        console.log("[popstate] re-hydrating from URL");
         hydrateFromURL(this);
         if (this.mode === "clustered") this.fetchClustered();
         else {
@@ -159,7 +165,6 @@ function app() {
           else this.similarSourceVideo = null;
         }
       });
-
       const io = new IntersectionObserver(
         (entries) => {
           if (
@@ -175,7 +180,6 @@ function app() {
         { rootMargin: "400px" },
       );
       if (this.$refs.sentinel) io.observe(this.$refs.sentinel);
-
       const checkSentinel = () => {
         if (this.mode === "clustered") return;
         const el = this.$refs.sentinel;
@@ -184,7 +188,6 @@ function app() {
         if (rect.top < window.innerHeight + 400) this.loadMore();
       };
       window.addEventListener("scroll", checkSentinel, { passive: true });
-
       this.$watch("items", () => {
         this.$nextTick(() => {
           this.refreshIcons();
@@ -200,8 +203,8 @@ function app() {
       this.$watch("genresModal.open", () =>
         this.$nextTick(() => this.refreshIcons()),
       );
+      console.log("[boot] done");
     },
-
     refreshIcons() {
       if (window.lucide) lucide.createIcons();
     },
@@ -209,8 +212,6 @@ function app() {
     // ── navigation ──
     pushURL() {
       // pushState (not replace) so Back works.
-      const params = new URLSearchParams(location.search);
-      // syncURL mutates via replaceState; we rebuild here for push.
       const p = new URLSearchParams();
       if (this.mode === "search" && this.lastQuery) p.set("q", this.lastQuery);
       if (this.mode === "clustered") {
@@ -245,7 +246,6 @@ function app() {
       }
       history.pushState(null, "", `${location.pathname}?${p}`);
     },
-
     goBack() {
       history.back();
     },
@@ -267,9 +267,9 @@ function app() {
         }
       }, 400);
     },
-
     doSearch() {
       const q = this.query.trim();
+      console.log("[doSearch]", { q });
       if (!q) {
         if (this.mode !== "browse") this.doBrowse();
         return;
@@ -287,8 +287,8 @@ function app() {
       this.pushURL();
       this.refetch();
     },
-
     doBrowse() {
+      console.log("[doBrowse]");
       this.mode = "browse";
       this.similarOf = null;
       this.similarSourceVideo = null;
@@ -298,9 +298,9 @@ function app() {
       this.pushURL();
       this.refetch();
     },
-
     toggleClusterMode() {
       clearTimeout(this._deb);
+      console.log("[toggleClusterMode] from", this.mode);
       if (this.mode === "clustered") {
         if (this.lastQuery) this.doSearch();
         else this.doBrowse();
@@ -313,12 +313,10 @@ function app() {
       this.pushURL();
       this.fetchClustered();
     },
-
     applyClusterPrefs() {
       this.pushURL();
       if (this.mode === "clustered") this.fetchClustered();
     },
-
     applyClusterPreset(name) {
       const presets = {
         tight: { minClusterSize: 4, epsilon: 0.15 },
@@ -331,8 +329,8 @@ function app() {
       this.clusterPrefs.epsilon = p.epsilon;
       this.applyClusterPrefs();
     },
-
     async findSimilar(id) {
+      console.log("[findSimilar]", id);
       clearTimeout(this._deb);
       this.closeDetail();
       this.mode = "similar";
@@ -342,18 +340,17 @@ function app() {
       await this.refetch();
       this.loadSimilarSource();
     },
-
     findSimilarFromCluster(id) {
       this.findSimilar(id);
     },
-
     // Load the full source video for the "Similar videos" header.
     async loadSimilarSource() {
       if (!this.similarOf) return;
       try {
         this.similarSourceVideo = await getVideo(this.similarOf);
         this.$nextTick(() => this.refreshIcons());
-      } catch {
+      } catch (e) {
+        console.warn("[loadSimilarSource] failed", e);
         this.similarSourceVideo = null;
       }
     },
@@ -366,22 +363,20 @@ function app() {
       this.pushURL();
       this.mode === "clustered" ? this.fetchClustered() : this.refetch();
     },
-
     setCompletionFilter(val) {
       this.filters.completionFilter = val;
       this.pushURL();
       this.mode === "clustered" ? this.fetchClustered() : this.refetch();
       this.fetchFacets();
     },
-
     pickYear(year) {
       this.filters.from = `${year}-01-01`;
       this.filters.to = `${year}-12-31`;
       this.pushURL();
       this.mode === "clustered" ? this.fetchClustered() : this.refetch();
     },
-
     clearFilters() {
+      console.log("[clearFilters]");
       this.filters = {
         code: "",
         from: "",
@@ -393,7 +388,6 @@ function app() {
       this.pushURL();
       this.mode === "clustered" ? this.fetchClustered() : this.refetch();
     },
-
     recentYears() {
       return this.facets.years
         .filter((y) => y.year >= 2000)
@@ -430,6 +424,7 @@ function app() {
       this.filters.code = codes.join(", ");
       this.codeAutocomplete.input = "";
       this.codeAutocomplete.highlightedIndex = -1;
+      console.log("[addCode]", code, "→", this.filters.code);
       this.pushURL();
       this.mode === "clustered" ? this.fetchClustered() : this.refetch();
     },
@@ -438,6 +433,7 @@ function app() {
         (c) => c !== code.toLowerCase(),
       );
       this.filters.code = codes.join(", ");
+      console.log("[removeCode]", code, "→", this.filters.code);
       this.pushURL();
       this.mode === "clustered" ? this.fetchClustered() : this.refetch();
     },
@@ -489,7 +485,7 @@ function app() {
       this.cursor = null;
       this.page = 0;
       this.exhausted = false;
-      this.fetchPage({ reset: true });
+      return this.fetchPage({ reset: true });
     },
     loadMore() {
       if (!this.exhausted && !this.loading) this.fetchPage();
@@ -503,6 +499,12 @@ function app() {
           if (gen === this._gen) this.loading = false;
           return;
         }
+        console.log("[fetchPage]", {
+          gen,
+          reset,
+          method: params.method,
+          path: params.path,
+        });
         let page;
         if (params.method === "POST") {
           if (params.path === "/search") page = await searchVideos(params.body);
@@ -512,7 +514,10 @@ function app() {
         } else {
           page = await browseVideos(params.query);
         }
-        if (gen !== this._gen) return;
+        if (gen !== this._gen) {
+          console.log("[fetchPage] stale response ignored", gen);
+          return;
+        }
         this.online = true;
         if (reset) {
           this.items = [];
@@ -525,20 +530,24 @@ function app() {
         this.exhausted = !page.has_more || !page.next_cursor;
         this.lastTook = page.took_ms ?? null;
         if (this.mode === "browse") this.page += 1;
+        console.log("[fetchPage] ok", {
+          got: page.items.length,
+          total: this.items.length,
+          exhausted: this.exhausted,
+        });
         this.$nextTick(() => this.refreshIcons());
       } catch (e) {
         if (gen !== this._gen) return;
+        console.error("[fetchPage] failed", e);
         this.online = false;
         this.toast("error", e.message);
       } finally {
         if (gen === this._gen) this.loading = false;
       }
     },
-
     buildParams(reset) {
       const f = buildFiltersParams(this.filters);
       const dates = buildDateRange(this.filters);
-
       if (this.mode === "search") {
         if (!this.lastQuery) {
           this.mode = "browse";
@@ -613,9 +622,13 @@ function app() {
       this.clustered.error = null;
       const gen = ++this._genClustered;
       const params = buildClusteredParams(this);
+      console.log("[fetchClustered] start", { gen, params });
       try {
         const data = await searchClustered(params);
-        if (gen !== this._genClustered) return;
+        if (gen !== this._genClustered) {
+          console.log("[fetchClustered] stale response ignored", gen);
+          return;
+        }
         this.online = true;
         this.clustered.data = data;
         this.lastTook = data.took_ms ?? null;
@@ -627,9 +640,14 @@ function app() {
           };
         }
         this.clusterUi = next;
+        console.log("[fetchClustered] ok", {
+          clusters: (data.clusters || []).length,
+          total: data.total_results,
+        });
         this.$nextTick(() => this.refreshIcons());
       } catch (e) {
         if (gen !== this._genClustered) return;
+        console.error("[fetchClustered] failed", e);
         this.online = false;
         this.clustered.error = e.message;
         this.toast("error", e.message);
@@ -638,12 +656,16 @@ function app() {
         if (gen === this._genClustered) this.clustered.loading = false;
       }
     },
-
     async fetchFacets() {
       try {
         this.facets = await fetchFacets(this.filters.completionFilter);
-      } catch {
-        /* ignore */
+        console.log("[fetchFacets] ok", {
+          genres: this.facets.genres?.length,
+          years: this.facets.years?.length,
+          codes: this.facets.codes?.length,
+        });
+      } catch (e) {
+        console.warn("[fetchFacets] failed", e);
       }
     },
 
@@ -690,11 +712,13 @@ function app() {
 
     // ── detail modal ──
     async openDetail(id) {
+      console.log("[openDetail]", id);
       this.detail = { open: true, loading: true, video: null };
       this.$nextTick(() => this.refreshIcons());
       try {
         this.detail.video = await getVideo(id);
       } catch (e) {
+        console.error("[openDetail] failed", e);
         this.toast("error", e.message);
         this.closeDetail();
       } finally {
@@ -705,7 +729,6 @@ function app() {
     closeDetail() {
       this.detail = { open: false, loading: false, video: null };
     },
-
     openSource(url) {
       if (url) window.open(url, "_blank", "noopener");
     },
@@ -722,5 +745,13 @@ function app() {
   };
 }
 
-// Alpine expects a global function.
-window.app = app;
+// ─────────────────────────────────────────────────────────────
+// Register the component BEFORE Alpine starts.
+// "alpine:init" fires once Alpine has loaded but before it scans the page.
+// Do NOT call Alpine.start() yourself when using the CDN build.
+// ─────────────────────────────────────────────────────────────
+document.addEventListener("alpine:init", () => {
+  console.log("[app] alpine:init → registering component 'app'");
+  Alpine.data("app", app);
+});
+console.log("[app] module loaded, waiting for alpine:init");

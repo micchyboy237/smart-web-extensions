@@ -1,9 +1,4 @@
-// client_paginated/js/preview.js
-// Hover-preview controller.
-// - On card mouseenter: swap <img> for <video> (muted, looped) using v.preview.
-// - On mouseleave: swap back to thumbnail.
-// - Uses a small in-memory cache of <video> elements to avoid re-creating.
-// - Adds a 250ms delay so quick mouse sweeps don't fire loads.
+// client_paginated2/js/preview.js
 
 const cache = new Map(); // id -> HTMLVideoElement
 const HOVER_DELAY = 250;
@@ -12,16 +7,39 @@ export function createPreviewManager() {
   let hoverTimer = null;
   let activeId = null;
 
-  function getOrCreateVideo(id, previewUrl) {
+  async function getOrCreateVideo(id, previewUrl) {
     if (cache.has(id)) return cache.get(id);
+
     const v = document.createElement("video");
-    v.src = previewUrl;
     v.muted = true;
     v.loop = true;
     v.playsInline = true;
     v.preload = "none";
     v.className =
       "h-full w-full object-cover transition duration-500 group-hover:scale-110";
+
+    // ✅ Fetch via JS to enforce no-referrer strictly
+    try {
+      const response = await fetch(previewUrl, {
+        method: "GET",
+        referrerPolicy: "no-referrer",
+      });
+
+      if (!response.ok) throw new Error("Failed to fetch video");
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      v.src = blobUrl;
+
+      // Store the blob URL so we can revoke it later if needed
+      v._blobUrl = blobUrl;
+    } catch (e) {
+      console.warn("Preview fetch failed for", id, e);
+      // Fallback: try setting src directly (might still fail)
+      v.src = previewUrl;
+      v.referrerPolicy = "no-referrer";
+    }
+
     cache.set(id, v);
     return v;
   }
@@ -29,13 +47,15 @@ export function createPreviewManager() {
   function start(id, previewUrl, container) {
     if (!previewUrl || !container) return;
     stop();
-    hoverTimer = setTimeout(() => {
+    hoverTimer = setTimeout(async () => {
+      // Make timeout async
       activeId = id;
-      const video = getOrCreateVideo(id, previewUrl);
-      // Remove existing media children (img / video) but keep overlays.
+      const video = await getOrCreateVideo(id, previewUrl); // Await the fetch
+
       container
         .querySelectorAll("img[data-preview-media], video[data-preview-media]")
         .forEach((el) => el.remove());
+
       video.dataset.previewMedia = "1";
       container.prepend(video);
       video.play().catch(() => {});
@@ -52,12 +72,12 @@ export function createPreviewManager() {
     if (video) {
       video.pause();
       video.currentTime = 0;
+      // Optional: Revoke blob URL to free memory if not caching heavily
+      // if (video._blobUrl) URL.revokeObjectURL(video._blobUrl);
     }
-    // Caller is responsible for restoring the <img>. See restoreMedia().
     activeId = null;
   }
 
-  // Restore the original thumbnail img (Alpine holds it in the x-if).
   function restoreMedia(container, thumbnail, title) {
     if (!container) return;
     container
