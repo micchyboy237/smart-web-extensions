@@ -47,7 +47,7 @@ FROM (
       (array_agg(v.title ORDER BY length(v.title) ASC NULLS LAST))[1]      AS title,
       (array_agg(v.thumbnail ORDER BY v.id))[1]                            AS thumbnail,
       (array_agg(v.preview   ORDER BY v.id))[1]                            AS preview,
-      (array_agg(v.details   ORDER BY v.id))[1]                            AS details,
+      (array_agg(v.details ORDER BY length(v.details) ASC NULLS LAST))[1]  AS details,
 
       -- Single representative release date
       (array_agg(v.release_date ORDER BY
