@@ -1,11 +1,4 @@
 // client_paginated2/js/preview.js
-// Hover-preview controller.
-// - On card mouseenter: swap <img> for <video> (muted, looped) using v.preview.
-// - On mouseleave: swap back to thumbnail.
-// - Uses a small in-memory cache of <video> elements to avoid re-creating.
-// - Adds a 250ms delay so quick mouse sweeps don't fire loads.
-// - USES FETCH + BLOB to bypass Cloudflare referrer blocking on .mp4 files.
-
 const cache = new Map(); // id -> HTMLVideoElement
 const HOVER_DELAY = 250;
 
@@ -24,27 +17,30 @@ export function createPreviewManager() {
     v.className =
       "h-full w-full object-cover transition duration-500 group-hover:scale-110";
 
-    // ✅ Fetch via JS to enforce no-referrer strictly and bypass Cloudflare blocks
+    // ✅ CRITICAL FIX: Use fetch to bypass Cloudflare Referrer/Hotlink blocking
     try {
       const response = await fetch(previewUrl, {
         method: "GET",
-        referrerPolicy: "no-referrer",
+        referrerPolicy: "no-referrer", // Strips Referer header completely
+        mode: "cors", // Attempts CORS, but falls back to opaque if blocked
+        cache: "no-cache", // Ensures we don't get a stale 403 from browser cache
       });
 
-      if (!response.ok)
-        throw new Error(`Failed to fetch video: ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
 
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
       v.src = blobUrl;
-
-      // Store the blob URL so we can revoke it later if needed (optional optimization)
-      v._blobUrl = blobUrl;
+      v._blobUrl = blobUrl; // Store for cleanup
     } catch (e) {
       console.warn("Preview fetch failed for", id, e);
-      // Fallback: try setting src directly (might still fail if Cloudflare blocks localhost referer)
+      // Fallback: If fetch fails, try standard src with no-referrer attribute
+      // This might still fail for snos-349, but it's our last resort.
       v.src = previewUrl;
       v.referrerPolicy = "no-referrer";
+      v.crossOrigin = "anonymous";
     }
 
     cache.set(id, v);
@@ -59,7 +55,6 @@ export function createPreviewManager() {
       activeId = id;
       const video = await getOrCreateVideo(id, previewUrl);
 
-      // Remove existing media children (img / video) but keep overlays.
       container
         .querySelectorAll("img[data-preview-media], video[data-preview-media]")
         .forEach((el) => el.remove());
@@ -67,7 +62,6 @@ export function createPreviewManager() {
       video.dataset.previewMedia = "1";
       container.prepend(video);
 
-      // Play the video (catch error if user interaction hasn't happened yet, though muted usually allows it)
       video.play().catch(() => {});
     }, HOVER_DELAY);
   }
@@ -83,15 +77,11 @@ export function createPreviewManager() {
     if (video) {
       video.pause();
       video.currentTime = 0;
-      // Optional: Revoke blob URL to free memory if not caching heavily
-      // if (video._blobUrl) URL.revokeObjectURL(video._blobUrl);
     }
 
-    // Caller is responsible for restoring the <img>. See restoreMedia().
     activeId = null;
   }
 
-  // Restore the original thumbnail img (Alpine holds it in the x-if).
   function restoreMedia(container, thumbnail, title) {
     if (!container) return;
 
@@ -108,6 +98,7 @@ export function createPreviewManager() {
       img.dataset.previewMedia = "1";
       img.className =
         "h-full w-full object-cover transition duration-500 group-hover:scale-110";
+      img.referrerPolicy = "no-referrer"; // Also protect images
       container.prepend(img);
     }
   }
