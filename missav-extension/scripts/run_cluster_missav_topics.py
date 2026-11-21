@@ -45,7 +45,7 @@ def extract_cluster_keywords(
     analysis: DetailedAnalysis,
     *,
     ngram_range: tuple[int, int] = (1, 3),
-    min_doc_ratio: float = 0.5,
+    min_doc_ratio: float = 0.3,
     min_docs: int = 2,
     top_n: Optional[int] = None,  # Changed default to None (no limit)
     min_coverage: float = 0.0,  # New: minimum coverage threshold
@@ -80,7 +80,7 @@ def extract_cluster_keywords(
 
         histogram = TextAnalysis(texts, lowercase=True).generate_histogram(
             ngram_ranges=[ngram_range],
-            apply_tfidf=False,
+            apply_tfidf=True,
             is_top=True,
             remove_stopwords=True,
         )
@@ -199,7 +199,9 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     docs, embeddings = load_missav_videos(
-        code=args.code, limit=args.limit, include_embeddings=True
+        code=args.code,
+        limit=args.limit,
+        include_embeddings=True,
     )
 
     clusterer = TextsClusterer(

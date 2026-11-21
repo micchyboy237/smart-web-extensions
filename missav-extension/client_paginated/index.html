@@ -117,7 +117,6 @@
             ></span>
           </button>
         </form>
-
         <!-- Back Button for Similar Mode -->
         <button
           x-show="mode === 'similar'"
@@ -128,7 +127,6 @@
           <i data-lucide="arrow-left" class="h-4 w-4"></i>
           <span class="hidden sm:inline">Back</span>
         </button>
-
         <div class="hidden items-center gap-2 md:flex">
           <span
             class="flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/60 px-2.5 py-1 text-[11px] font-medium text-slate-400"
@@ -149,7 +147,6 @@
         </button>
       </div>
     </header>
-
     <!-- ═══════════════════ MAIN LAYOUT ═══════════════════ -->
     <div
       class="relative z-10 mx-auto flex max-w-[1600px] gap-6 px-4 py-6 md:px-6"
@@ -175,7 +172,6 @@
               <i data-lucide="x" class="h-5 w-5"></i>
             </button>
           </div>
-
           <!-- Series Code Autocomplete -->
           <label class="mb-4 block relative">
             <span class="mb-1.5 block text-xs font-medium text-slate-500"
@@ -194,7 +190,6 @@
                 placeholder="Type to search..."
                 class="w-full rounded-lg border border-white/10 bg-ink-800 py-2 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-accent-500/60 focus:outline-none"
               />
-
               <!-- Autocomplete Dropdown -->
               <div
                 x-show="showCodeDropdown && codeSuggestions.length > 0"
@@ -221,7 +216,6 @@
                 </template>
               </div>
             </div>
-
             <!-- Chips Container -->
             <div class="flex flex-wrap gap-2 mt-2">
               <template x-if="filters.code">
@@ -244,7 +238,6 @@
               </template>
             </div>
           </label>
-
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -324,7 +317,6 @@
               </button>
             </div>
           </div>
-
           <!-- Genres Section with Modal -->
           <div class="mb-4">
             <span
@@ -338,7 +330,6 @@
                 x-text="`${filters.genres.length} selected`"
               ></span>
             </span>
-
             <!-- Visible Chips (Limited Height) -->
             <div
               class="max-h-32 overflow-y-auto flex flex-wrap gap-1.5 mb-2 pr-1 custom-scrollbar"
@@ -360,7 +351,6 @@
                 </button>
               </template>
             </div>
-
             <button
               @click="genresModalOpen = true"
               class="w-full text-xs text-accent-400 hover:text-accent-300 font-medium flex items-center justify-center gap-1 py-1"
@@ -368,7 +358,6 @@
               <i data-lucide="list" class="h-3 w-3"></i> Show All Genres
             </button>
           </div>
-
           <div class="mb-4">
             <span
               class="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -398,7 +387,6 @@
           </button>
         </div>
       </aside>
-
       <!-- ─── Results ─── -->
       <section class="min-w-0 flex-1">
         <!-- result header -->
@@ -646,7 +634,6 @@
             </template>
           </div>
         </div>
-
         <!-- ═══════════════════ CLUSTERED RESULTS ═══════════════════ -->
         <div x-show="mode === 'clustered'" x-cloak>
           <!-- skeleton -->
@@ -657,9 +644,9 @@
                 <div class="flex gap-4 overflow-hidden">
                   <template x-for="ii in 6" :key="ii">
                     <div
-                      class="w-52 shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
+                      class="w-[300px] shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
                     >
-                      <div class="aspect-[4/3] skeleton"></div>
+                      <div class="aspect-[300/170] skeleton"></div>
                       <div class="space-y-2 p-3">
                         <div class="h-3 w-4/5 skeleton rounded"></div>
                         <div class="h-2.5 w-2/5 skeleton rounded"></div>
@@ -755,39 +742,39 @@
                       :key="v.id + '-' + idx"
                     >
                       <article
-                        class="card-enter group relative w-52 shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
+                        class="card-enter group relative w-[300px] shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
                         :class="{ 'opacity-60': isFringeItem(v) }"
                         :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
                       >
                         <div
-                          class="relative aspect-[4/3] overflow-hidden bg-ink-800"
-                          @mouseenter="$refs['vid-'+v.id]?.load()"
-                          @mouseleave="$refs['vid-'+v.id]?.pause()"
+                          class="relative aspect-[300/170] overflow-hidden bg-ink-800"
+                          @mouseenter="setPreview(v.id ? `home-0-${v.id}` : null)"
+                          @mouseleave="setPreview()"
+                          @click="v.id ? clickPreview(`home-0-${v.id}`) : null"
                         >
                           <!-- Video Preview -->
                           <video
-                            x-ref="'vid-'+v.id"
                             :src="v.preview"
-                            :poster="v.thumbnail"
-                            muted
+                            :id="`preview-home-0-${v.id}`"
+                            :class="{ hidden: !isPreviewActive(`home-0-${v.id}`) }"
+                            class="preview absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
                             loop
+                            muted
                             playsinline
                             preload="none"
-                            class="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
-                            style="display: none"
-                            @error="$el.style.display='none'; $el.nextElementSibling.style.display='block'"
+                            @error="previewError(`home-0-${v.id}`)"
+                            @loadeddata="isPreviewActive(`home-0-${v.id}`) && playPreview(`home-0-${v.id}`)"
                           ></video>
-
                           <!-- Fallback Image -->
                           <img
                             :src="v.thumbnail"
                             :alt="v.title"
+                            :class="{ hidden: isPreviewActive(`home-0-${v.id}`) }"
                             loading="lazy"
                             decoding="async"
                             class="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
                             @error="$el.style.opacity = .2"
                           />
-
                           <div
                             class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
                           ></div>
@@ -807,37 +794,41 @@
                           >
                             <i data-lucide="zap" class="h-2.5 w-2.5"></i>
                           </div>
-
                           <!-- Hover Actions -->
                           <div
-                            class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
+                            class="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100"
                           >
-                            <button
-                              @click="openDetail(v.id)"
-                              class="flex items-center gap-1.5 rounded-full bg-accent-500 px-3 py-1.5 text-xs font-bold text-ink-950 transition hover:scale-105"
+                            <div
+                              class="pointer-events-auto absolute inset-x-0 bottom-0 flex items-center justify-end gap-1.5 bg-gradient-to-t from-ink-950/90 via-ink-950/40 to-transparent p-2"
                             >
-                              <i data-lucide="play" class="h-3.5 w-3.5"></i>
-                              Preview
-                            </button>
-                            <button
-                              @click="findSimilarFromCluster(v.id)"
-                              class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
-                              title="Find Similar"
-                            >
-                              <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
-                            </button>
-                            <a
-                              :href="v.url"
-                              target="_blank"
-                              rel="noopener"
-                              class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
-                              title="Open Source"
-                            >
-                              <i
-                                data-lucide="external-link"
-                                class="h-3.5 w-3.5"
-                              ></i>
-                            </a>
+                              <button
+                                @click.stop="openDetail(v.id)"
+                                class="flex items-center gap-1 rounded-full bg-accent-500/90 px-2.5 py-1 text-[11px] font-bold text-ink-950 shadow transition hover:bg-accent-400"
+                              >
+                                <i data-lucide="play" class="h-3 w-3"></i>
+                                Preview
+                              </button>
+                              <button
+                                @click.stop="findSimilarFromCluster(v.id)"
+                                class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                                title="Find Similar"
+                              >
+                                <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
+                              </button>
+                              <a
+                                :href="v.url"
+                                target="_blank"
+                                rel="noopener"
+                                @click.stop
+                                class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                                title="Open Source"
+                              >
+                                <i
+                                  data-lucide="external-link"
+                                  class="h-3.5 w-3.5"
+                                ></i>
+                              </a>
+                            </div>
                           </div>
                         </div>
                         <div class="p-3">
@@ -891,7 +882,7 @@
                     </template>
                     <div
                       x-show="visibleItems(c).length === 0"
-                      class="flex h-[220px] w-full items-center justify-center rounded-2xl border border-dashed border-white/10 text-xs text-slate-500"
+                      class="flex h-[170px] w-full items-center justify-center rounded-2xl border border-dashed border-white/10 text-xs text-slate-500"
                     >
                       No core items in this group — turn off “core only”.
                     </div>
@@ -924,18 +915,18 @@
             </button>
           </div>
         </div>
-
         <!-- ═══════════════════ PAGINATED RESULTS ═══════════════════ -->
         <div x-show="mode !== 'clustered'">
           <div
             x-show="items.length === 0 && loading"
-            class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+            class="grid gap-4"
+            style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))"
           >
             <template x-for="i in 10" :key="i">
               <div
                 class="overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
               >
-                <div class="aspect-[4/3] skeleton"></div>
+                <div class="aspect-[300/170] skeleton"></div>
                 <div class="space-y-2 p-3">
                   <div class="h-3 w-4/5 skeleton rounded"></div>
                   <div class="h-2.5 w-2/5 skeleton rounded"></div>
@@ -949,7 +940,8 @@
           </div>
           <div
             x-show="items.length > 0"
-            class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+            class="grid gap-4"
+            style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))"
           >
             <template x-for="(v, idx) in items" :key="v.id + '-' + idx">
               <article
@@ -957,34 +949,34 @@
                 :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
               >
                 <div
-                  class="relative aspect-[4/3] overflow-hidden bg-ink-800"
-                  @mouseenter="$refs['vid-'+v.id]?.load()"
-                  @mouseleave="$refs['vid-'+v.id]?.pause()"
+                  class="relative aspect-[300/170] overflow-hidden bg-ink-800"
+                  @mouseenter="setPreview(v.id ? `home-0-${v.id}` : null)"
+                  @mouseleave="setPreview()"
+                  @click="v.id ? clickPreview(`home-0-${v.id}`) : null"
                 >
                   <!-- Video Preview -->
                   <video
-                    x-ref="'vid-'+v.id"
                     :src="v.preview"
-                    :poster="v.thumbnail"
-                    muted
+                    :id="`preview-home-0-${v.id}`"
+                    :class="{ hidden: !isPreviewActive(`home-0-${v.id}`) }"
+                    class="preview absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
                     loop
+                    muted
                     playsinline
                     preload="none"
-                    class="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
-                    style="display: none"
-                    @error="$el.style.display='none'; $el.nextElementSibling.style.display='block'"
+                    @error="previewError(`home-0-${v.id}`)"
+                    @loadeddata="isPreviewActive(`home-0-${v.id}`) && playPreview(`home-0-${v.id}`)"
                   ></video>
-
                   <!-- Fallback Image -->
                   <img
                     :src="v.thumbnail"
                     :alt="v.title"
+                    :class="{ hidden: isPreviewActive(`home-0-${v.id}`) }"
                     loading="lazy"
                     decoding="async"
                     class="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
                     @error="$el.style.opacity = .2"
                   />
-
                   <div
                     class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
                   ></div>
@@ -1000,33 +992,37 @@
                     class="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-slate-300 backdrop-blur"
                     x-text="v.release_date?.slice(0,4)"
                   ></div>
-
                   <!-- Hover Actions -->
                   <div
-                    class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
+                    class="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100"
                   >
-                    <button
-                      @click="openDetail(v.id)"
-                      class="flex items-center gap-1.5 rounded-full bg-accent-500 px-3 py-1.5 text-xs font-bold text-ink-950 transition hover:scale-105"
+                    <div
+                      class="pointer-events-auto absolute inset-x-0 bottom-0 flex items-center justify-end gap-1.5 bg-gradient-to-t from-ink-950/90 via-ink-950/40 to-transparent p-2"
                     >
-                      <i data-lucide="play" class="h-3.5 w-3.5"></i> Preview
-                    </button>
-                    <button
-                      @click="findSimilar(v.id)"
-                      class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
-                      title="Find Similar"
-                    >
-                      <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
-                    </button>
-                    <a
-                      :href="v.url"
-                      target="_blank"
-                      rel="noopener"
-                      class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
-                      title="Open Source"
-                    >
-                      <i data-lucide="external-link" class="h-3.5 w-3.5"></i>
-                    </a>
+                      <button
+                        @click.stop="openDetail(v.id)"
+                        class="flex items-center gap-1 rounded-full bg-accent-500/90 px-2.5 py-1 text-[11px] font-bold text-ink-950 shadow transition hover:bg-accent-400"
+                      >
+                        <i data-lucide="play" class="h-3 w-3"></i> Preview
+                      </button>
+                      <button
+                        @click.stop="findSimilar(v.id)"
+                        class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                        title="Find Similar"
+                      >
+                        <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
+                      </button>
+                      <a
+                        :href="v.url"
+                        target="_blank"
+                        rel="noopener"
+                        @click.stop
+                        class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                        title="Open Source"
+                      >
+                        <i data-lucide="external-link" class="h-3.5 w-3.5"></i>
+                      </a>
+                    </div>
                   </div>
                 </div>
                 <div class="p-3">
@@ -1112,7 +1108,6 @@
         <div x-ref="sentinel" class="h-1"></div>
       </section>
     </div>
-
     <!-- ═══════════════════ GENRES MODAL ═══════════════════ -->
     <div
       x-show="genresModalOpen"
@@ -1136,7 +1131,6 @@
             <i data-lucide="x" class="h-5 w-5"></i>
           </button>
         </div>
-
         <div class="p-4">
           <!-- Sort Controls -->
           <div class="mb-4 flex items-center gap-2">
@@ -1166,7 +1160,6 @@
               ></i>
             </button>
           </div>
-
           <!-- Grid -->
           <div class="max-h-[60vh] overflow-y-auto custom-scrollbar">
             <div class="flex flex-wrap gap-2">
@@ -1190,7 +1183,6 @@
         </div>
       </div>
     </div>
-
     <!-- ═══════════════════ DETAIL MODAL ═══════════════════ -->
     <div
       x-show="detail.open"
@@ -1285,7 +1277,6 @@
         </template>
       </div>
     </div>
-
     <!-- ═══════════════════ TOASTS ═══════════════════ -->
     <div
       class="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2"

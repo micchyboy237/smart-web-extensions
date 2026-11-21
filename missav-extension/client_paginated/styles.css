@@ -20,7 +20,6 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #3b4658;
 }
-
 /* Custom scrollbar for specific containers */
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
@@ -32,7 +31,6 @@ body {
   background: #293241;
   border-radius: 4px;
 }
-
 /* film-grain background */
 .bg-grain::before {
   content: "";
