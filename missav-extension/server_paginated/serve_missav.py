@@ -38,7 +38,7 @@ from jet.adapters.llama_cpp.config import (
     EMBED_MODEL,
     EMBED_QUERY_PREFIX,
 )
-from jet.adapters.llama_cpp.diversity_utils import (
+from jet.adapters.llama_cpp.diversity_utils.semhash import (
     compute_shuffle_fetch_k,
     shuffle_and_diversify,
 )
@@ -604,12 +604,16 @@ def _apply_filters(req, params: dict, conds: List[str]) -> None:
     if completion_filter == "complete":
         conds.append(
             "(COALESCE(NULLIF(title, ''), NULL) IS NOT NULL "
-            "AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL)"
+            "AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL "
+            "AND release_date IS NOT NULL "
+            "AND genres IS NOT NULL AND cardinality(genres) > 0)"
         )
     elif completion_filter == "incomplete":
         conds.append(
             "(COALESCE(NULLIF(title, ''), NULL) IS NULL "
-            "OR COALESCE(NULLIF(details, ''), NULL) IS NULL)"
+            "OR COALESCE(NULLIF(details, ''), NULL) IS NULL "
+            "OR release_date IS NULL "
+            "OR genres IS NULL OR cardinality(genres) = 0)"
         )
 
 
@@ -1428,7 +1432,9 @@ def list_videos(
         select_cols = (
             "id, code, episode, title, release_date, "
             "(COALESCE(NULLIF(title, ''), NULL) IS NOT NULL "
-            " AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL) AS complete"
+            " AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL "
+            " AND release_date IS NOT NULL "
+            " AND genres IS NOT NULL AND cardinality(genres) > 0) AS complete"
         )
     sql = f"""
         SELECT {select_cols}
@@ -1454,12 +1460,16 @@ def _completion_filter_sql(completion_filter: CompletionFilter) -> str:
     if completion_filter == "complete":
         return (
             "AND COALESCE(NULLIF(title, ''), NULL) IS NOT NULL "
-            "AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL"
+            "AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL "
+            "AND release_date IS NOT NULL "
+            "AND genres IS NOT NULL AND cardinality(genres) > 0"
         )
     elif completion_filter == "incomplete":
         return (
             "AND (COALESCE(NULLIF(title, ''), NULL) IS NULL "
-            "OR COALESCE(NULLIF(details, ''), NULL) IS NULL)"
+            "OR COALESCE(NULLIF(details, ''), NULL) IS NULL "
+            "OR release_date IS NULL "
+            "OR genres IS NULL OR cardinality(genres) = 0)"
         )
     else:
         return ""
@@ -1515,11 +1525,13 @@ def facets_codes():
         codes = conn.execute(
             """
             SELECT code,
-                   COUNT(*)::int AS count,
-                   SUM(CASE
-                       WHEN COALESCE(NULLIF(title, ''), NULL) IS NOT NULL
-                            AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL
-                       THEN 1 ELSE 0 END)::int AS completed
+                    COUNT(*)::int AS count,
+                    SUM(CASE
+                        WHEN COALESCE(NULLIF(title, ''), NULL) IS NOT NULL
+                                AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL
+                                AND release_date IS NOT NULL
+                                AND genres IS NOT NULL AND cardinality(genres) > 0
+                        THEN 1 ELSE 0 END)::int AS completed
             FROM public.videos
             WHERE code IS NOT NULL
             GROUP BY code
