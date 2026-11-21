@@ -47,27 +47,34 @@ def extract_cluster_keywords(
     ngram_range: tuple[int, int] = (1, 3),
     min_doc_ratio: float = 0.5,
     min_docs: int = 2,
-    top_n: Optional[int] = 10,
+    top_n: Optional[int] = None,  # Changed default to None (no limit)
+    min_coverage: float = 0.0,  # New: minimum coverage threshold
+    min_collocations: int = 0,  # New: minimum collocation count
+    max_keywords_percent: float = 1.0,  # New: max % of candidates to keep
 ) -> Dict[str, List[ClusterKeyword]]:
     """
     Find common words/phrases per cluster.
-
     A phrase is kept if it appears in at least
     max(min_docs, ceil(min_doc_ratio * cluster_size)) different texts.
+
+    Parameters:
+    -----------
+    top_n: If set, limits to top N keywords. None means no limit.
+    min_coverage: Minimum coverage ratio (0.0-1.0) to include keyword.
+    min_collocations: Minimum collocation count to include keyword.
+    max_keywords_percent: Maximum percentage of candidate keywords to keep (0.0-1.0).
+
     Ranked by: coverage, then phrase length, then raw count.
     """
     keywords: Dict[str, List[ClusterKeyword]] = {}
-
     for name, info in analysis.items():
         if name == NOISE_KEY:
             continue
-
         texts: List[str] = info["all_texts"]
         size = len(texts)
         if size < min_docs:
             logger.warning("[keywords] %s skipped: only %d text(s)", name, size)
             continue
-
         threshold = max(min_docs, math.ceil(min_doc_ratio * size))
         logger.info("[keywords] %s: size=%d, need docs>=%d", name, size, threshold)
 
@@ -79,6 +86,7 @@ def extract_cluster_keywords(
         )
         rows = histogram[0]["results"] if histogram else []
 
+        # Filter by significance thresholds
         kept: List[ClusterKeyword] = [
             {
                 "ngram": r["ngram"],
@@ -90,7 +98,23 @@ def extract_cluster_keywords(
             for r in rows
             if r["docs"] >= threshold
         ]
+
+        # Apply additional filters for significance
+        if min_coverage > 0:
+            kept = [k for k in kept if k["coverage"] >= min_coverage]
+
+        if min_collocations > 0:
+            kept = [k for k in kept if k["collocations"] >= min_collocations]
+
+        # Sort by significance
         kept.sort(key=lambda k: (-k["coverage"], -k["n"], -k["collocations"]))
+
+        # Apply max percentage limit if specified
+        if max_keywords_percent < 1.0 and len(rows) > 0:
+            max_count = max(1, int(len(rows) * max_keywords_percent))
+            kept = kept[:max_count]
+
+        # Apply top_n limit if specified
         if top_n:
             kept = kept[:top_n]
 
@@ -102,7 +126,6 @@ def extract_cluster_keywords(
             len(kept),
             [k["ngram"] for k in kept[:3]],
         )
-
     return keywords
 
 
@@ -204,7 +227,12 @@ if __name__ == "__main__":
 
     summary = clusterer.get_summary(analysis)
 
-    keywords = extract_cluster_keywords(analysis)
+    keywords = extract_cluster_keywords(
+        analysis,
+        top_n=None,  # No limit
+        min_coverage=0.2,  # At least 20% coverage
+        min_collocations=2,  # At least 2 collocations
+    )
     keywords_report = build_keywords_report(analysis, keywords)
 
     print("\n" + "=" * 60)
