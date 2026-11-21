@@ -22,6 +22,4 @@ SELECT
         2
     ) AS pct_with_full_details
 FROM public.videos
-WHERE code IN ('sprd', 'juq')
-GROUP BY code
-ORDER BY code;
+WHERE code IN ('sprd', 'juq') GROUP BY code ORDER BY code;
