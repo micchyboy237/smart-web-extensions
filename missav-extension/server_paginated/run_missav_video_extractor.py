@@ -1,4 +1,3 @@
-# Jet_Apps/web-extensions/smart-web-extensions/missav-extension/server_paginated/run_missav_video_extractor.py
 import asyncio
 import logging
 import re
@@ -26,10 +25,9 @@ INGEST_ENDPOINT = f"{SERVER_URL}/ingest"
 MAX_CONCURRENT_TABS = 15
 INGEST_CHUNK_SIZE = 120
 BASE_SEARCH_URL = "https://missav.ws/en/search/{}-"
-
-# Safety limits for pagination discovery
-MAX_SEARCH_PAGES = 500  # hard upper bound to avoid infinite loops
-EMPTY_PAGE_STREAK_LIMIT = 1  # stop after N consecutive pages with 0 items
+MAX_SEARCH_PAGES = 500
+EMPTY_PAGE_STREAK_LIMIT = 1
+MAX_INFLIGHT_INGESTS = 8
 
 SINGLE_VIDEO_PATH_RE = re.compile(
     r"^/(?:dm\d+/)?en/([a-z0-9]+-\d+(?:-[a-z0-9-]+)?)$", re.IGNORECASE
@@ -366,6 +364,9 @@ class MissAVExtractor:
         self.complete_queue: List[Dict] = []
         self.existing_ids: Dict[str, set] = {}
         self.total_ingested = 0
+        # Background ingest tasks so /ingest POSTs never block scraping.
+        self._inflight_ingests: set[asyncio.Task] = set()
+        self._max_inflight_ingests = MAX_INFLIGHT_INGESTS
 
     async def initialize(self):
         tasks = [fetch_existing_video_ids(code) for code in self.codes]
@@ -373,79 +374,115 @@ class MissAVExtractor:
         for code, ids in zip(self.codes, results):
             self.existing_ids[code] = ids
 
-    async def ingest_batch(self, items: List[Dict], queue_type: str):
+    async def ingest_batch(self, items: List[Dict], queue_type: str) -> Dict[str, int]:
+        """POST a batch to /ingest. Returns {inserted, updated}. Raises on failure."""
+        if not items:
+            return {"inserted": 0, "updated": 0}
+        payload = {"items": items, "upsert": True}
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(INGEST_ENDPOINT, json=payload, timeout=60.0)
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"ingest failed for {queue_type}: HTTP {resp.status_code}"
+            )
+        result = resp.json()
+        inserted = int(result.get("inserted", 0))
+        updated = int(result.get("updated", 0))
+        logger.info(
+            f"✅ Ingested {queue_type}: {inserted} new, {updated} updated "
+            f"({len(items)} items)"
+        )
+        return {"inserted": inserted, "updated": updated}
+
+    def _ingest_in_background(self, items: List[Dict], queue_type: str) -> None:
+        """Fire-and-forget ingest. Never blocks the caller."""
         if not items:
             return
-        payload = {"items": items, "upsert": True}
+        task = asyncio.create_task(
+            self._run_ingest_batch(items, queue_type),
+            name=f"ingest-{queue_type}-{len(items)}",
+        )
+        self._inflight_ingests.add(task)
+        task.add_done_callback(self._inflight_ingests.discard)
+
+    async def _run_ingest_batch(self, items: List[Dict], queue_type: str) -> None:
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(INGEST_ENDPOINT, json=payload, timeout=30.0)
-                if resp.status_code == 200:
-                    result = resp.json()
-                    inserted = result.get("inserted", 0)
-                    updated = result.get("updated", 0)
-                    self.total_ingested += inserted + updated
-                    logger.info(
-                        f"✅ Ingested {queue_type}: {inserted} new, {updated} updated"
-                    )
-                else:
-                    logger.error(
-                        f"❌ Ingest failed for {queue_type}: {resp.status_code}"
-                    )
-                    if queue_type == "incomplete":
-                        self.incomplete_queue.extend(items)
-                    else:
-                        self.complete_queue.extend(items)
+            result = await self.ingest_batch(items, queue_type)
+            self.total_ingested += result["inserted"] + result["updated"]
         except Exception as e:
-            logger.error(f"❌ Network error during ingest: {e}")
+            logger.error(f"❌ Background ingest failed for {queue_type}: {e}")
+            # Re-queue on failure so flush_queues()/next batch retries.
             if queue_type == "incomplete":
                 self.incomplete_queue.extend(items)
             else:
                 self.complete_queue.extend(items)
 
-    async def maybe_auto_ingest(self):
+    async def _await_inflight_ingests(self, drain_below: Optional[int] = None) -> None:
+        """
+        Await in-flight ingests until the count drops below `drain_below`
+        (or all of them, if None).
+        """
+        while self._inflight_ingests:
+            if drain_below is not None and len(self._inflight_ingests) < drain_below:
+                return
+            await asyncio.gather(*self._inflight_ingests, return_exceptions=True)
+
+    async def maybe_auto_ingest(self) -> None:
+        """
+        Schedule chunk POSTs without blocking. Backpressure: if too many
+        ingests are in flight, await one before scheduling more so we don't
+        pile up unbounded POSTs (each does server-side embedding work).
+        """
+        while len(self._inflight_ingests) >= self._max_inflight_ingests:
+            await self._await_inflight_ingests(drain_below=self._max_inflight_ingests)
+
         if len(self.incomplete_queue) >= INGEST_CHUNK_SIZE:
             batch = self.incomplete_queue[:INGEST_CHUNK_SIZE]
             self.incomplete_queue = self.incomplete_queue[INGEST_CHUNK_SIZE:]
-            await self.ingest_batch(batch, "incomplete")
+            self._ingest_in_background(batch, "incomplete")
+
         if len(self.complete_queue) >= INGEST_CHUNK_SIZE:
             batch = self.complete_queue[:INGEST_CHUNK_SIZE]
             self.complete_queue = self.complete_queue[INGEST_CHUNK_SIZE:]
-            await self.ingest_batch(batch, "complete")
+            self._ingest_in_background(batch, "complete")
 
-    async def flush_queues(self):
-        """Flush any pending items in both queues."""
+    async def flush_queues(self) -> None:
+        """
+        Schedule any remaining queued items and then wait for ALL in-flight
+        ingests to finish. Called at code boundaries and at run end, so the
+        blocking here is intentional and bounded.
+        """
         if self.incomplete_queue:
             logger.info(
-                f"💾 Flushing incomplete queue ({len(self.incomplete_queue)} items)..."
+                f"💾 Scheduling final incomplete flush "
+                f"({len(self.incomplete_queue)} items)..."
             )
-            await self.ingest_batch(self.incomplete_queue, "incomplete")
+            self._ingest_in_background(self.incomplete_queue, "incomplete")
             self.incomplete_queue = []
         if self.complete_queue:
             logger.info(
-                f"💾 Flushing complete queue ({len(self.complete_queue)} items)..."
+                f"💾 Scheduling final complete flush "
+                f"({len(self.complete_queue)} items)..."
             )
-            await self.ingest_batch(self.complete_queue, "complete")
+            self._ingest_in_background(self.complete_queue, "complete")
             self.complete_queue = []
+        if self._inflight_ingests:
+            logger.info(
+                f"⏳ Waiting for {len(self._inflight_ingests)} in-flight ingest(s)..."
+            )
+            await self._await_inflight_ingests()
 
-    # ------------------------------------------------------------------
-    # Pagination discovery (fixed: DOM only exposes a window of page links,
-    # so we probe forward when the highest link looks truncated).
-    # ------------------------------------------------------------------
     async def discover_page_urls(
         self, page: Page, code: str, search_url: str
     ) -> List[str]:
         """
         Discover all page URLs for a search.
-
         The paginator only renders a small window of page links (e.g. 1-10 plus
         the tail like 166-167). We parse the max link seen, but if the max looks
         suspiciously like a tail anchor, we probe forward to find the true last
         page. We also probe the first page to detect single-page results.
         """
         page_urls = [search_url]
-
-        # Parse whatever links are visible in the paginator window.
         max_seen = 1
         try:
             paginator = await page.query_selector(".hidden.md\\:flex")
@@ -463,24 +500,15 @@ class MissAVExtractor:
                         page_urls.append(full_url)
         except Exception as e:
             logger.warning(f"Could not parse pagination DOM: {e}")
-
-        # If the paginator only had the current page (or no paginator), we may
-        # have a single-page result — nothing to probe.
         if max_seen <= 1 and len(page_urls) <= 1:
             logger.info(f"📄 Single search page detected for {code}")
             return page_urls
-
-        # Probe forward: fetch page=2, 3, ... sequentially until we get an empty
-        # page (or hit the hard cap). This handles the case where the paginator
-        # only exposed a window (e.g. 1-10 then 166-167) and the middle pages
-        # were never listed.
         base = BASE_SEARCH_URL.format(code)
         probe_page_num = 2
         consecutive_empty = 0
         while probe_page_num <= MAX_SEARCH_PAGES:
             probe_url = f"{base}?page={probe_page_num}"
             if probe_url in page_urls:
-                # Already have it from the DOM window; move on.
                 probe_page_num += 1
                 continue
             try:
@@ -507,7 +535,6 @@ class MissAVExtractor:
                 break
             probe_page_num += 1
 
-        # Dedupe and sort numerically by page param.
         def _page_key(u: str) -> int:
             m = re.search(r"[?&]page=(\d+)", u)
             return int(m.group(1)) if m else 1
@@ -548,36 +575,29 @@ class MissAVExtractor:
                 search_url = BASE_SEARCH_URL.format(code)
                 page = await context.new_page()
                 await page.goto(search_url, wait_until="domcontentloaded")
-
-                # FIXED: robust pagination discovery (probes forward past the
-                # DOM window so we don't miss pages 11-165).
                 page_urls = await self.discover_page_urls(page, code, search_url)
-
                 all_video_urls = []
                 for idx, p_url in enumerate(page_urls):
                     if idx > 0:
                         await page.goto(p_url, wait_until="domcontentloaded")
                     urls = await self.process_search_page(page, code, p_url)
                     all_video_urls.extend(urls)
-
                 await page.close()
                 logger.info(f"📋 Collected {len(all_video_urls)} video URLs for {code}")
-
-                # FIXED: flush pending search-page items BEFORE navigating to
-                # any individual video URL. This ensures the incomplete batch
-                # is persisted even if the per-video scrape crashes later.
-                if self.incomplete_queue or self.complete_queue:
+                if (
+                    self.incomplete_queue
+                    or self.complete_queue
+                    or self._inflight_ingests
+                ):
                     logger.info(
-                        f"💾 Flushing pending queues before video scrape "
+                        f"💾 Draining queues before video scrape "
                         f"(incomplete={len(self.incomplete_queue)}, "
-                        f"complete={len(self.complete_queue)})"
+                        f"complete={len(self.complete_queue)}, "
+                        f"inflight={len(self._inflight_ingests)})"
                     )
                     await self.flush_queues()
-
                 if not all_video_urls:
-                    # Nothing to scrape for this code; move to next code.
                     continue
-
                 logger.info(
                     f"🚀 Starting fast-mode scrape for {len(all_video_urls)} videos..."
                 )
@@ -601,6 +621,7 @@ class MissAVExtractor:
                                 self.complete_queue.append(metadata)
                             else:
                                 self.incomplete_queue.append(metadata)
+                            # Schedules a background POST instead of blocking.
                             await self.maybe_auto_ingest()
                     elif result["status"] != "started":
                         logger.warning(
@@ -610,22 +631,27 @@ class MissAVExtractor:
                 logger.info(
                     f"✅ Finished fast-mode scrape for {code} in {elapsed:.2f}s"
                 )
-
-                # FIXED: flush after finishing this code's video scrape so the
-                # next code starts with empty queues.
-                if self.incomplete_queue or self.complete_queue:
+                if (
+                    self.incomplete_queue
+                    or self.complete_queue
+                    or self._inflight_ingests
+                ):
                     logger.info(
-                        f"💾 Flushing pending queues before next code "
+                        f"💾 Draining queues before next code "
                         f"(incomplete={len(self.incomplete_queue)}, "
-                        f"complete={len(self.complete_queue)})"
+                        f"complete={len(self.complete_queue)}, "
+                        f"inflight={len(self._inflight_ingests)})"
                     )
                     await self.flush_queues()
-
-            # Final safety flush (should normally be empty).
             await self.flush_queues()
         except Exception as e:
             logger.error(f"❌ Critical error during extraction: {e}", exc_info=True)
         finally:
+            # Best-effort drain so partial progress is persisted on shutdown.
+            try:
+                await self.flush_queues()
+            except Exception as e:
+                logger.error(f"❌ Final flush failed: {e}")
             logger.info("🛑 Closing browser context...")
             await context.close()
             await playwright.stop()
