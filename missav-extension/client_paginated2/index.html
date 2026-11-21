@@ -1195,17 +1195,18 @@
         <template x-if="detail.video">
           <div>
             <div class="aspect-video bg-black">
-              <template x-if="detail.video.preview"
-                ><video
+              <template x-if="detail.video.preview">
+                <video
                   :src="detail.video.preview"
                   :poster="detail.video.thumbnail"
+                  referrerpolicy="no-referrer"
                   controls
                   autoplay
                   muted
                   playsinline
                   class="h-full w-full object-contain"
-                ></video
-              ></template>
+                ></video>
+              </template>
               <template x-if="!detail.video.preview"
                 ><img
                   :src="detail.video.thumbnail"
