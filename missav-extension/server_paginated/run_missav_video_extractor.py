@@ -24,7 +24,7 @@ logger = logging.getLogger("missav_extractor")
 SERVER_URL = "http://127.0.0.1:9001"
 INGEST_ENDPOINT = f"{SERVER_URL}/ingest"
 MAX_CONCURRENT_TABS = 15
-INGEST_CHUNK_SIZE = 50
+INGEST_CHUNK_SIZE = 120
 BASE_SEARCH_URL = "https://missav.ws/en/search/{}-"
 
 # Safety limits for pagination discovery
