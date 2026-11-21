@@ -23,7 +23,7 @@ logger = logging.getLogger("missav_extractor")
 SERVER_URL = "http://127.0.0.1:9001"
 INGEST_ENDPOINT = f"{SERVER_URL}/ingest"
 MAX_CONCURRENT_TABS = 15
-INGEST_CHUNK_SIZE = 100
+INGEST_CHUNK_SIZE = 50
 BASE_SEARCH_URL = "https://missav.ws/en/search/{}-"
 SINGLE_VIDEO_PATH_RE = re.compile(
     r"^/(?:dm\d+/)?en/([a-z0-9]+-\d+(?:-[a-z0-9-]+)?)$", re.IGNORECASE
@@ -36,21 +36,52 @@ LETTERS_THEN_DIGITS = re.compile(r"\b([a-z]+)(\d{3,6})\b", re.IGNORECASE)
 DIGITS_THEN_LETTERS = re.compile(r"\b(\d+[a-z]+)(\d{3,6})\b", re.IGNORECASE)
 
 
+def _to_base36(n: int) -> str:
+    """Converts a non-negative int to a lowercase base36 string.
+
+    Mirrors JS Number.prototype.toString(36).
+    """
+    if n == 0:
+        return "0"
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = []
+    while n:
+        n, r = divmod(n, 36)
+        out.append(digits[r])
+    return "".join(reversed(out))
+
+
 def generate_id_from_url(url: str, video_id: str) -> str:
-    """Generates a deterministic ID based on URL path."""
+    """Generates a deterministic ID based on URL path.
+
+    Must stay byte-for-byte identical to generateIdFromUrl() in
+    content_search.js / content_single.js:
+      - FNV-1a 32-bit over scheme://netloc + path
+      - output encoded as base36 with prefix "jav-"
+      - bare identifiers (no scheme) are NOT normalized (JS new URL throws)
+      - empty input → "unknown-" + epoch milliseconds
+    """
     input_str = url or video_id
     if not input_str:
-        return f"unknown-{int(time.time())}"
+        # JS: Date.now() is milliseconds
+        return f"unknown-{int(time.time() * 1000)}"
+
+    normalized = input_str
     try:
         u = urlparse(input_str)
-        normalized = u.scheme + "://" + u.netloc + u.path
+        # JS `new URL()` requires an absolute URL (scheme + host); urlparse
+        # accepts relative strings like "abc-123". Only normalize when we
+        # actually have both parts, mirroring the JS try/catch fallback.
+        if u.scheme and u.netloc:
+            normalized = u.scheme + "://" + u.netloc + u.path
     except Exception:
         normalized = input_str
+
     hash_val = 0x811C9DC5
     for char in normalized:
         hash_val ^= ord(char)
         hash_val = (hash_val * 0x01000193) % (2**32)
-    return f"jav-{hash_val:x}"
+    return f"jav-{_to_base36(hash_val)}"
 
 
 def extract_jav_info(url: str, text: Optional[str] = None) -> Dict[str, Optional[str]]:
