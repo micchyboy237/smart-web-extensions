@@ -2,32 +2,34 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
+import httpx
 from bs4 import BeautifulSoup
 from jet.scrapers.browser.playwright_helpers import (
     auto_solve_cloudflare,
     setup_async_browser_session,
 )
-from playwright.async_api import Page
+from playwright.async_api import BrowserContext, Page, async_playwright
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("missav_extractor")
 
-# --- Configuration ---
+# Constants
 SERVER_URL = "http://127.0.0.1:9001"
 INGEST_ENDPOINT = f"{SERVER_URL}/ingest"
 MAX_CONCURRENT_TABS = 20
-MAX_RETRIES_PER_VIDEO = 3
 INGEST_CHUNK_SIZE = 100
-SEARCH_BASE_URL = "https://missav.ws/en/search/{code}-"
-VIDEO_BASE_URL = "https://missav.ws"
+MAX_RETRIES_PER_VIDEO = 3
+BASE_SEARCH_URL = "https://missav.ws/en/search/{}-"
 
-# Regex patterns from content_search.js and content_single.js
+# Regex patterns matching content_search.js and content_single.js
 SINGLE_VIDEO_PATH_RE = re.compile(
     r"^/(?:dm\d+/)?en/([a-z0-9]+-\d+(?:-[a-z0-9-]+)?)$", re.IGNORECASE
 )
@@ -39,42 +41,8 @@ LETTERS_THEN_DIGITS = re.compile(r"\b([a-z]+)(\d{3,6})\b", re.IGNORECASE)
 DIGITS_THEN_LETTERS = re.compile(r"\b(\d+[a-z]+)(\d{3,6})\b", re.IGNORECASE)
 
 
-class VideoItem:
-    def __init__(self, data: Dict[str, Any]):
-        self.id = data.get("id")
-        self.url = data.get("url")
-        self.code = data.get("code")
-        self.episode = data.get("episode")
-        self.video_id = data.get("video_id")
-        self.title = data.get("title")
-        self.thumbnail = data.get("thumbnail")
-        self.preview = data.get("preview")
-        self.details = data.get("details")
-        self.release_date = data.get("release_date")
-        self.genres = data.get("genres", [])
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "url": self.url,
-            "code": self.code,
-            "episode": self.episode,
-            "video_id": self.video_id,
-            "title": self.title,
-            "thumbnail": self.thumbnail,
-            "preview": self.preview,
-            "details": self.details,
-            "release_date": self.release_date,
-            "genres": self.genres,
-        }
-
-    def is_complete(self) -> bool:
-        """Check if item has essential fields filled (similar to isMetadataComplete in JS)"""
-        return bool(self.title and self.title.strip() and self.title != "Unknown Title")
-
-
 def generate_id_from_url(url: str, video_id: str) -> str:
-    """Generate consistent ID from URL or video_id"""
+    """Generates a deterministic ID based on URL path, matching the JS implementation."""
     input_str = url or video_id
     if not input_str:
         return f"unknown-{int(time.time())}"
@@ -85,75 +53,97 @@ def generate_id_from_url(url: str, video_id: str) -> str:
     except Exception:
         normalized = input_str
 
+    # FNV-1a hash implementation in Python to match JS
     hash_val = 0x811C9DC5
     for char in normalized:
         hash_val ^= ord(char)
-        hash_val = (hash_val * 0x01000193) & 0xFFFFFFFF
+        hash_val = (hash_val * 0x01000193) % (2**32)
+
     return f"jav-{hash_val:x}"
 
 
 def extract_jav_info(url: str, text: Optional[str] = None) -> Dict[str, Optional[str]]:
-    """Extract code, episode, and video_id from URL or text"""
+    """Extracts code, episode, and videoId from URL or text."""
     match = None
-    # Try URL first
-    if url:
-        match = (
-            THREE_PART_WITH_SUFFIX.search(url)
-            or TWO_PART_WITH_SUFFIX.search(url)
-            or LETTERS_THEN_DIGITS.search(url)
-            or DIGITS_THEN_LETTERS.search(url)
-        )
-
-    # Fallback to text if no match in URL
-    if not match and text:
-        match = (
-            THREE_PART_WITH_SUFFIX.search(text)
-            or TWO_PART_WITH_SUFFIX.search(text)
-            or LETTERS_THEN_DIGITS.search(text)
-            or DIGITS_THEN_LETTERS.search(text)
-        )
+    for pattern in [
+        THREE_PART_WITH_SUFFIX,
+        TWO_PART_WITH_SUFFIX,
+        LETTERS_THEN_DIGITS,
+        DIGITS_THEN_LETTERS,
+    ]:
+        match = pattern.search(url)
+        if not match and text:
+            match = pattern.search(text)
+        if match:
+            break
 
     if match:
         full_match = match.group(0).lower()
         if "-" in full_match:
             return {
-                "video_id": full_match,
+                "videoId": full_match,
                 "code": match.group(1).lower(),
                 "episode": match.group(2),
             }
         else:
             return {
-                "video_id": full_match,
-                "code": match.group(1).lower() if match.group(1) else None,
-                "episode": match.group(2) if match.group(2) else None,
+                "videoId": full_match,
+                "code": match.group(1).lower() if match.lastindex >= 1 else None,
+                "episode": match.group(2) if match.lastindex >= 2 else None,
             }
-    return {"video_id": None, "code": None, "episode": None}
+    return {"videoId": None, "code": None, "episode": None}
 
 
-def generate_preview_url(thumbnail: Optional[str]) -> Optional[str]:
-    """Generate preview.mp4 URL from thumbnail"""
-    if not thumbnail:
-        return None
-    if thumbnail.endswith("/preview.mp4"):
-        return thumbnail
-    last_slash = thumbnail.rfind("/")
-    if last_slash == -1:
-        return None
-    return thumbnail[: last_slash + 1] + "preview.mp4"
+async def fetch_existing_video_ids(code: str) -> set:
+    """Fetches existing complete video IDs from the server to avoid re-processing."""
+    ids = set()
+    limit = 5000
+    offset = 0
+    max_pages = 20
+
+    logger.info(f"Fetching existing IDs for code: {code}")
+    async with httpx.AsyncClient() as client:
+        for page in range(max_pages):
+            url = f"{SERVER_URL}/videos?code={code}&completion_filter=complete&fields=id&limit={limit}&offset={offset}"
+            try:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    logger.warning(
+                        f"Failed to fetch existing IDs page {page}: HTTP {resp.status_code}"
+                    )
+                    break
+                data = resp.json()
+                items = data.get("items", [])
+                if not items:
+                    break
+                for item in items:
+                    if item.get("id"):
+                        ids.add(item["id"])
+                if len(items) < limit:
+                    break
+                offset += limit
+            except Exception as e:
+                logger.error(f"Error fetching existing IDs page {page}: {e}")
+                break
+    logger.info(f"Found {len(ids)} existing complete IDs for code {code}")
+    return ids
 
 
-def parse_search_page(html: str, base_url: str) -> List[VideoItem]:
-    """Parse search page HTML to extract video items (equivalent to content_search.js)"""
-    soup = BeautifulSoup(html, "lxml")
+def parse_search_page_html(html: str, base_url: str) -> List[Dict[str, Any]]:
+    """
+    Parses search page HTML to extract video metadata without waiting for full JS execution.
+    Mimics extractVideoMetadataFromSearch from content_search.js
+    """
+    soup = BeautifulSoup(html, "html.parser")
     containers = soup.select(".thumbnail.group")
-    logger.info(f"Found {len(containers)} video containers in search page")
-
     items = []
     seen_urls = set()
 
+    logger.debug(f"Parsing {len(containers)} containers from search page HTML")
+
     for container in containers:
         try:
-            # Find media anchor
+            # 1. Anchor containing media
             media_anchor = None
             for a in container.find_all("a", href=True):
                 if a.find("video") or a.find("img"):
@@ -163,20 +153,16 @@ def parse_search_page(html: str, base_url: str) -> List[VideoItem]:
             if not media_anchor:
                 continue
 
-            raw_url = media_anchor.get("href")
-            if not raw_url:
-                continue
-
-            # Clean URL
+            raw_url = media_anchor["href"]
             if raw_url.startswith("/"):
                 raw_url = urljoin(base_url, raw_url)
-            clean_url = raw_url.split("#")[0].split("?")[0]
 
+            clean_url = raw_url.split("#")[0].split("?")[0]
             if clean_url in seen_urls:
                 continue
             seen_urls.add(clean_url)
 
-            # Extract Title
+            # 2. Title
             title = ""
             inner_title_link = container.select_one(
                 ".text-sm.truncate a.text-secondary"
@@ -184,19 +170,13 @@ def parse_search_page(html: str, base_url: str) -> List[VideoItem]:
             if inner_title_link:
                 title = inner_title_link.get_text(strip=True)
             else:
-                # Check siblings or parent
                 parent = container.parent
                 if parent:
-                    sibling_link = parent.select_one(".text-sm.truncate a")
-                    if not sibling_link:
-                        sibling_link = container.find_next_sibling()
-                        if sibling_link:
-                            sibling_link = sibling_link.find("a")
-                    if sibling_link:
-                        title = sibling_link.get_text(strip=True)
+                    sibling_title = parent.select_one(".text-sm.truncate a")
+                    if sibling_title:
+                        title = sibling_title.get_text(strip=True)
 
                 if not title:
-                    # Check flex container
                     flex_parent = container.find_parent(class_="flex")
                     if flex_parent:
                         side_title = flex_parent.select_one(".overflow-y-hidden a")
@@ -208,39 +188,47 @@ def parse_search_page(html: str, base_url: str) -> List[VideoItem]:
                     if img:
                         title = img.get("alt", "")
 
-            # Extract Media
-            img_el = container.find("img")
-            video_el = container.find("video")
-
+            # 3. Media (Thumbnail/Preview)
             thumbnail = None
-            if img_el:
-                src = img_el.get("src") or img_el.get("data-src")
-                if src and src.startswith("http"):
-                    thumbnail = src
-
             preview = None
+
+            img_el = container.find("img")
+            if img_el:
+                thumbnail = img_el.get("src") or img_el.get("data-src")
+
+            video_el = container.find("video")
             if video_el:
                 v_src = video_el.get("src") or video_el.get("data-src")
                 if v_src and "preview.mp4" in v_src:
                     preview = v_src
 
             if not preview and thumbnail:
-                preview = generate_preview_url(thumbnail)
+                if thumbnail.endswith("/preview.mp4"):
+                    preview = thumbnail
+                else:
+                    idx = thumbnail.rfind("/")
+                    if idx != -1:
+                        preview = thumbnail[: idx + 1] + "preview.mp4"
 
-            # Extract Identifiers
+            # 4. Identifiers
             jav_info = extract_jav_info(clean_url, title)
-            if not jav_info["video_id"]:
+            if not jav_info["videoId"]:
+                logger.debug(f"Skipping item with no videoId: {clean_url}")
                 continue
 
-            video_id = generate_id_from_url(clean_url, jav_info["video_id"])
+            video_id = jav_info["videoId"]
+            code = jav_info["code"]
+            episode = jav_info["episode"]
+            id_hash = generate_id_from_url(clean_url, video_id)
 
-            item = VideoItem(
+            # These are "Incomplete" because they lack details, release_date, genres
+            items.append(
                 {
-                    "id": video_id,
+                    "id": id_hash,
                     "url": clean_url,
-                    "code": jav_info["code"],
-                    "episode": jav_info["episode"],
-                    "video_id": jav_info["video_id"],
+                    "code": code,
+                    "episode": episode,
+                    "video_id": video_id,
                     "title": title or None,
                     "thumbnail": thumbnail,
                     "preview": preview,
@@ -249,88 +237,97 @@ def parse_search_page(html: str, base_url: str) -> List[VideoItem]:
                     "genres": [],
                 }
             )
-            items.append(item)
-
         except Exception as e:
-            logger.warning(f"Error parsing search container: {e}")
+            logger.debug(f"Error parsing container: {e}")
 
+    logger.info(f"Parsed {len(items)} unique items from search page")
     return items
 
 
-def parse_video_detail_page(html: str, url: str) -> Optional[VideoItem]:
-    """Parse single video page HTML to extract full details (equivalent to content_single.js)"""
-    soup = BeautifulSoup(html, "lxml")
+def parse_single_video_page_html(html: str, url: str) -> Optional[Dict[str, Any]]:
+    """
+    Parses single video page HTML to extract detailed metadata.
+    Mimics extractVideoMetadata from content_single.js
+    """
+    soup = BeautifulSoup(html, "html.parser")
 
-    # Check if it's a valid single video page
+    # Path match check
     path_match = SINGLE_VIDEO_PATH_RE.search(urlparse(url).path)
     if not path_match:
+        logger.warning(f"URL does not match single video pattern: {url}")
         return None
 
     raw_segment = path_match.group(1)
-    jav_info = extract_jav_info(raw_segment)
-    if not jav_info["video_id"]:
+    s = raw_segment.lower()
+    m = re.match(r"^([a-z0-9]+)-(\d+)", s)
+    if not m:
+        logger.warning(f"Could not derive identifiers from segment: {raw_segment}")
         return None
 
-    video_id = generate_id_from_url(url, jav_info["video_id"])
+    video_id = s
+    code = m.group(1)
+    episode = m.group(2)
 
-    # Extract Title
+    # Title
     title = None
-    title_selectors = [
+    selectors_h1 = [
         "h1.text-base.lg\\:text-lg",
         "h1.lg\\:text-lg",
         "h1.text-base",
         "h1",
         ".text-base.text-secondary",
-        "meta[property='og:title']",
     ]
-    for sel in title_selectors:
-        if sel.startswith("meta"):
-            el = soup.select_one(sel)
-            if el:
-                title = el.get("content", "").strip()
-        else:
-            el = soup.select_one(sel)
-            if el:
-                title = el.get_text(strip=True)
-        if title:
-            break
+    for sel in selectors_h1:
+        el = soup.select_one(sel)
+        if el:
+            title = el.get_text(strip=True)
+            if title:
+                break
+    if not title:
+        og_title = soup.find("meta", property="og:title")
+        if og_title:
+            title = og_title.get("content", "").strip()
 
-    # Extract Details
+    # Details
     details = None
-    detail_selectors = [
+    selectors_details = [
         ".order-first .text-secondary.break-all",
         ".mt-4.text-secondary.break-all",
         ".text-secondary.break-all",
-        "meta[name='description']",
-        "meta[property='og:description']",
     ]
-    for sel in detail_selectors:
-        if sel.startswith("meta"):
-            el = soup.select_one(sel)
-            if el:
-                details = el.get("content", "").strip()
-        else:
-            el = soup.select_one(sel)
-            if el:
-                details = el.get_text(strip=True)
-        if details and len(details) > 10:  # Ignore very short descriptions
-            break
+    for sel in selectors_details:
+        el = soup.select_one(sel)
+        if el:
+            details = el.get_text(strip=True)
+            if details and len(details) > 10:
+                break
+    if not details or len(details) <= 10:
+        og_desc = soup.find("meta", attrs={"name": "description"})
+        if og_desc:
+            details = og_desc.get("content", "").strip()
+        elif not details:
+            og_desc_prop = soup.find("meta", property="og:description")
+            if og_desc_prop:
+                details = og_desc_prop.get("content", "").strip()
 
-    # Extract Release Date
+    # Release Date
     release_date = None
-    time_el = soup.select_one(".order-first time[datetime], time[datetime]")
+    time_el = soup.select_one(".order-first time[datetime]")
+    if not time_el:
+        time_el = soup.find("time", datetime=True)
+
     if time_el:
         release_date = time_el.get("datetime")
     else:
-        # Fallback: look for date pattern in text
         for el in soup.select(".text-secondary, .order-first"):
             text = el.get_text()
             date_match = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
             if date_match:
-                release_date = f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
+                y, mo, d = date_match.groups()
+                release_date = f"{y}-{mo.zfill(2)}-{d.zfill(2)}"
                 break
 
-    # Extract Genres
+    # Genres
     genres = []
     genre_containers = soup.select(".text-secondary")
     found_genres = False
@@ -338,269 +335,334 @@ def parse_video_detail_page(html: str, url: str) -> Optional[VideoItem]:
         span = c.find("span")
         if span and "genre" in span.get_text().lower():
             links = c.find_all("a", class_="font-medium")
-            genres = [
-                link.get_text(strip=True) for link in links if link.get_text(strip=True)
-            ]
+            genres = [a.get_text(strip=True) for a in links if a.get_text(strip=True)]
             if genres:
                 found_genres = True
                 break
 
     if not found_genres:
-        # Fallback: all font-medium links
         links = soup.find_all("a", class_="font-medium")
         genres = [
-            link.get_text(strip=True)
-            for link in links
-            if link.get_text(strip=True) and len(link.get_text(strip=True)) < 40
+            a.get_text(strip=True)
+            for a in links
+            if a.get_text(strip=True) and len(a.get_text(strip=True)) < 40
         ]
 
-    # Extract Thumbnail/Preview
+    # Thumbnail/Preview
     thumbnail = None
-    player = soup.select_one("video.player")
+    player = soup.find("video", class_="player")
     if player:
         thumbnail = player.get("data-poster") or player.get("poster")
 
     if not thumbnail:
-        fb_img = soup.select_one(".order-first img, img[src*='cover']")
+        fb_img = soup.select_one(".order-first img") or soup.find(
+            "img", src=lambda x: x and "cover" in x
+        )
         if fb_img:
             thumbnail = fb_img.get("src") or fb_img.get("data-src")
 
     if not thumbnail:
-        og_img = soup.select_one("meta[property='og:image']")
-        if og_img:
-            thumbnail = og_img.get("content")
+        og_image = soup.find("meta", property="og:image")
+        if og_image:
+            thumbnail = og_image.get("content")
 
-    preview = generate_preview_url(thumbnail)
-
-    return VideoItem(
-        {
-            "id": video_id,
-            "url": url,
-            "code": jav_info["code"],
-            "episode": jav_info["episode"],
-            "video_id": jav_info["video_id"],
-            "title": title,
-            "thumbnail": thumbnail,
-            "preview": preview,
-            "details": details,
-            "release_date": release_date,
-            "genres": genres,
-        }
-    )
-
-
-async def fetch_existing_video_ids(code: str) -> Set[str]:
-    """Fetch existing complete video IDs from the database to avoid re-processing"""
-    existing_ids = set()
-    limit = 5000
-    offset = 0
-    max_pages = 20
-
-    for page in range(max_pages):
-        url = f"{SERVER_URL}/videos?code={code}&completion_filter=complete&fields=id&limit={limit}&offset={offset}"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        break
-                    data = await resp.json()
-                    items = data.get("items", [])
-                    if not items:
-                        break
-                    for item in items:
-                        if item.get("id"):
-                            existing_ids.add(item["id"])
-                    if len(items) < limit:
-                        break
-                    offset += limit
-        except Exception as e:
-            logger.warning(f"Error fetching existing IDs: {e}")
-            break
-
-    logger.info(f"Found {len(existing_ids)} existing complete IDs for code {code}")
-    return existing_ids
-
-
-async def ingest_batch(items: List[Dict[str, Any]]) -> Dict[str, int]:
-    """Send batch of items to ingestion endpoint"""
-    if not items:
-        return {"inserted": 0, "updated": 0, "skipped": 0}
-
-    payload = {"items": items, "upsert": True}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(INGEST_ENDPOINT, json=payload) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    return result
-                else:
-                    logger.error(f"Ingest failed with status {resp.status}")
-                    return {"inserted": 0, "updated": 0, "skipped": 0}
-    except Exception as e:
-        logger.error(f"Error during ingestion: {e}")
-        return {"inserted": 0, "updated": 0, "skipped": 0}
-
-
-async def process_search_page(page: Page, code: str, page_num: int) -> List[VideoItem]:
-    """Navigate to search page and extract video items"""
-    url = SEARCH_BASE_URL.format(code=code)
-    if page_num > 1:
-        url += f"?page={page_num}"
-
-    logger.info(f"Navigating to search page: {url}")
-    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
-    # Wait for content to load
-    await page.wait_for_selector(".thumbnail.group", timeout=10000)
-
-    # Get HTML content
-    html = await page.content()
-    return parse_search_page(html, url)
-
-
-async def process_video_detail(
-    page: Page, url: str, retries: int = 0
-) -> Optional[VideoItem]:
-    """Navigate to video detail page and extract full metadata"""
-    try:
-        logger.debug(f"Navigating to video: {url}")
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
-        # Auto-solve Cloudflare if present
-        await auto_solve_cloudflare(page)
-
-        # Wait for key elements
-        await page.wait_for_selector("h1", timeout=10000)
-
-        # Get HTML content
-        html = await page.content()
-        item = parse_video_detail_page(html, url)
-
-        if item and item.is_complete():
-            return item
-        elif retries < MAX_RETRIES_PER_VIDEO:
-            logger.warning(
-                f"Incomplete extraction for {url}, retrying ({retries + 1}/{MAX_RETRIES_PER_VIDEO})"
-            )
-            await asyncio.sleep(2)
-            return await process_video_detail(page, url, retries + 1)
+    preview = None
+    if thumbnail:
+        if thumbnail.endswith("/preview.mp4"):
+            preview = thumbnail
         else:
-            logger.warning(
-                f"Failed to extract complete data for {url} after {MAX_RETRIES_PER_VIDEO} retries"
-            )
-            return item  # Return incomplete item
+            idx = thumbnail.rfind("/")
+            if idx != -1:
+                preview = thumbnail[: idx + 1] + "preview.mp4"
 
-    except Exception as e:
-        logger.error(f"Error processing video {url}: {e}")
-        if retries < MAX_RETRIES_PER_VIDEO:
-            await asyncio.sleep(2)
-            return await process_video_detail(page, url, retries + 1)
-        return None
+    id_hash = generate_id_from_url(url, video_id)
 
+    result = {
+        "id": id_hash,
+        "url": url.split("#")[0],
+        "code": code,
+        "episode": episode,
+        "video_id": video_id,
+        "title": title,
+        "thumbnail": thumbnail,
+        "preview": preview,
+        "details": details,
+        "release_date": release_date,
+        "genres": genres,
+    }
 
-async def run_extraction(codes: List[str]):
-    """Main extraction workflow"""
-    browser = await setup_async_browser_session(headless=True)
-    context = await browser.new_context(
-        viewport={"width": 1440, "height": 900},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    logger.debug(
+        f"Parsed metadata for {video_id}: Title='{title}', Details='{details[:50] if details else None}...'"
     )
+    return result
 
-    # Semaphore to limit concurrent tabs
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_TABS)
 
-    # Queues for processing
-    incomplete_queue = []
-    complete_queue = []
-    retry_counts = {}
+class MissAVExtractor:
+    def __init__(self, codes: List[str], headless: bool = False):
+        self.codes = codes
+        self.headless = headless
+        # Two separate queues as per extension logic
+        self.incomplete_queue: List[Dict] = []
+        self.complete_queue: List[Dict] = []
+        self.existing_ids: Dict[str, set] = {}
+        self.total_ingested = 0
 
-    async def process_code(code: str):
-        logger.info(f"Starting extraction for code: {code}")
+    async def initialize(self):
+        """Fetch existing IDs for all codes."""
+        tasks = [fetch_existing_video_ids(code) for code in self.codes]
+        results = await asyncio.gather(*tasks)
+        for code, ids in zip(self.codes, results):
+            self.existing_ids[code] = ids
 
-        # Fetch existing IDs to skip
-        existing_ids = await fetch_existing_video_ids(code)
+    async def ingest_batch(self, items: List[Dict], queue_type: str):
+        """Send batch to server."""
+        if not items:
+            return
 
-        # Process search pages
-        page_num = 1
-        while True:
-            async with semaphore:
-                page = await context.new_page()
-                try:
-                    items = await process_search_page(page, code, page_num)
-                    logger.info(f"Page {page_num}: Found {len(items)} videos")
-
-                    if not items:
-                        break
-
-                    # Filter out existing complete items
-                    new_items = [item for item in items if item.id not in existing_ids]
+        payload = {"items": items, "upsert": True}
+        logger.info(f"Ingesting {len(items)} items to {queue_type} queue...")
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(INGEST_ENDPOINT, json=payload, timeout=30.0)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    inserted = result.get("inserted", 0)
+                    updated = result.get("updated", 0)
+                    self.total_ingested += inserted + updated
                     logger.info(
-                        f"Page {page_num}: {len(new_items)} new items to process"
+                        f"✅ Ingested {queue_type}: {inserted} new, {updated} updated"
                     )
+                else:
+                    logger.error(
+                        f"❌ Ingest failed for {queue_type}: {resp.status_code} - {resp.text}"
+                    )
+                    # Re-add to queue on failure
+                    if queue_type == "incomplete":
+                        self.incomplete_queue.extend(items)
+                    else:
+                        self.complete_queue.extend(items)
+        except Exception as e:
+            logger.error(f"❌ Network error during ingest: {e}")
+            if queue_type == "incomplete":
+                self.incomplete_queue.extend(items)
+            else:
+                self.complete_queue.extend(items)
 
-                    # Add to incomplete queue
-                    for item in new_items:
-                        incomplete_queue.append(item)
+    async def maybe_auto_ingest(self):
+        """Check thresholds and ingest if necessary."""
+        if len(self.incomplete_queue) >= INGEST_CHUNK_SIZE:
+            batch = self.incomplete_queue[:INGEST_CHUNK_SIZE]
+            self.incomplete_queue = self.incomplete_queue[INGEST_CHUNK_SIZE:]
+            await self.ingest_batch(batch, "incomplete")
 
-                    # Check if there are more pages
-                    # Note: In a real scenario, you'd parse pagination from the HTML
-                    # For now, we'll assume a fixed number of pages or stop when no items found
-                    if len(items) < 20:  # Assuming 20 items per page
-                        break
+        if len(self.complete_queue) >= INGEST_CHUNK_SIZE:
+            batch = self.complete_queue[:INGEST_CHUNK_SIZE]
+            self.complete_queue = self.complete_queue[INGEST_CHUNK_SIZE:]
+            await self.ingest_batch(batch, "complete")
 
-                finally:
-                    await page.close()
+    async def flush_queues(self):
+        """Final flush of all queues."""
+        logger.info("Flushing remaining queues...")
+        if self.incomplete_queue:
+            await self.ingest_batch(self.incomplete_queue, "incomplete")
+            self.incomplete_queue = []
+        if self.complete_queue:
+            await self.ingest_batch(self.complete_queue, "complete")
+            self.complete_queue = []
 
-            page_num += 1
-            if page_num > 50:  # Safety limit
-                break
+    async def process_search_page(self, page: Page, code: str, url: str) -> List[Dict]:
+        """Process a search page, extract items, and return video URLs to open."""
+        logger.info(f"🔍 Processing search page: {url}")
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=10000)
+            html = await page.content()
+            items = parse_search_page_html(html, url)
 
-        # Process incomplete items to get full details
-        logger.info(f"Processing {len(incomplete_queue)} incomplete items for {code}")
+            # Filter out existing IDs
+            existing = self.existing_ids.get(code, set())
+            new_items = [item for item in items if item["id"] not in existing]
 
-        async def process_incomplete_item(item: VideoItem):
-            async with semaphore:
+            logger.info(f"Found {len(items)} items, {len(new_items)} new on page {url}")
+
+            # Add to incomplete queue
+            if new_items:
+                self.incomplete_queue.extend(new_items)
+                await self.maybe_auto_ingest()
+
+            # Return URLs for detailed extraction
+            return [item["url"] for item in new_items]
+
+        except Exception as e:
+            logger.error(f"❌ Error processing search page {url}: {e}")
+            return []
+
+    async def process_video_page(self, page: Page, url: str) -> Optional[Dict]:
+        """Process a single video page for detailed metadata."""
+        logger.debug(f"📺 Opening video page: {url}")
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await auto_solve_cloudflare(page)
+
+            # Wait for dynamic content to settle
+            await page.wait_for_timeout(2000)
+
+            html = await page.content()
+            metadata = parse_single_video_page_html(html, url)
+
+            if metadata:
+                # If we have title and details, it's considered "Complete"
+                if metadata["title"] and metadata["details"]:
+                    logger.debug(f"✅ Complete metadata for {metadata['video_id']}")
+                    return metadata
+                else:
+                    logger.debug(f"⚠️ Incomplete metadata for {metadata['video_id']}")
+                    # Otherwise it remains incomplete
+                    return metadata
+            else:
+                logger.warning(f"❌ No metadata parsed for {url}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ Error processing video page {url}: {e}")
+            return None
+
+    async def run(self):
+        """Main execution loop."""
+        await self.initialize()
+
+        logger.info("🚀 Starting Playwright session...")
+        playwright = await async_playwright().start()
+
+        # setup_async_browser_session returns a BrowserContext
+        logger.info("🛡️ Setting up browser context with stealth...")
+        context: BrowserContext = await setup_async_browser_session(
+            headless=self.headless
+        )
+
+        try:
+            for code in self.codes:
+                logger.info(f"📦 Starting extraction for code: {code}")
+                search_url = BASE_SEARCH_URL.format(code)
+
+                # Open search page
+                logger.info(f"🌐 Navigating to search page: {search_url}")
                 page = await context.new_page()
+                await page.goto(search_url, wait_until="domcontentloaded")
+                await auto_solve_cloudflare(page)
+
+                # Extract pagination links
+                page_urls = [search_url]
                 try:
-                    detailed_item = await process_video_detail(page, item.url)
-                    if detailed_item:
-                        if detailed_item.is_complete():
-                            complete_queue.append(detailed_item.to_dict())
-                        else:
-                            # Keep in incomplete queue for retry
-                            retry_count = retry_counts.get(item.id, 0) + 1
-                            retry_counts[item.id] = retry_count
-                            if retry_count < MAX_RETRIES_PER_VIDEO:
-                                incomplete_queue.append(item)
-                            else:
-                                logger.warning(
-                                    f"Giving up on {item.id} after {MAX_RETRIES_PER_VIDEO} retries"
-                                )
-                finally:
-                    await page.close()
+                    paginator = await page.query_selector(".hidden.md\\:flex")
+                    if paginator:
+                        links = await paginator.query_selector_all('a[href*="page="]')
+                        for link in links:
+                            href = await link.get_attribute("href")
+                            if href:
+                                full_url = urljoin(search_url, href)
+                                if full_url not in page_urls:
+                                    page_urls.append(full_url)
+                except Exception as e:
+                    logger.warning(f"Could not parse pagination: {e}")
 
-        # Process items in batches
-        tasks = [process_incomplete_item(item) for item in incomplete_queue]
-        await asyncio.gather(*tasks)
+                logger.info(f"📄 Found {len(page_urls)} search pages for {code}")
 
-        # Ingest complete items
-        if complete_queue:
-            logger.info(f"Ingesting {len(complete_queue)} complete items for {code}")
-            for i in range(0, len(complete_queue), INGEST_CHUNK_SIZE):
-                chunk = complete_queue[i : i + INGEST_CHUNK_SIZE]
-                result = await ingest_batch(chunk)
-                logger.info(f"Ingest result: {result}")
+                # Process search pages
+                all_video_urls = []
 
-    # Process all codes
-    tasks = [process_code(code) for code in codes]
-    await asyncio.gather(*tasks)
+                for p_url in page_urls:
+                    if p_url != search_url:
+                        logger.info(f"🔄 Navigating to next page: {p_url}")
+                        await page.goto(p_url, wait_until="domcontentloaded")
+                        await auto_solve_cloudflare(page)
 
-    # Cleanup
-    await context.close()
-    await browser.close()
+                    urls = await self.process_search_page(page, code, p_url)
+                    all_video_urls.extend(urls)
+
+                await page.close()
+
+                logger.info(f"📋 Collected {len(all_video_urls)} video URLs for {code}")
+
+                if not all_video_urls:
+                    logger.info("No new videos to process for this code.")
+                    continue
+
+                # Process video pages in parallel batches
+                semaphore = asyncio.Semaphore(MAX_CONCURRENT_TABS)
+
+                async def process_video_with_semaphore(url):
+                    async with semaphore:
+                        video_page = await context.new_page()
+                        try:
+                            metadata = await self.process_video_page(video_page, url)
+                            if metadata:
+                                # Check if it's complete
+                                if metadata["title"] and metadata["details"]:
+                                    self.complete_queue.append(metadata)
+                                else:
+                                    # Retry logic could go here, for now add to incomplete
+                                    self.incomplete_queue.append(metadata)
+
+                                await self.maybe_auto_ingest()
+                        except Exception as e:
+                            logger.error(f"❌ Failed to process video {url}: {e}")
+                        finally:
+                            await video_page.close()
+
+                # Process in batches to avoid overwhelming memory
+                batch_size = 50
+                for i in range(0, len(all_video_urls), batch_size):
+                    batch = all_video_urls[i : i + batch_size]
+                    logger.info(
+                        f"🚀 Processing batch {i // batch_size + 1} ({len(batch)} videos)..."
+                    )
+                    tasks = [process_video_with_semaphore(url) for url in batch]
+                    await asyncio.gather(*tasks)
+                    logger.info(f"✅ Finished batch {i // batch_size + 1}")
+
+            # Final flush
+            await self.flush_queues()
+
+        except Exception as e:
+            logger.error(f"❌ Critical error during extraction: {e}", exc_info=True)
+        finally:
+            logger.info("🛑 Closing browser context...")
+            await context.close()
+            await playwright.stop()
+
+        logger.info(f"🏁 Extraction complete. Total ingested: {self.total_ingested}")
+
+
+async def run_missav_video_extractor(codes: List[str], headless: bool = False):
+    """
+    Entry point for running the MissAV video extractor.
+
+    Args:
+        codes: List of JAV codes to search for (e.g., ["gvg", "jul"]).
+        headless: Whether to run browser in headless mode.
+    """
+    extractor = MissAVExtractor(codes=codes, headless=headless)
+    await extractor.run()
 
 
 if __name__ == "__main__":
-    # Example usage
-    codes = ["gvg", "jul", "nacr"]  # Replace with your list of codes
-    asyncio.run(run_extraction(codes))
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Run extraction for one or more codes."
+    )
+    parser.add_argument(
+        "codes",
+        nargs="+",  # one or more positional args
+        metavar="CODE",
+        help="One or more codes to extract (e.g. gvg jul nacr)",
+    )
+    parser.add_argument(
+        "-H",
+        "--headless",
+        action=argparse.BooleanOptionalAction,  # gives --headless / --no-headless
+        default=False,
+        help="Run browser in headless mode (default: enabled)",
+    )
+    args = parser.parse_args()
+
+    asyncio.run(run_missav_video_extractor(args.codes, headless=args.headless))
