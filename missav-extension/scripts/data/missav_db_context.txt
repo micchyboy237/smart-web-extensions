@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-17T02:18:09.769062
+Generated: 2026-11-21T21:50:07.838220
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -12,7 +12,7 @@ Tables: videos, videos_title_backup
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.videos (52144 rows)
+### Table: public.videos (82436 rows)
 ```sql
 CREATE TABLE "public"."videos" (
     "id" text NOT NULL,
@@ -79,20 +79,20 @@ CREATE TABLE "public"."videos_title_backup" (
 ### Table: videos
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | text | 52144 | 0.0% |
-| `embedding` | vector(768) | 50423 | 0.0% |
-| `url` | text | 52144 | 0.0% |
-| `code` | text | 3199 | 0.0% |
-| `episode` | text | 3412 | 0.0% |
-| `video_id` | text | 48619 | 0.0% |
-| `title` | text | 44065 | 0.76% |
-| `thumbnail` | text | 52099 | 0.0% |
-| `preview` | text | 52096 | 0.0% |
-| `details` | text | 9679 | 74.1% |
-| `release_date` | timestamp with time zone | 8392 | 72.57% |
-| `created_at` | timestamp with time zone | 5105 | 0.0% |
-| `updated_at` | timestamp with time zone | 51 | 0.0% |
-| `genres` | text[] | 9343 | 71.51% |
+| `id` | text | 82436 | 0.0% |
+| `embedding` | vector(768) | 78742 | 0.0% |
+| `url` | text | 78587 | 0.0% |
+| `code` | text | 3205 | 0.0% |
+| `episode` | text | 4200 | 0.0% |
+| `video_id` | text | 75052 | 0.0% |
+| `title` | text | 62123 | 0.48% |
+| `thumbnail` | text | 79258 | 0.0% |
+| `preview` | text | 78529 | 0.0% |
+| `details` | text | 25976 | 54.93% |
+| `release_date` | timestamp with time zone | 18416 | 54.74% |
+| `created_at` | timestamp with time zone | 5511 | 0.0% |
+| `updated_at` | timestamp with time zone | 546 | 0.0% |
+| `genres` | text[] | 26778 | 44.01% |
 
 ### Table: videos_title_backup
 | Column | Type | Distinct Values | Null % |
@@ -109,9 +109,9 @@ CREATE TABLE "public"."videos_title_backup" (
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-14efxc | [0.01861933,0.018008813,-0.030650739,-0.012953725,… | https://missav.ws/dm30/en/jul-999-uncensored-leak | jul | 999 | jul-999 | Nude Model NTR Shocking Wife Drowning in Shame Che… | https://fourhoi.com/jul-999-uncensored-leak/cover-… | https://fourhoi.com/jul-999-uncensored-leak/previe… | It's been 15 years since I got married to my wife… | 2022-06-24 12:00:36+08 | 2026-11-16 03:12:42.837731+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak",Shame,"Mature Woman",Wife,Indiv… |
-| jav-ys01ts | [-0.0040968014,0.079799026,-0.016319009,0.01468804… | https://missav.ws/en/nacr-744-english-subtitle | nacr | 744 | nacr-744 | My sex friend loves dick play and whole body licki… | https://fourhoi.com/nacr-744-english-subtitle/cove… | https://fourhoi.com/nacr-744-english-subtitle/prev… | I met my sex friend Mayi for the first time in a w… | 2023-12-20 10:00:00+08 | 2026-11-16 06:33:57.713737+08 | 2026-11-16 21:12:37.409468+08 | {"English subtitle","Big Breasts","Big Ass",Indivi… |
-| jav-14eotvw | [0.015222604,0.037005376,-0.01780895,0.009737986,0… | https://missav.ws/dm68/en/juc-779 | juc | 779 | juc-779 | My Wife Started A Barber Shop...Hitomi Honjo | https://fourhoi.com/juc-779/cover-n.jpg | https://fourhoi.com/juc-779/preview.mp4 | Hitomi, a married woman whose husband was hospital… | 2012-03-24 11:00:20+08 | 2026-11-16 02:18:16.709783+08 | 2026-11-16 21:12:37.409468+08 | {Shame,"Mature Woman","Various Occupations",Prosti… |
+| jav-11ai8nk | [-0.012903948,0.042120714,-0.02795241,0.009049855,… | https://missav.ws/en/sprd-1478-english-subtitle | sprd | 1478 | sprd-1478 | Tabiji Mother and play Traveling Yuri Tadokoro | https://fourhoi.com/sprd-1478-english-subtitle/cov… | https://fourhoi.com/sprd-1478-english-subtitle/pre… | Yuri who lost her husband early and raised her son… | 2021-11-11 11:00:40+08 | 2026-11-12 13:24:47.556815+08 | 2026-11-16 21:12:37.409468+08 | {"English subtitle","Mature Woman",Mother,Wife,Inc… |
+| jav-11azgar | [0.018382048,0.007798423,-0.0010025469,0.036643162… | https://missav.ws/dm45/en/juq-805 | juq | 805 | juq-805 | A married woman who was given a spare key to her r… | https://fourhoi.com/juq-805/cover-n.jpg | https://fourhoi.com/juq-805/preview.mp4 | One day, Arita, who lives alone, meets a married w… | 2024-07-05 10:00:00+08 | 2026-11-16 04:56:50.158039+08 | 2026-11-16 21:12:37.409468+08 | {"Mature Woman",Wife,Adultery,Slim,Individual,Crea… |
+| jav-11b5c1p | [0.029449383,0.036444865,-0.007918624,0.033791665,… | https://missav.ws/dm53/en/juq-235-uncensored-leak | juq | 235 | juq-235 | Fully Prepared In 0 Seconds A Voluptuous Mistress… | https://fourhoi.com/juq-235-uncensored-leak/cover-… | https://fourhoi.com/juq-235-uncensored-leak/previe… | I met a married woman, Marina, who lives in the ne… | 2023-05-19 10:00:00+08 | 2026-11-16 05:03:36.271639+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak","Mature Woman",Wife,Adultery,"F… |
 
 ### Table: videos_title_backup (first 3 rows)
 | id | code | episode | title | backed_up_at |
