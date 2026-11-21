@@ -459,6 +459,84 @@ class ClusteredSearchResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Grouped search
+# --------------------------------------------------------------------------- #
+class GroupedSearchRequest(BaseModel):
+    """Non-paginated search grouped by (code, episode), mirroring
+    extract_videos_grouped_by_episode_code.sh / load_missav_videos."""
+
+    query: Optional[str] = Field(
+        None,
+        min_length=1,
+        description=(
+            "Optional free-text query. When provided, groups are ranked by the "
+            "best cosine similarity among their members (semantic search), and "
+            "`score` on each item reports that best similarity. When omitted, "
+            "groups are ordered by (code, episode) and `score` is null."
+        ),
+    )
+    code: GenreCodeInput = None
+    genre: GenreCodeInput = None
+    genres_mode: Literal["any", "all"] = "any"
+    min_release_date: Optional[datetime] = None
+    max_release_date: Optional[datetime] = None
+    completion_filter: CompletionFilter = "all"
+    min_similarity: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Requires `query`; rejects groups whose best member similarity is below the floor.",
+    )
+    limit: Optional[int] = Field(
+        None,
+        ge=1,
+        le=5000,
+        description=(
+            "Optional cap on returned groups. Omit for the full grouped result "
+            "set (this endpoint is intentionally non-paginated)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_query_dependencies(self) -> "GroupedSearchRequest":
+        if self.query is None and self.min_similarity is not None:
+            raise ValueError("min_similarity requires a query")
+        return self
+
+
+class GroupedVideoItem(BaseModel):
+    id: str
+    video_id: str
+    code: str
+    episode: str
+    video_count: int
+    title: Optional[str]
+    details: Optional[str]
+    thumbnail: Optional[str]
+    preview: Optional[str]
+    release_date: Optional[datetime]
+    genres: Optional[List[str]]
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+    url: Optional[str]
+    url_uncnsrd: Optional[str]
+    url_engsub: Optional[str]
+    score: Optional[float] = Field(
+        None,
+        description=(
+            "Best member cosine similarity (1 - distance) for the query; "
+            "null when no query is provided."
+        ),
+    )
+
+
+class GroupedSearchResponse(BaseModel):
+    took_ms: float
+    count: int
+    items: List[GroupedVideoItem]
+
+
+# --------------------------------------------------------------------------- #
 # Diversity search — request
 # --------------------------------------------------------------------------- #
 class DiscoverRequest(BaseModel):
@@ -996,6 +1074,231 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
         clusters=clusters,
         took_ms=took,
     )
+
+
+@app.get("/search_grouped", response_model=GroupedSearchResponse)
+def search_grouped(
+    query: Optional[str] = Query(
+        None,
+        min_length=1,
+        description=(
+            "Optional free-text query. When provided, groups are ranked by the "
+            "best cosine similarity among their members (semantic search), and "
+            "`score` on each item reports that best similarity. When omitted, "
+            "groups are ordered by (code, episode) and `score` is null."
+        ),
+    ),
+    code: Annotated[Optional[List[str]], Query()] = None,
+    genre: Annotated[Optional[List[str]], Query()] = None,
+    genres_mode: Literal["any", "all"] = "any",
+    min_release_date: Optional[datetime] = None,
+    max_release_date: Optional[datetime] = None,
+    completion_filter: CompletionFilter = Query("all"),
+    min_similarity: Optional[float] = Query(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Requires `query`; rejects groups whose best member similarity is "
+            "below the floor."
+        ),
+    ),
+    limit: Optional[int] = Query(
+        None,
+        ge=1,
+        le=5000,
+        description=(
+            "Optional cap on returned groups. Omit for the full grouped result "
+            "set (this endpoint is intentionally non-paginated)."
+        ),
+    ),
+):
+    """
+    Non-paginated search grouped by (code, episode).
+
+    Mirrors the grouping/representative-selection logic from
+    extract_videos_grouped_by_episode_code.sh and load_missav_videos:
+
+      * Representative id/video_id/release_date prefer the "normal"
+        (non-uncensored, non-engsub) video, then uncensored, then engsub.
+      * title/details use the shortest non-null string in the group.
+      * genres are merged + deduped, excluding the marker genres
+        'uncensored leak' and 'english subtitle'.
+      * URLs are split into `url` / `url_uncnsrd` / `url_engsub`.
+
+    When `query` is provided, semantic search is used: groups are ranked by
+    the *best* (smallest) member cosine distance to the query, `score` is
+    that best similarity (1 - distance), and `min_similarity` filters groups
+    whose best member similarity is below the floor. When omitted, rows are
+    ordered by (code, episode) to match the shell script.
+
+    Note: SQL literal `%` signs are escaped as `%%` so psycopg 3 does not
+    treat them as malformed placeholders (it only accepts `%s`, `%b`, `%t`,
+    and `%(name)s`).
+    """
+    if query is None and min_similarity is not None:
+        raise HTTPException(400, "min_similarity requires a query")
+
+    t0 = time.perf_counter()
+
+    class _Req:
+        pass
+
+    req = _Req()
+    req.genre = genre
+    req.genres_mode = genres_mode
+    req.code = code
+    req.min_release_date = min_release_date
+    req.max_release_date = max_release_date
+    req.completion_filter = completion_filter
+
+    params: dict = {}
+    conds: List[str] = [
+        "btrim(v.code)    <> ''",
+        "btrim(v.episode) <> ''",
+        "v.title          IS NOT NULL",
+        "v.details        IS NOT NULL",
+        "v.release_date   IS NOT NULL",
+        "v.genres         IS NOT NULL",
+        "cardinality(v.genres) > 0",
+    ]
+    _apply_filters(req, params, conds)
+
+    query_mode = query is not None
+    if query_mode:
+        params["emb"] = list(_embed_query(query))
+        distance_sql = "(v.embedding <=> %(emb)s::vector)"
+        conds.append("v.embedding IS NOT NULL")
+        if min_similarity is not None:
+            params["max_dist"] = 1.0 - float(min_similarity)
+
+    where_sql = " AND ".join(conds)
+
+    if query_mode:
+        score_select = f"MIN({distance_sql})::float8 AS best_distance,"
+        if min_similarity is not None:
+            group_having = f"HAVING MIN({distance_sql}) <= %(max_dist)s"
+        else:
+            group_having = ""
+        order_sql = "ORDER BY best_distance ASC, v.code, v.episode"
+    else:
+        score_select = "NULL::float8 AS best_distance,"
+        group_having = ""
+        order_sql = "ORDER BY v.code, v.episode"
+
+    limit_sql = ""
+    if limit is not None:
+        params["limit"] = limit
+        limit_sql = "LIMIT %(limit)s"
+
+    # NOTE: literal % signs in LIKE patterns are escaped as %% for psycopg 3.
+    sql = f"""
+        SELECT
+            v.code,
+            v.episode,
+            (array_agg(v.id ORDER BY
+                CASE
+                    WHEN v.url NOT LIKE '%%-uncensored-leak'
+                     AND v.url NOT LIKE '%%-english-subtitle' THEN 0
+                    WHEN v.url LIKE '%%-uncensored-leak'        THEN 1
+                    ELSE 2
+                END,
+                v.id
+            ))[1] AS id,
+            (array_agg(v.video_id ORDER BY
+                CASE
+                    WHEN v.url NOT LIKE '%%-uncensored-leak'
+                     AND v.url NOT LIKE '%%-english-subtitle' THEN 0
+                    WHEN v.url LIKE '%%-uncensored-leak'        THEN 1
+                    ELSE 2
+                END,
+                v.id
+            ))[1] AS video_id,
+            count(DISTINCT v.id)::int AS video_count,
+            (array_agg(v.title ORDER BY length(v.title) ASC NULLS LAST))[1]      AS title,
+            (array_agg(v.thumbnail ORDER BY v.id))[1]                            AS thumbnail,
+            (array_agg(v.preview   ORDER BY v.id))[1]                            AS preview,
+            (array_agg(v.details ORDER BY length(v.details) ASC NULLS LAST))[1]  AS details,
+            (array_agg(v.release_date ORDER BY
+                CASE
+                    WHEN v.url NOT LIKE '%%-uncensored-leak'
+                     AND v.url NOT LIKE '%%-english-subtitle' THEN 0
+                    WHEN v.url LIKE '%%-uncensored-leak'        THEN 1
+                    ELSE 2
+                END,
+                v.id
+            ))[1] AS release_date,
+            array_agg(DISTINCT g.genre)
+                FILTER (WHERE g.genre IS NOT NULL
+                          AND g.genre <> ''
+                          AND lower(btrim(g.genre)) NOT IN
+                              ('uncensored leak', 'english subtitle')) AS genres,
+            min(v.created_at) AS created_at,
+            max(v.updated_at) AS updated_at,
+            (array_agg(v.url ORDER BY v.id)
+                FILTER (WHERE v.url NOT LIKE '%%-uncensored-leak'
+                           AND v.url NOT LIKE '%%-english-subtitle'))[1] AS url,
+            (array_agg(v.url ORDER BY v.id)
+                FILTER (WHERE v.url LIKE '%%-uncensored-leak'))[1]       AS url_uncnsrd,
+            (array_agg(v.url ORDER BY v.id)
+                FILTER (WHERE v.url LIKE '%%-english-subtitle'))[1]      AS url_engsub,
+            {score_select}
+            count(DISTINCT v.id) AS _dummy
+        FROM public.videos v
+        LEFT JOIN LATERAL unnest(v.genres) AS g(genre) ON true
+        WHERE {where_sql}
+        GROUP BY v.code, v.episode
+        {group_having}
+        {order_sql}
+        {limit_sql}
+    """
+
+    try:
+        with pool.connection() as conn:
+            if query_mode and ITERATIVE_SCAN_MODE:
+                conn.execute(f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}")
+                conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {int(MAX_SCAN_TUPLES)}")
+            rows = conn.execute(sql, params).fetchall()
+    except Exception as e:
+        logger.error("search_grouped DB error: %s", e)
+        raise HTTPException(500, f"Grouped search failed: {e}")
+
+    items: List[GroupedVideoItem] = []
+    for r in rows:
+        best_dist = r.get("best_distance")
+        score = (1.0 - float(best_dist)) if best_dist is not None else None
+        items.append(
+            GroupedVideoItem(
+                id=r["id"],
+                video_id=r["video_id"],
+                code=r["code"],
+                episode=r["episode"],
+                video_count=int(r["video_count"]),
+                title=r["title"],
+                details=r["details"],
+                thumbnail=r["thumbnail"],
+                preview=r["preview"],
+                release_date=r["release_date"],
+                genres=r["genres"],
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+                url=r["url"],
+                url_uncnsrd=r["url_uncnsrd"],
+                url_engsub=r["url_engsub"],
+                score=score,
+            )
+        )
+
+    took = (time.perf_counter() - t0) * 1000
+    logger.info(
+        "search_grouped ok query=%s codes=%s limit=%s n=%d %.1fms",
+        bool(query_mode),
+        _normalize_list_input(code),
+        limit,
+        len(items),
+        took,
+    )
+    return GroupedSearchResponse(items=items, count=len(items), took_ms=took)
 
 
 @app.post("/discover", response_model=VideoListResponse)
