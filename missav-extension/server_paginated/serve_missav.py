@@ -506,12 +506,11 @@ class GroupedVideoItem(BaseModel):
 class GroupedSearchResponse(BaseModel):
     took_ms: float
     count: int
-    items: List[GroupedVideoItem]
     next_cursor: Optional[str] = None
-    prev_cursor: Optional[str] = None
     has_more: bool = False
     has_previous: bool = False
     diversity_applied: bool = False
+    items: List[GroupedVideoItem]
     """True when MMR reordered results; in that case the returned cursor is
     keyed on the max underlying (code, episode) of the fetched window, not on
     items[-1], so the next page never skips or duplicates groups."""
@@ -1057,9 +1056,6 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
     )
 
 
-import json  # Ensure this is imported at the top of your file if not already present
-
-
 def _grouped_fingerprint(req: GroupedSearchRequest) -> str:
     """Stable fingerprint of all filters that affect grouping/pagination.
 
@@ -1121,10 +1117,10 @@ def _decode_grouped_cursor(
 def _normalize_episode(episode: str) -> str:
     """Zero-pad numeric episodes so lexicographic == numeric ordering.
 
-    '9' -> '0009', '431' -> '0431'. Non-numeric episodes are returned as-is
-    (lowercased/trimmed) so they sort deterministically. This is applied
-    identically in the ORDER BY and cursor predicate, so pagination stays
-    consistent regardless of the underlying storage format.
+    '9' -> '00000009', '431' -> '00000431'. Non-numeric episodes are
+    lowercased/trimmed so they sort deterministically. Applied identically
+    in the ORDER BY and cursor predicate, so pagination stays consistent
+    regardless of the underlying storage format.
     """
     ep = (episode or "").strip()
     if ep.isdigit():
@@ -1146,9 +1142,12 @@ def search_grouped(
     cursor: Optional[str] = Query(
         None,
         description=(
-            "Opaque keyset cursor from a previous response's `next_cursor` "
-            "or `prev_cursor`. Bound to the request's filters; supplying a "
-            "cursor with different filters returns HTTP 400."
+            "Opaque keyset cursor. Clients should walk forward by passing "
+            "the previous response's `next_cursor`. To go back one page, "
+            "replay the stored parent cursor (the cursor used to fetch the "
+            "page you want to return to) — the server accepts both 'next' "
+            "and 'prev' direction tokens. Bound to the request's filters; "
+            "supplying a cursor with different filters returns HTTP 400."
         ),
     ),
     fetch_k: Optional[int] = Query(
@@ -1174,10 +1173,14 @@ def search_grouped(
     """
     Grouped search over `public.videos`, keyed on `(code, episode)`.
 
-    Pagination contract (mirrors `/search`):
-      * `next_cursor` / `has_more` — advance forward in the current sort order.
-      * `prev_cursor` / `has_previous` — go back one page; returned items are
-        in the same order as forward pages.
+    Pagination contract:
+      * Walk forward with `next_cursor` / `has_more`.
+      * Walk backward by replaying the stored parent cursor (the cursor used
+        to fetch the page you want to return to). The server accepts both
+        `direction=next` and `direction=prev` tokens, so a client that keeps
+        a stack of cursors needs no `prev_cursor` in the response.
+      * `has_previous` is returned so the client can enable/disable a back
+        button without inspecting tokens.
       * Cursors are signed with a filter fingerprint; mismatched filters
         yield HTTP 400 rather than silently wrong pages.
 
@@ -1208,6 +1211,9 @@ def search_grouped(
     fp = _grouped_fingerprint(req)
 
     # ---- Decode cursor -----------------------------------------------------
+    # `backward` is only true if a client explicitly replays a `prev` token
+    # (e.g. it stored one from an earlier version, or synthesizes one). Normal
+    # backward navigation is done by replaying the parent `next` cursor.
     backward = False
     cursor_code: Optional[str] = None
     cursor_episode: Optional[str] = None
@@ -1254,12 +1260,11 @@ def search_grouped(
 
     # ---- Determine fetch window -------------------------------------------
     diversity_on = diversity > 0.0
-    # Always fetch one extra group to detect has_more / has_previous.
+    # Always fetch one extra group to detect has_more.
     if diversity_on:
         base_fetch = fetch_k if fetch_k else max(limit * 3, limit + 1)
     else:
         base_fetch = limit + 1
-    # For backward pages we need the same window size to compute has_previous.
     params["limit"] = base_fetch
 
     if query_mode:
@@ -1350,17 +1355,21 @@ def search_grouped(
         logger.error("search_grouped DB error: %s", e)
         raise HTTPException(500, f"Grouped search failed: {e}")
 
-    # ---- Detect more pages on the requested side --------------------------
-    # We fetched `base_fetch` groups. For forward pages: has_more = > limit.
-    # For backward pages: has_previous = > limit (i.e. we walked too far).
+    # ---- Detect more pages -------------------------------------------------
+    # Forward request: over-fetch detects has_more.
+    # Backward request (explicit `prev` token): over-fetch detects has_previous
+    #   (i.e. we walked too far back), and has_more is always true because we
+    #   came from a later page.
     over_fetched = len(rows) > limit
     if backward:
         has_previous = over_fetched
         rows = rows[:limit]
-        has_more = True  # we came from a later page, so a next page exists
+        has_more = True
     else:
         has_more = over_fetched
         rows = rows[:limit]
+        # First page (no cursor) has no previous. Any follow-on forward page
+        # does, because the client got here via some cursor.
         has_previous = cursor is not None
 
     if backward:
@@ -1368,10 +1377,9 @@ def search_grouped(
         rows = list(reversed(rows))
 
     # ---- Cursor construction ----------------------------------------------
-    # For diversity mode, MMR may reorder `rows`. The cursor must reference
-    # the max underlying (code, episode) of the FETCHED window so the next
-    # page starts strictly after everything we considered, not after whatever
-    # MMR happened to place last.
+    # Anchor `next_cursor` on the max underlying (code, episode) of the FETCHED
+    # window (before MMR reordering), so the next page starts strictly after
+    # everything we considered — not after whatever MMR happened to place last.
     def _max_key(rs: List[dict]) -> Optional[Tuple[str, str]]:
         if not rs:
             return None
@@ -1380,25 +1388,11 @@ def search_grouped(
             key=lambda x: x,
         )
 
-    def _min_key(rs: List[dict]) -> Optional[Tuple[str, str]]:
-        if not rs:
-            return None
-        return min(
-            ((r["code"], _normalize_episode(r["episode"])) for r in rs),
-            key=lambda x: x,
-        )
-
     next_cursor: Optional[str] = None
-    prev_cursor: Optional[str] = None
-
     if has_more:
-        anchor = _max_key(rows) if not backward else _max_key(rows)
+        anchor = _max_key(rows)
         if anchor:
             next_cursor = _encode_grouped_cursor(anchor[0], anchor[1], fp, "next")
-    if has_previous:
-        anchor = _min_key(rows)
-        if anchor:
-            prev_cursor = _encode_grouped_cursor(anchor[0], anchor[1], fp, "prev")
 
     # ---- MMR diversification (within the current page only) --------------
     items: List[GroupedVideoItem] = []
@@ -1408,15 +1402,14 @@ def search_grouped(
         doc_vecs, valid_rows = [], []
         for r in rows:
             if r.get("group_embedding") is None:
-                # Fall back to including the row un-diversified, but keep it
-                # eligible so pagination counts stay aligned.
+                # Keep the row eligible for counting/pagination but skip it
+                # from MMR reordering; it lands at the tail in window order.
                 valid_rows.append(r)
                 doc_vecs.append(None)
                 continue
             doc_vecs.append(_to_float_list(r["group_embedding"]))
             valid_rows.append(r)
 
-        # Only MMR-rerank rows that have embeddings; pass through the rest.
         mmr_eligible = [i for i, v in enumerate(doc_vecs) if v is not None]
         if len(mmr_eligible) >= 2:
             matrix = np.array([doc_vecs[i] for i in mmr_eligible], dtype=np.float32)
@@ -1432,7 +1425,6 @@ def search_grouped(
                 lambda_param=1.0 - diversity,
             )
             reordered_idx = [mmr_eligible[res["index"]] for res in mmr_results]
-            # Non-eligible rows keep their relative position at the tail.
             tail = [i for i in range(len(rows)) if doc_vecs[i] is None]
             ordered_rows = [rows[i] for i in reordered_idx + tail]
             diversity_applied = True
@@ -1503,7 +1495,6 @@ def search_grouped(
         count=len(items),
         took_ms=took,
         next_cursor=next_cursor,
-        prev_cursor=prev_cursor,
         has_more=has_more,
         has_previous=has_previous,
         diversity_applied=diversity_applied,
