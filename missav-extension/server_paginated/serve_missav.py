@@ -462,6 +462,21 @@ class ClusteredSearchResponse(BaseModel):
 # --------------------------------------------------------------------------- #
 # Grouped search
 # --------------------------------------------------------------------------- #
+class GroupedSearchRequest(BaseModel):
+    """Internal request model for fingerprinting and filter application."""
+
+    query: Optional[str] = None
+    code: GenreCodeInput = None
+    genre: GenreCodeInput = None
+    genres_mode: Literal["any", "all"] = "any"
+    min_release_date: Optional[datetime] = None
+    max_release_date: Optional[datetime] = None
+    completion_filter: CompletionFilter = "all"
+    min_similarity: Optional[float] = None
+    diversity: float = 0.0
+    fetch_k: Optional[int] = None
+
+
 class GroupedVideoItem(BaseModel):
     id: str
     video_id: str
@@ -492,6 +507,14 @@ class GroupedSearchResponse(BaseModel):
     took_ms: float
     count: int
     items: List[GroupedVideoItem]
+    next_cursor: Optional[str] = None
+    prev_cursor: Optional[str] = None
+    has_more: bool = False
+    has_previous: bool = False
+    diversity_applied: bool = False
+    """True when MMR reordered results; in that case the returned cursor is
+    keyed on the max underlying (code, episode) of the fetched window, not on
+    items[-1], so the next page never skips or duplicates groups."""
 
 
 # --------------------------------------------------------------------------- #
@@ -1034,52 +1057,107 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
     )
 
 
+import json  # Ensure this is imported at the top of your file if not already present
+
+
+def _grouped_fingerprint(req: GroupedSearchRequest) -> str:
+    """Stable fingerprint of all filters that affect grouping/pagination.
+
+    Any change to these invalidates outstanding cursors, matching /search's
+    contract. `limit` and `fetch_k` are deliberately excluded because they
+    control page size, not the result stream.
+    """
+    genre_list = _normalize_list_input(req.genre)
+    code_list = _normalize_list_input(req.code)
+    parts = [
+        req.query or "",
+        sorted(genre_list) if genre_list else None,
+        req.genres_mode,
+        sorted(code_list) if code_list else None,
+        req.min_release_date,
+        req.max_release_date,
+        req.completion_filter,
+        req.min_similarity,
+        round(float(req.diversity), 6),
+    ]
+    return hashlib.sha256("|".join(str(x) for x in parts).encode()).hexdigest()[:12]
+
+
+def _encode_grouped_cursor(
+    last_code: str,
+    last_episode: str,
+    fp: str,
+    direction: Literal["next", "prev"],
+) -> str:
+    payload = {
+        "c": last_code,
+        "e": last_episode,
+        "f": fp,
+        "d": direction,
+    }
+    raw = json.dumps(payload, separators=(",", ":"))
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _decode_grouped_cursor(
+    cursor: str, fp: str
+) -> Tuple[str, str, Literal["next", "prev"]]:
+    try:
+        data = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        last_code = str(data["c"])
+        last_episode = str(data["e"])
+        direction = data.get("d", "next")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid cursor")
+    if data.get("f") != fp:
+        raise HTTPException(
+            status_code=400, detail="Cursor does not match current filters"
+        )
+    if direction not in ("next", "prev"):
+        raise HTTPException(status_code=400, detail="Invalid cursor direction")
+    return last_code, last_episode, direction
+
+
+def _normalize_episode(episode: str) -> str:
+    """Zero-pad numeric episodes so lexicographic == numeric ordering.
+
+    '9' -> '0009', '431' -> '0431'. Non-numeric episodes are returned as-is
+    (lowercased/trimmed) so they sort deterministically. This is applied
+    identically in the ORDER BY and cursor predicate, so pagination stays
+    consistent regardless of the underlying storage format.
+    """
+    ep = (episode or "").strip()
+    if ep.isdigit():
+        return ep.zfill(8)
+    return ep.lower()
+
+
 @app.get("/search_grouped", response_model=GroupedSearchResponse)
 def search_grouped(
-    query: Optional[str] = Query(
-        None,
-        min_length=1,
-        description=(
-            "Optional free-text query. When provided, groups are ranked by the "
-            "best cosine similarity among their members (semantic search), and "
-            "`score` on each item reports that best similarity. When omitted, "
-            "groups are ordered by (code, episode) and `score` is null."
-        ),
-    ),
+    query: Optional[str] = Query(None, min_length=1),
     code: Annotated[Optional[List[str]], Query()] = None,
     genre: Annotated[Optional[List[str]], Query()] = None,
     genres_mode: Literal["any", "all"] = "any",
     min_release_date: Optional[datetime] = None,
     max_release_date: Optional[datetime] = None,
     completion_filter: CompletionFilter = Query("all"),
-    min_similarity: Optional[float] = Query(
+    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0),
+    limit: int = Query(50, ge=1, le=500),
+    cursor: Optional[str] = Query(
         None,
-        ge=0.0,
-        le=1.0,
         description=(
-            "Requires `query`; rejects groups whose best member similarity is "
-            "below the floor."
+            "Opaque keyset cursor from a previous response's `next_cursor` "
+            "or `prev_cursor`. Bound to the request's filters; supplying a "
+            "cursor with different filters returns HTTP 400."
         ),
-    ),
-    limit: Optional[int] = Query(
-        None,
-        ge=1,
-        le=5000,
-        description="Number of diverse groups to return.",
-    ),
-    offset: int = Query(
-        0,
-        ge=0,
-        description="Number of groups to skip before selecting candidates.",
     ),
     fetch_k: Optional[int] = Query(
         None,
         ge=1,
         le=10000,
         description=(
-            "Number of candidate groups to fetch from DB before diversification. "
-            "If omitted, defaults to limit * 3. Higher values improve diversity "
-            "but increase latency."
+            "Candidate window fetched before MMR truncation. Defaults to "
+            "max(limit*3, limit+1). Only used when `diversity > 0`."
         ),
     ),
     diversity: float = Query(
@@ -1087,44 +1165,65 @@ def search_grouped(
         ge=0.0,
         le=1.0,
         description=(
-            "MMR diversity weight. "
-            "0.0: Standard ranking (relevance/recency). "
-            "0.3–0.5: Balanced mix of relevance and variety. "
-            "0.7+: High variety, useful for exploring broad topics. "
-            "1.0: Maximum variety, relevance ignored."
+            "MMR trade-off (0 = pure relevance, 1 = pure diversity). When > 0, "
+            "the cursor keys off the max underlying (code, episode) of the "
+            "fetched window so next/prev pages remain gap-free."
         ),
     ),
 ):
     """
-    Non-paginated search grouped by (code, episode).
-    Supports optional MMR-based diversification via 'diversity' parameter.
-    Uses pre-computed embeddings from Postgres for maximum efficiency.
+    Grouped search over `public.videos`, keyed on `(code, episode)`.
+
+    Pagination contract (mirrors `/search`):
+      * `next_cursor` / `has_more` — advance forward in the current sort order.
+      * `prev_cursor` / `has_previous` — go back one page; returned items are
+        in the same order as forward pages.
+      * Cursors are signed with a filter fingerprint; mismatched filters
+        yield HTTP 400 rather than silently wrong pages.
+
+    Sort order:
+      * With `query`: by best-member cosine distance ASC, then (code, episode).
+      * Without `query`: by (code, episode) ASC (episodes zero-padded).
+      * With `diversity > 0`: MMR reorders *within the fetched window only*;
+        the cursor still advances by the window's max (code, episode), so no
+        group is ever skipped or duplicated across pages.
     """
     if query is None and min_similarity is not None:
         raise HTTPException(400, "min_similarity requires a query")
 
     t0 = time.perf_counter()
 
-    # --- Setup Filters ---
-    class _Req:
-        pass
+    req = GroupedSearchRequest(
+        query=query,
+        code=code,
+        genre=genre,
+        genres_mode=genres_mode,
+        min_release_date=min_release_date,
+        max_release_date=max_release_date,
+        completion_filter=completion_filter,
+        min_similarity=min_similarity,
+        diversity=diversity,
+        fetch_k=fetch_k,
+    )
+    fp = _grouped_fingerprint(req)
 
-    req = _Req()
-    req.genre = genre
-    req.genres_mode = genres_mode
-    req.code = code
-    req.min_release_date = min_release_date
-    req.max_release_date = max_release_date
-    req.completion_filter = completion_filter
+    # ---- Decode cursor -----------------------------------------------------
+    backward = False
+    cursor_code: Optional[str] = None
+    cursor_episode: Optional[str] = None
+    if cursor:
+        cursor_code, cursor_episode, direction = _decode_grouped_cursor(cursor, fp)
+        backward = direction == "prev"
 
+    # ---- Build WHERE -------------------------------------------------------
     params: dict = {}
     conds: List[str] = [
-        "btrim(v.code)    <> ''",
+        "btrim(v.code) <> ''",
         "btrim(v.episode) <> ''",
-        "v.title          IS NOT NULL",
-        "v.details        IS NOT NULL",
-        "v.release_date   IS NOT NULL",
-        "v.genres         IS NOT NULL",
+        "v.title IS NOT NULL",
+        "v.details IS NOT NULL",
+        "v.release_date IS NOT NULL",
+        "v.genres IS NOT NULL",
         "cardinality(v.genres) > 0",
     ]
     _apply_filters(req, params, conds)
@@ -1137,44 +1236,53 @@ def search_grouped(
         if min_similarity is not None:
             params["max_dist"] = 1.0 - float(min_similarity)
 
-    where_sql = " AND ".join(conds)
-
-    # --- Determine Fetch Size ---
-    effective_limit = limit if limit else 50
-    if fetch_k is None:
-        # Default to 3x limit if diversity is active, otherwise just limit
-        fetch_k = effective_limit * 3 if diversity > 0.0 else effective_limit
-
-    # Ensure fetch_k is at least the limit
-    fetch_k = max(fetch_k, effective_limit)
-
-    # Apply offset to the fetch query
-    params["limit"] = fetch_k
-    params["offset"] = offset
-
-    logger.info(
-        f"Search Grouped: limit={effective_limit}, fetch_k={fetch_k}, offset={offset}, diversity={diversity}"
+    # Normalized episode expression used in BOTH ORDER BY and cursor predicate
+    # so pagination is correct even for unpadded numeric episodes.
+    ep_norm_sql = (
+        "CASE WHEN btrim(v.episode) ~ '^[0-9]+$' "
+        "THEN lpad(btrim(v.episode), 8, '0') "
+        "ELSE lower(btrim(v.episode)) END"
     )
 
-    # --- Build SQL ---
+    if cursor_code is not None and cursor_episode is not None:
+        params["cur_code"] = cursor_code
+        params["cur_ep"] = _normalize_episode(cursor_episode)
+        op = "<" if backward else ">"
+        conds.append(f"(v.code, ({ep_norm_sql})) {op} (%(cur_code)s, %(cur_ep)s)")
+
+    where_sql = " AND ".join(conds)
+
+    # ---- Determine fetch window -------------------------------------------
+    diversity_on = diversity > 0.0
+    # Always fetch one extra group to detect has_more / has_previous.
+    if diversity_on:
+        base_fetch = fetch_k if fetch_k else max(limit * 3, limit + 1)
+    else:
+        base_fetch = limit + 1
+    # For backward pages we need the same window size to compute has_previous.
+    params["limit"] = base_fetch
+
     if query_mode:
         score_select = f"MIN({distance_sql})::float8 AS best_distance,"
-        if min_similarity is not None:
-            group_having = f"HAVING MIN({distance_sql}) <= %(max_dist)s"
-        else:
-            group_having = ""
-        order_sql = "ORDER BY best_distance ASC, v.code, v.episode"
+        group_having = (
+            f"HAVING MIN({distance_sql}) <= %(max_dist)s"
+            if min_similarity is not None
+            else ""
+        )
+        forward_order = f"ORDER BY best_distance ASC, v.code ASC, ({ep_norm_sql}) ASC"
+        backward_order = (
+            f"ORDER BY best_distance DESC, v.code DESC, ({ep_norm_sql}) DESC"
+        )
     else:
         score_select = "NULL::float8 AS best_distance,"
         group_having = ""
-        order_sql = "ORDER BY v.code, v.episode"
+        forward_order = f"ORDER BY v.code ASC, ({ep_norm_sql}) ASC"
+        backward_order = f"ORDER BY v.code DESC, ({ep_norm_sql}) DESC"
 
-    # Aggregate embedding for diversity comparison
-    embed_select = ""
-    if diversity > 0.0:
-        embed_select = ", AVG(v.embedding) AS group_embedding"
+    order_sql = backward_order if backward else forward_order
 
-    # NOTE: literal % signs in LIKE patterns are escaped as %% for psycopg 3.
+    embed_select = "AVG(v.embedding) AS group_embedding," if diversity_on else ""
+
     sql = f"""
         SELECT
             v.code,
@@ -1183,60 +1291,55 @@ def search_grouped(
                 CASE
                     WHEN v.url NOT LIKE '%%-uncensored-leak'
                      AND v.url NOT LIKE '%%-english-subtitle' THEN 0
-                    WHEN v.url LIKE '%%-uncensored-leak'        THEN 1
+                    WHEN v.url LIKE '%%-uncensored-leak' THEN 1
                     ELSE 2
-                END,
-                v.id
-            ))[1] AS id,
+                END, v.id))[1] AS id,
             (array_agg(v.video_id ORDER BY
                 CASE
                     WHEN v.url NOT LIKE '%%-uncensored-leak'
                      AND v.url NOT LIKE '%%-english-subtitle' THEN 0
-                    WHEN v.url LIKE '%%-uncensored-leak'        THEN 1
+                    WHEN v.url LIKE '%%-uncensored-leak' THEN 1
                     ELSE 2
-                END,
-                v.id
-            ))[1] AS video_id,
+                END, v.id))[1] AS video_id,
             count(DISTINCT v.id)::int AS video_count,
-            (array_agg(v.title ORDER BY length(v.title) ASC NULLS LAST))[1]      AS title,
-            (array_agg(v.thumbnail ORDER BY v.id))[1]                            AS thumbnail,
-            (array_agg(v.preview   ORDER BY v.id))[1]                            AS preview,
-            (array_agg(v.details ORDER BY length(v.details) ASC NULLS LAST))[1]  AS details,
+            (array_agg(v.title ORDER BY length(v.title) ASC NULLS LAST))[1] AS title,
+            (array_agg(v.details ORDER BY length(v.details) ASC NULLS LAST))[1] AS details,
+            (array_agg(v.thumbnail ORDER BY v.id))[1] AS thumbnail,
+            (array_agg(v.preview ORDER BY v.id))[1] AS preview,
             (array_agg(v.release_date ORDER BY
                 CASE
                     WHEN v.url NOT LIKE '%%-uncensored-leak'
                      AND v.url NOT LIKE '%%-english-subtitle' THEN 0
-                    WHEN v.url LIKE '%%-uncensored-leak'        THEN 1
+                    WHEN v.url LIKE '%%-uncensored-leak' THEN 1
                     ELSE 2
-                END,
-                v.id
-            ))[1] AS release_date,
-            array_agg(DISTINCT g.genre)
-                FILTER (WHERE g.genre IS NOT NULL
-                          AND g.genre <> ''
-                          AND lower(btrim(g.genre)) NOT IN
-                              ('uncensored leak', 'english subtitle')) AS genres,
-            min(v.created_at) AS created_at,
-            max(v.updated_at) AS updated_at,
-            (array_agg(v.url ORDER BY v.id)
-                FILTER (WHERE v.url NOT LIKE '%%-uncensored-leak'
-                           AND v.url NOT LIKE '%%-english-subtitle'))[1] AS url,
-            (array_agg(v.url ORDER BY v.id)
-                FILTER (WHERE v.url LIKE '%%-uncensored-leak'))[1]       AS url_uncnsrd,
-            (array_agg(v.url ORDER BY v.id)
-                FILTER (WHERE v.url LIKE '%%-english-subtitle'))[1]      AS url_engsub,
+                END, v.id))[1] AS release_date,
+            array_agg(DISTINCT g.genre) FILTER (
+                WHERE g.genre IS NOT NULL
+                  AND g.genre <> ''
+                  AND lower(btrim(g.genre)) NOT IN
+                      ('uncensored leak', 'english subtitle')
+            ) AS genres,
+            (array_agg(v.url ORDER BY v.id) FILTER (
+                WHERE v.url NOT LIKE '%%-uncensored-leak'
+                  AND v.url NOT LIKE '%%-english-subtitle'))[1] AS url,
+            (array_agg(v.url ORDER BY v.id) FILTER (
+                WHERE v.url LIKE '%%-uncensored-leak'))[1] AS url_uncnsrd,
+            (array_agg(v.url ORDER BY v.id) FILTER (
+                WHERE v.url LIKE '%%-english-subtitle'))[1] AS url_engsub,
             {score_select}
-            count(DISTINCT v.id) AS _dummy
             {embed_select}
+            min(v.created_at) AS created_at,
+            max(v.updated_at) AS updated_at
         FROM public.videos v
         LEFT JOIN LATERAL unnest(v.genres) AS g(genre) ON true
         WHERE {where_sql}
         GROUP BY v.code, v.episode
         {group_having}
         {order_sql}
-        LIMIT %(limit)s OFFSET %(offset)s
+        LIMIT %(limit)s
     """
 
+    # ---- Execute -----------------------------------------------------------
     try:
         with pool.connection() as conn:
             if query_mode and ITERATIVE_SCAN_MODE:
@@ -1247,85 +1350,97 @@ def search_grouped(
         logger.error("search_grouped DB error: %s", e)
         raise HTTPException(500, f"Grouped search failed: {e}")
 
+    # ---- Detect more pages on the requested side --------------------------
+    # We fetched `base_fetch` groups. For forward pages: has_more = > limit.
+    # For backward pages: has_previous = > limit (i.e. we walked too far).
+    over_fetched = len(rows) > limit
+    if backward:
+        has_previous = over_fetched
+        rows = rows[:limit]
+        has_more = True  # we came from a later page, so a next page exists
+    else:
+        has_more = over_fetched
+        rows = rows[:limit]
+        has_previous = cursor is not None
+
+    if backward:
+        # Restore forward order for the response.
+        rows = list(reversed(rows))
+
+    # ---- Cursor construction ----------------------------------------------
+    # For diversity mode, MMR may reorder `rows`. The cursor must reference
+    # the max underlying (code, episode) of the FETCHED window so the next
+    # page starts strictly after everything we considered, not after whatever
+    # MMR happened to place last.
+    def _max_key(rs: List[dict]) -> Optional[Tuple[str, str]]:
+        if not rs:
+            return None
+        return max(
+            ((r["code"], _normalize_episode(r["episode"])) for r in rs),
+            key=lambda x: x,
+        )
+
+    def _min_key(rs: List[dict]) -> Optional[Tuple[str, str]]:
+        if not rs:
+            return None
+        return min(
+            ((r["code"], _normalize_episode(r["episode"])) for r in rs),
+            key=lambda x: x,
+        )
+
+    next_cursor: Optional[str] = None
+    prev_cursor: Optional[str] = None
+
+    if has_more:
+        anchor = _max_key(rows) if not backward else _max_key(rows)
+        if anchor:
+            next_cursor = _encode_grouped_cursor(anchor[0], anchor[1], fp, "next")
+    if has_previous:
+        anchor = _min_key(rows)
+        if anchor:
+            prev_cursor = _encode_grouped_cursor(anchor[0], anchor[1], fp, "prev")
+
+    # ---- MMR diversification (within the current page only) --------------
     items: List[GroupedVideoItem] = []
+    diversity_applied = False
 
-    # --- Process Results with Diversity if requested ---
-    if diversity > 0.0 and rows:
-        # Prepare data for MMR
-        doc_vecs = []
-        relevance_scores = []
-        valid_rows = []
-
+    if diversity_on and rows:
+        doc_vecs, valid_rows = [], []
         for r in rows:
-            # Skip rows without valid embeddings
             if r.get("group_embedding") is None:
+                # Fall back to including the row un-diversified, but keep it
+                # eligible so pagination counts stay aligned.
+                valid_rows.append(r)
+                doc_vecs.append(None)
                 continue
-
-            emb = _to_float_list(r["group_embedding"])
-            doc_vecs.append(emb)
-
-            # Calculate relevance score (1 - distance)
-            best_dist = r.get("best_distance")
-            # If no query, treat all as equally relevant (1.0) or use recency
-            score = (1.0 - float(best_dist)) if best_dist is not None else 1.0
-            relevance_scores.append(score)
+            doc_vecs.append(_to_float_list(r["group_embedding"]))
             valid_rows.append(r)
 
-        if doc_vecs:
-            doc_matrix = np.array(doc_vecs, dtype=np.float32)
-
-            # For MMR, we need a query vector.
-            # If query_mode is True, use the query embedding.
-            # If False, use the centroid of the candidates to maximize internal diversity.
-            if query_mode:
-                query_vec = np.array(params["emb"], dtype=np.float32)
-            else:
-                query_vec = np.mean(doc_matrix, axis=0)
-
-            # Run MMR
-            # lambda_param: 1.0 = pure relevance, 0.0 = pure diversity
-            # We map 'diversity' (0-1) to lambda: high diversity -> low lambda
-            lambda_param = 1.0 - diversity
-
+        # Only MMR-rerank rows that have embeddings; pass through the rest.
+        mmr_eligible = [i for i, v in enumerate(doc_vecs) if v is not None]
+        if len(mmr_eligible) >= 2:
+            matrix = np.array([doc_vecs[i] for i in mmr_eligible], dtype=np.float32)
+            query_vec = (
+                np.array(params["emb"], dtype=np.float32)
+                if query_mode
+                else matrix.mean(axis=0)
+            )
             mmr_results = mmr_rerank(
                 query_vec=query_vec,
-                doc_vecs=doc_matrix,
-                top_k=effective_limit,
-                lambda_param=lambda_param,
+                doc_vecs=matrix,
+                top_k=len(mmr_eligible),
+                lambda_param=1.0 - diversity,
             )
+            reordered_idx = [mmr_eligible[res["index"]] for res in mmr_results]
+            # Non-eligible rows keep their relative position at the tail.
+            tail = [i for i in range(len(rows)) if doc_vecs[i] is None]
+            ordered_rows = [rows[i] for i in reordered_idx + tail]
+            diversity_applied = True
+        else:
+            ordered_rows = rows
 
-            # Map MMR results back to items
-            for res in mmr_results:
-                original_row = valid_rows[res["index"]]
-                best_dist = original_row.get("best_distance")
-                score = (1.0 - float(best_dist)) if best_dist is not None else None
-
-                items.append(
-                    GroupedVideoItem(
-                        id=original_row["id"],
-                        video_id=original_row["video_id"],
-                        code=original_row["code"],
-                        episode=original_row["episode"],
-                        video_count=int(original_row["video_count"]),
-                        title=original_row["title"],
-                        details=original_row["details"],
-                        thumbnail=original_row["thumbnail"],
-                        preview=original_row["preview"],
-                        release_date=original_row["release_date"],
-                        genres=original_row["genres"],
-                        created_at=original_row["created_at"],
-                        updated_at=original_row["updated_at"],
-                        url=original_row["url"],
-                        url_uncnsrd=original_row["url_uncnsrd"],
-                        url_engsub=original_row["url_engsub"],
-                        score=score,
-                    )
-                )
-    else:
-        # Standard Behavior (No Diversity)
-        for r in rows[:effective_limit]:
+        for r in ordered_rows:
             best_dist = r.get("best_distance")
-            score = (1.0 - float(best_dist)) if best_dist is not None else None
             items.append(
                 GroupedVideoItem(
                     id=r["id"],
@@ -1344,22 +1459,55 @@ def search_grouped(
                     url=r["url"],
                     url_uncnsrd=r["url_uncnsrd"],
                     url_engsub=r["url_engsub"],
-                    score=score,
+                    score=(1.0 - float(best_dist)) if best_dist is not None else None,
+                )
+            )
+    else:
+        for r in rows:
+            best_dist = r.get("best_distance")
+            items.append(
+                GroupedVideoItem(
+                    id=r["id"],
+                    video_id=r["video_id"],
+                    code=r["code"],
+                    episode=r["episode"],
+                    video_count=int(r["video_count"]),
+                    title=r["title"],
+                    details=r["details"],
+                    thumbnail=r["thumbnail"],
+                    preview=r["preview"],
+                    release_date=r["release_date"],
+                    genres=r["genres"],
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
+                    url=r["url"],
+                    url_uncnsrd=r["url_uncnsrd"],
+                    url_engsub=r["url_engsub"],
+                    score=(1.0 - float(best_dist)) if best_dist is not None else None,
                 )
             )
 
     took = (time.perf_counter() - t0) * 1000
     logger.info(
-        "search_grouped ok query=%s codes=%s limit=%s fetch_k=%s diversity=%.1f n=%d %.1fms",
-        bool(query_mode),
-        _normalize_list_input(code),
-        effective_limit,
-        fetch_k,
-        diversity,
+        "search_grouped ok n=%d more=%s prev=%s div=%s back=%s %.1fms",
         len(items),
+        has_more,
+        has_previous,
+        diversity_applied,
+        backward,
         took,
     )
-    return GroupedSearchResponse(items=items, count=len(items), took_ms=took)
+
+    return GroupedSearchResponse(
+        items=items,
+        count=len(items),
+        took_ms=took,
+        next_cursor=next_cursor,
+        prev_cursor=prev_cursor,
+        has_more=has_more,
+        has_previous=has_previous,
+        diversity_applied=diversity_applied,
+    )
 
 
 @app.post("/discover", response_model=VideoListResponse)
