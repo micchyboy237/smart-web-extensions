@@ -461,49 +461,6 @@ class ClusteredSearchResponse(BaseModel):
 # --------------------------------------------------------------------------- #
 # Grouped search
 # --------------------------------------------------------------------------- #
-class GroupedSearchRequest(BaseModel):
-    """Non-paginated search grouped by (code, episode), mirroring
-    extract_videos_grouped_by_episode_code.sh / load_missav_videos."""
-
-    query: Optional[str] = Field(
-        None,
-        min_length=1,
-        description=(
-            "Optional free-text query. When provided, groups are ranked by the "
-            "best cosine similarity among their members (semantic search), and "
-            "`score` on each item reports that best similarity. When omitted, "
-            "groups are ordered by (code, episode) and `score` is null."
-        ),
-    )
-    code: GenreCodeInput = None
-    genre: GenreCodeInput = None
-    genres_mode: Literal["any", "all"] = "any"
-    min_release_date: Optional[datetime] = None
-    max_release_date: Optional[datetime] = None
-    completion_filter: CompletionFilter = "all"
-    min_similarity: Optional[float] = Field(
-        None,
-        ge=0.0,
-        le=1.0,
-        description="Requires `query`; rejects groups whose best member similarity is below the floor.",
-    )
-    limit: Optional[int] = Field(
-        None,
-        ge=1,
-        le=5000,
-        description=(
-            "Optional cap on returned groups. Omit for the full grouped result "
-            "set (this endpoint is intentionally non-paginated)."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _check_query_dependencies(self) -> "GroupedSearchRequest":
-        if self.query is None and self.min_similarity is not None:
-            raise ValueError("min_similarity requires a query")
-        return self
-
-
 class GroupedVideoItem(BaseModel):
     id: str
     video_id: str
@@ -1112,29 +1069,22 @@ def search_grouped(
             "set (this endpoint is intentionally non-paginated)."
         ),
     ),
+    diversity: float = Query(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "MMR diversity weight. "
+            "0.0: Standard ranking (relevance/recency). "
+            "0.3–0.5: Balanced mix of relevance and variety. "
+            "0.7+: High variety, useful for exploring broad topics. "
+            "1.0: Maximum variety, relevance ignored."
+        ),
+    ),
 ):
     """
     Non-paginated search grouped by (code, episode).
-
-    Mirrors the grouping/representative-selection logic from
-    extract_videos_grouped_by_episode_code.sh and load_missav_videos:
-
-      * Representative id/video_id/release_date prefer the "normal"
-        (non-uncensored, non-engsub) video, then uncensored, then engsub.
-      * title/details use the shortest non-null string in the group.
-      * genres are merged + deduped, excluding the marker genres
-        'uncensored leak' and 'english subtitle'.
-      * URLs are split into `url` / `url_uncnsrd` / `url_engsub`.
-
-    When `query` is provided, semantic search is used: groups are ranked by
-    the *best* (smallest) member cosine distance to the query, `score` is
-    that best similarity (1 - distance), and `min_similarity` filters groups
-    whose best member similarity is below the floor. When omitted, rows are
-    ordered by (code, episode) to match the shell script.
-
-    Note: SQL literal `%` signs are escaped as `%%` so psycopg 3 does not
-    treat them as malformed placeholders (it only accepts `%s`, `%b`, `%t`,
-    and `%(name)s`).
+    Supports optional MMR-based diversification via 'diversity' parameter.
     """
     if query is None and min_similarity is not None:
         raise HTTPException(400, "min_similarity requires a query")
@@ -1174,6 +1124,20 @@ def search_grouped(
 
     where_sql = " AND ".join(conds)
 
+    # Determine fetch size based on diversity
+    effective_limit = limit if limit else 5000
+    if diversity > 0.0:
+        from jet.adapters.llama_cpp.diversity_utils.semhash import compute_fetch_k
+
+        fetch_k = compute_fetch_k(effective_limit, diversity)
+        logger.info(
+            f"Diversity enabled: fetching {fetch_k} candidates for top-{effective_limit}"
+        )
+    else:
+        fetch_k = effective_limit
+
+    params["limit"] = fetch_k
+
     if query_mode:
         score_select = f"MIN({distance_sql})::float8 AS best_distance,"
         if min_similarity is not None:
@@ -1186,10 +1150,10 @@ def search_grouped(
         group_having = ""
         order_sql = "ORDER BY v.code, v.episode"
 
-    limit_sql = ""
-    if limit is not None:
-        params["limit"] = limit
-        limit_sql = "LIMIT %(limit)s"
+    # Aggregate embedding for diversity comparison
+    embed_select = ""
+    if diversity > 0.0:
+        embed_select = ", AVG(v.embedding) AS group_embedding"
 
     # NOTE: literal % signs in LIKE patterns are escaped as %% for psycopg 3.
     sql = f"""
@@ -1244,13 +1208,14 @@ def search_grouped(
                 FILTER (WHERE v.url LIKE '%%-english-subtitle'))[1]      AS url_engsub,
             {score_select}
             count(DISTINCT v.id) AS _dummy
+            {embed_select}
         FROM public.videos v
         LEFT JOIN LATERAL unnest(v.genres) AS g(genre) ON true
         WHERE {where_sql}
         GROUP BY v.code, v.episode
         {group_having}
         {order_sql}
-        {limit_sql}
+        LIMIT %(limit)s
     """
 
     try:
@@ -1264,37 +1229,104 @@ def search_grouped(
         raise HTTPException(500, f"Grouped search failed: {e}")
 
     items: List[GroupedVideoItem] = []
-    for r in rows:
-        best_dist = r.get("best_distance")
-        score = (1.0 - float(best_dist)) if best_dist is not None else None
-        items.append(
-            GroupedVideoItem(
-                id=r["id"],
-                video_id=r["video_id"],
-                code=r["code"],
-                episode=r["episode"],
-                video_count=int(r["video_count"]),
-                title=r["title"],
-                details=r["details"],
-                thumbnail=r["thumbnail"],
-                preview=r["preview"],
-                release_date=r["release_date"],
-                genres=r["genres"],
-                created_at=r["created_at"],
-                updated_at=r["updated_at"],
-                url=r["url"],
-                url_uncnsrd=r["url_uncnsrd"],
-                url_engsub=r["url_engsub"],
-                score=score,
+
+    # Process Results with Diversity if requested
+    if diversity > 0.0 and rows:
+        from jet.adapters.llama_cpp.diversity_utils.semhash import diversify_results
+
+        search_results = []
+        embeddings_list = []
+
+        for r in rows:
+            best_dist = r.get("best_distance")
+            score = (1.0 - float(best_dist)) if best_dist is not None else 1.0
+
+            # Use title/details for document context
+            doc_text = (
+                f"{r['title']} {r['details']}" if r.get("details") else str(r["title"])
             )
-        )
+
+            search_results.append({"id": r["id"], "score": score, "document": doc_text})
+
+            # Use the aggregated group embedding
+            if r.get("group_embedding") is not None:
+                embeddings_list.append(_to_float_list(r["group_embedding"]))
+            else:
+                # Fallback: if avg embedding is null (shouldn't happen if filtered), use zeros
+                embeddings_list.append(np.zeros(768, dtype=np.float32))
+
+        if embeddings_list:
+            embeddings_matrix = np.array(embeddings_list, dtype=np.float32)
+
+            diversified_results = diversify_results(
+                results=search_results,
+                top_k=effective_limit,
+                diversity=diversity,
+                embeddings=embeddings_matrix,
+            )
+
+            row_map = {r["id"]: r for r in rows}
+
+            for res in diversified_results:
+                original_row = row_map.get(res["id"])
+                if original_row:
+                    best_dist = original_row.get("best_distance")
+                    score = (1.0 - float(best_dist)) if best_dist is not None else None
+                    items.append(
+                        GroupedVideoItem(
+                            id=original_row["id"],
+                            video_id=original_row["video_id"],
+                            code=original_row["code"],
+                            episode=original_row["episode"],
+                            video_count=int(original_row["video_count"]),
+                            title=original_row["title"],
+                            details=original_row["details"],
+                            thumbnail=original_row["thumbnail"],
+                            preview=original_row["preview"],
+                            release_date=original_row["release_date"],
+                            genres=original_row["genres"],
+                            created_at=original_row["created_at"],
+                            updated_at=original_row["updated_at"],
+                            url=original_row["url"],
+                            url_uncnsrd=original_row["url_uncnsrd"],
+                            url_engsub=original_row["url_engsub"],
+                            score=score,
+                        )
+                    )
+    else:
+        # Standard Behavior (No Diversity)
+        for r in rows[:effective_limit]:
+            best_dist = r.get("best_distance")
+            score = (1.0 - float(best_dist)) if best_dist is not None else None
+            items.append(
+                GroupedVideoItem(
+                    id=r["id"],
+                    video_id=r["video_id"],
+                    code=r["code"],
+                    episode=r["episode"],
+                    video_count=int(r["video_count"]),
+                    title=r["title"],
+                    details=r["details"],
+                    thumbnail=r["thumbnail"],
+                    preview=r["preview"],
+                    release_date=r["release_date"],
+                    genres=r["genres"],
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
+                    url=r["url"],
+                    url_uncnsrd=r["url_uncnsrd"],
+                    url_engsub=r["url_engsub"],
+                    score=score,
+                )
+            )
 
     took = (time.perf_counter() - t0) * 1000
     logger.info(
-        "search_grouped ok query=%s codes=%s limit=%s n=%d %.1fms",
+        "search_grouped ok query=%s codes=%s limit=%s diversity=%.1f n=%d %.1fms",
         bool(query_mode),
         _normalize_list_input(code),
         limit,
+        diversity,
         len(items),
         took,
     )
