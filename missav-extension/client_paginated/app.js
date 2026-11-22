@@ -1,12 +1,28 @@
 // client_paginated/app.js
+// Search + browse now use GET /search_grouped (keyset cursor, grouped by code+episode).
+// /similar (video-based) and /search_clustered (HDBSCAN topics) are unchanged.
 function app() {
   const API = "http://localhost:9001";
-  // Cluster quality tiers — client-side display mapping only.
+  const PAGE_SIZE = 20;
+
   const CLUSTER_TIER_THRESHOLDS = {
     green: { consistency: 0.75, centroidSim: 0.7 },
     amber: { consistency: 0.55, centroidSim: 0.6 },
     core: { silhouette: 0.4, probability: 0.7 },
   };
+
+  // Diversity presets -> /search_grouped `diversity` (MMR, 0 = off)
+  const DIVERSITY_LEVELS = { off: 0, low: 0.25, medium: 0.5, high: 0.8 };
+
+  // Grouped item -> shape the card templates already expect.
+  function normalizeGrouped(g) {
+    return {
+      ...g,
+      similarity: g.score ?? null, // score -> similarity
+      url: g.url || g.url_uncnsrd || g.url_engsub || null, // plain url may be null
+    };
+  }
+
   return {
     // ── state ──
     mode: "browse", // 'search' | 'similar' | 'browse' | 'clustered'
@@ -14,11 +30,8 @@ function app() {
     lastQuery: "",
     items: [],
     cursor: null,
-    page: 0,
     exhausted: false,
     loading: false,
-    sort: "similarity",
-    order: "desc",
     online: true,
     lastTook: null,
     filtersOpen: false,
@@ -30,15 +43,13 @@ function app() {
       genres: [],
       completionFilter: "all",
     },
-    // Grouped-search tuning (passed to /search_grouped)
-    diversity: 0.0,
-    fetchK: null, // null = server default
-    diversityApplied: false,
-    // New state for Code Autocomplete
+    // grouped-search diversity (MMR)
+    diversity: "off", // key of DIVERSITY_LEVELS
+
     codeInput: "",
     codeSuggestions: [],
     showCodeDropdown: false,
-    // New state for Genres Modal
+
     genresModalOpen: false,
     genreSortBy: "count",
     genreSortOrder: "desc",
@@ -46,23 +57,21 @@ function app() {
     detail: { open: false, loading: false, video: null },
     similarOf: null,
     toasts: [],
-    // History tracking for Back button
+
     previousMode: null,
     previousQuery: null,
-    // ── preview state (hover previews) ──
+
+    // ── preview state ──
     showPreview: null,
     holdPreviews: [],
     _previewPlayer: null,
+
     // ── generation counters ──
     _gen: 0,
     _genClustered: 0,
+
     // ── clustered-mode state ──
-    clustered: {
-      data: null,
-      loading: false,
-      error: null,
-      _inflight: false,
-    },
+    clustered: { data: null, loading: false, error: null, _inflight: false },
     clusterPrefs: {
       candidateLimit: null,
       minClusterSize: 2,
@@ -70,22 +79,22 @@ function app() {
       candidateSource: "recent",
     },
     clusterUi: {},
+
     // ── lifecycle ──
     boot() {
       this.hydrateFromURL();
       this.refreshIcons();
       this.$nextTick(() => this.refreshIcons());
       this.fetchFacets();
-      // Handle Browser Back/Forward
+
       window.addEventListener("popstate", () => {
         this.hydrateFromURL();
         this.refetchOrCluster();
       });
-      if (this.mode === "clustered") {
-        this.fetchClustered();
-      } else {
-        this.refetch();
-      }
+
+      if (this.mode === "clustered") this.fetchClustered();
+      else this.refetch();
+
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
           if (this.genresModalOpen) this.genresModalOpen = false;
@@ -99,6 +108,7 @@ function app() {
           this.$refs.searchInput.focus();
         }
       });
+
       const io = new IntersectionObserver(
         (entries) => {
           if (
@@ -114,6 +124,7 @@ function app() {
         { rootMargin: "400px" },
       );
       io.observe(this.$refs.sentinel);
+
       const checkSentinel = () => {
         if (this.mode === "clustered") return;
         const el = this.$refs.sentinel;
@@ -122,6 +133,7 @@ function app() {
         if (rect.top < window.innerHeight + 400) this.loadMore();
       };
       window.addEventListener("scroll", checkSentinel, { passive: true });
+
       this.$watch("items", () => {
         this.$nextTick(() => {
           this.refreshIcons();
@@ -142,10 +154,12 @@ function app() {
         if (!this.showPreview && keys.length === 0) this._pauseCurrentPreview();
       });
     },
+
     refreshIcons() {
       if (window.lucide) lucide.createIcons();
     },
-    // ── preview playback (hover + click-to-hold) ──
+
+    // ── preview playback ──
     _previewKeyOf(item) {
       return item?.id ? `home-0-${item.id}` : null;
     },
@@ -159,8 +173,7 @@ function app() {
     },
     _previewEl(key) {
       if (!key) return null;
-      const id = `preview-${key}`;
-      return document.getElementById(id);
+      return document.getElementById(`preview-${key}`);
     },
     _pauseCurrentPreview() {
       const el = this._previewPlayer;
@@ -185,10 +198,7 @@ function app() {
       this._previewPlayer = el;
       try {
         const p = el.play();
-        if (p && typeof p.catch === "function")
-          p.catch(() => {
-            /* autoplay blocked */
-          });
+        if (p && typeof p.catch === "function") p.catch(() => {});
       } catch {
         /* ignore */
       }
@@ -227,14 +237,17 @@ function app() {
       this.showPreview = null;
       this.holdPreviews = [];
     },
+
     // ── URL sync ──
     hydrateFromURL() {
       const p = new URLSearchParams(location.search);
       const urlMode = p.get("mode");
       const hasQ = !!p.get("q");
+
       this.mode = urlMode || (hasQ ? "search" : "browse");
       this.query = p.get("q") || "";
       this.lastQuery = this.query;
+
       this.filters.code = p.get("code") || "";
       this.filters.from = p.get("from") || "";
       this.filters.to = p.get("to") || "";
@@ -243,18 +256,11 @@ function app() {
       const cf = p.get("cf");
       this.filters.completionFilter =
         cf === "complete" || cf === "incomplete" ? cf : "all";
-      // Grouped-search tuning from URL
-      const divRaw = p.get("div");
-      if (divRaw != null && divRaw !== "") {
-        const d = parseFloat(divRaw);
-        if (Number.isFinite(d)) this.diversity = Math.min(1, Math.max(0, d));
-      }
-      const fkRaw = p.get("fk");
-      if (fkRaw != null && fkRaw !== "") {
-        const fk = parseInt(fkRaw, 10);
-        this.fetchK = Number.isFinite(fk) && fk > 0 ? fk : null;
-      }
       this.similarOf = p.get("sim") || null;
+
+      const div = p.get("div");
+      this.diversity = div && div in DIVERSITY_LEVELS ? div : "off";
+
       if (this.mode === "clustered") {
         const clRaw = p.get("cl");
         if (clRaw == null || clRaw === "") {
@@ -282,17 +288,8 @@ function app() {
           this.clusterPrefs.candidateSource = src;
         }
       }
-      const urlSort = p.get("sort");
-      if (this.mode === "browse") {
-        this.sort =
-          urlSort === "release_date" || urlSort === "created_at"
-            ? urlSort
-            : "release_date";
-      } else {
-        this.sort = urlSort || "similarity";
-      }
-      this.order = p.get("order") || "desc";
     },
+
     syncURL(push = false) {
       const p = new URLSearchParams();
       if (this.mode === "search" && this.lastQuery) p.set("q", this.lastQuery);
@@ -317,14 +314,7 @@ function app() {
         p.set("mode", "similar");
         p.set("sim", this.similarOf);
       }
-      // Grouped-search tuning
-      if (this.mode === "search") {
-        if (this.diversity !== 0.0) p.set("div", String(this.diversity));
-        if (Number.isFinite(this.fetchK) && this.fetchK > 0) {
-          p.set("fk", String(this.fetchK));
-        }
-      }
-      // Serialize code chips/filters
+
       if (this.filters.code) p.set("code", this.filters.code);
       if (this.filters.from) p.set("from", this.filters.from);
       if (this.filters.to) p.set("to", this.filters.to);
@@ -334,18 +324,18 @@ function app() {
         p.set("genres", this.filters.genres.join(","));
       if (this.filters.completionFilter !== "all")
         p.set("cf", this.filters.completionFilter);
-      // sort/order only meaningful for browse (search grouped has no sort)
-      if (this.mode === "browse") {
-        if (this.sort !== "similarity") p.set("sort", this.sort);
-        if (this.order !== "desc") p.set("order", this.order);
-      }
+      if (this.diversity !== "off" && this.isGroupedMode())
+        p.set("div", this.diversity);
+
       const newUrl = `${location.pathname}?${p}`;
-      if (push) {
-        history.pushState(null, "", newUrl);
-      } else {
-        history.replaceState(null, "", newUrl);
-      }
+      if (push) history.pushState(null, "", newUrl);
+      else history.replaceState(null, "", newUrl);
     },
+
+    isGroupedMode() {
+      return this.mode === "search" || this.mode === "browse";
+    },
+
     // ── actions ──
     onQueryInput() {
       clearTimeout(this._deb);
@@ -363,6 +353,7 @@ function app() {
         }
       }, 400);
     },
+
     doSearch() {
       const q = this.query.trim();
       if (!q) {
@@ -376,16 +367,23 @@ function app() {
       this.syncURL(true);
       this.refetch();
     },
+
     doBrowse() {
       this.previousMode = this.mode;
       this.mode = "browse";
       this.similarOf = null;
-      if (!new URLSearchParams(location.search).get("sort")) {
-        this.sort = "release_date";
-      }
       this.syncURL(true);
       this.refetch();
     },
+
+    // Diversity (MMR) selector handler
+    setDiversity(level) {
+      if (!(level in DIVERSITY_LEVELS)) return;
+      this.diversity = level;
+      this.syncURL();
+      if (this.isGroupedMode()) this.refetch();
+    },
+
     toggleClusterMode() {
       clearTimeout(this._deb);
       if (this.mode === "clustered") {
@@ -400,10 +398,12 @@ function app() {
       this.syncURL(true);
       this.fetchClustered();
     },
+
     applyClusterPrefs() {
       this.syncURL();
       if (this.mode === "clustered") this.fetchClustered();
     },
+
     applyClusterPreset(name) {
       const presets = {
         tight: { minClusterSize: 4, epsilon: 0.15 },
@@ -416,11 +416,7 @@ function app() {
       this.clusterPrefs.epsilon = p.epsilon;
       this.applyClusterPrefs();
     },
-    // Grouped-search tuning setters
-    applySearchTuning() {
-      this.syncURL();
-      if (this.mode === "search") this.refetch();
-    },
+
     findSimilar(id) {
       clearTimeout(this._deb);
       this.closeDetail();
@@ -431,10 +427,12 @@ function app() {
       this.syncURL(true);
       this.refetch();
     },
+
     goBack() {
       window.history.back();
     },
-    // Code Autocomplete Logic
+
+    // Code autocomplete
     onCodeInputFocus() {
       this.showCodeDropdown = true;
       this.updateCodeSuggestions();
@@ -454,14 +452,17 @@ function app() {
           .slice(0, 10);
       }
     },
-    addCodeChip(codeObj) {
-      const code = codeObj.code;
-      const currentCodes = this.filters.code
+    _currentCodes() {
+      return this.filters.code
         ? this.filters.code
             .split(",")
             .map((c) => c.trim())
             .filter(Boolean)
         : [];
+    },
+    addCodeChip(codeObj) {
+      const code = codeObj.code;
+      const currentCodes = this._currentCodes();
       if (!currentCodes.includes(code)) {
         currentCodes.push(code);
         this.filters.code = currentCodes.join(", ");
@@ -469,38 +470,33 @@ function app() {
       this.codeInput = "";
       this.showCodeDropdown = false;
       this.syncURL();
-      this.mode === "clustered" ? this.fetchClustered() : this.refetch();
+      this.refetchOrCluster();
     },
     removeCodeChip(code) {
-      const currentCodes = this.filters.code
-        ? this.filters.code
-            .split(",")
-            .map((c) => c.trim())
-            .filter(Boolean)
-        : [];
-      const newCodes = currentCodes.filter((c) => c !== code);
-      this.filters.code = newCodes.join(", ");
+      this.filters.code = this._currentCodes()
+        .filter((c) => c !== code)
+        .join(", ");
       this.syncURL();
-      this.mode === "clustered" ? this.fetchClustered() : this.refetch();
+      this.refetchOrCluster();
     },
     toggleGenre(name) {
       const i = this.filters.genres.indexOf(name);
       if (i >= 0) this.filters.genres.splice(i, 1);
       else this.filters.genres.push(name);
       this.syncURL();
-      this.mode === "clustered" ? this.fetchClustered() : this.refetch();
+      this.refetchOrCluster();
     },
     setCompletionFilter(val) {
       this.filters.completionFilter = val;
       this.syncURL();
-      this.mode === "clustered" ? this.fetchClustered() : this.refetch();
+      this.refetchOrCluster();
       this.fetchFacets();
     },
     pickYear(year) {
       this.filters.from = `${year}-01-01`;
       this.filters.to = `${year}-12-31`;
       this.syncURL();
-      this.mode === "clustered" ? this.fetchClustered() : this.refetch();
+      this.refetchOrCluster();
     },
     clearFilters() {
       this.filters = {
@@ -513,7 +509,7 @@ function app() {
       };
       this.codeInput = "";
       this.syncURL();
-      this.mode === "clustered" ? this.fetchClustered() : this.refetch();
+      this.refetchOrCluster();
     },
     recentYears() {
       return this.facets.years
@@ -521,21 +517,16 @@ function app() {
         .slice(-10)
         .reverse();
     },
-    // Genre Modal Sorting
+
+    // Genre modal sorting
     get sortedGenresForModal() {
-      let genres = [...this.facets.genres];
+      const genres = [...this.facets.genres];
       if (this.genreSortBy === "name") {
         genres.sort((a, b) => a.name.localeCompare(b.name));
-      } else {
-        genres.sort((a, b) => b.count - a.count);
-      }
-      if (this.genreSortOrder === "asc" && this.genreSortBy === "count") {
-        genres.reverse();
-      }
-      if (this.genreSortBy === "name") {
         return this.genreSortOrder === "desc" ? genres.reverse() : genres;
       }
-      return genres;
+      genres.sort((a, b) => b.count - a.count);
+      return this.genreSortOrder === "asc" ? genres.reverse() : genres;
     },
     toggleGenreSort(by) {
       if (this.genreSortBy === by) {
@@ -545,12 +536,12 @@ function app() {
         this.genreSortOrder = by === "count" ? "desc" : "asc";
       }
     },
+
     // ── fetching (paginated modes) ──
     refetch() {
       this.clearPreviews();
       this.items = [];
       this.cursor = null;
-      this.page = 0;
       this.exhausted = false;
       this.fetchPage({ reset: true });
     },
@@ -561,6 +552,7 @@ function app() {
     loadMore() {
       if (!this.exhausted && !this.loading) this.fetchPage();
     },
+
     async fetchPage({ reset = false } = {}) {
       this.loading = true;
       const gen = ++this._gen;
@@ -585,24 +577,22 @@ function app() {
         }
         const page = await res.json();
         if (gen !== this._gen) return;
+
         if (reset) {
           this.items = [];
           this.cursor = null;
-          this.page = 0;
           this.exhausted = false;
         }
-        // Normalize grouped items: `score` → `similarity` so the rest of the
-        // template (badges, sorting pill, etc.) keeps working unchanged.
-        const normalized = (page.items || []).map((it) => ({
-          ...it,
-          similarity: it.similarity ?? it.score ?? null,
-        }));
-        this.items.push(...normalized);
+
+        // /search_grouped items need normalizing; /similar items are already flat.
+        const incoming =
+          params.kind === "grouped"
+            ? page.items.map(normalizeGrouped)
+            : page.items;
+        this.items.push(...incoming);
         this.cursor = page.next_cursor;
         this.exhausted = !page.has_more || !page.next_cursor;
         this.lastTook = page.took_ms ?? null;
-        this.diversityApplied = !!page.diversity_applied;
-        if (this.mode === "browse") this.page += 1;
         this.$nextTick(() => this.refreshIcons());
       } catch (e) {
         if (gen !== this._gen) return;
@@ -612,6 +602,7 @@ function app() {
         if (gen === this._gen) this.loading = false;
       }
     },
+
     // ── fetching (clustered mode) ──
     async fetchClustered() {
       this.clearPreviews();
@@ -636,6 +627,7 @@ function app() {
         if (gen !== this._genClustered) return;
         this.clustered.data = data;
         this.lastTook = data.took_ms ?? null;
+
         const next = {};
         for (const c of data.clusters || []) {
           next[c.cluster_id] = this.clusterUi[c.cluster_id] || {
@@ -655,23 +647,34 @@ function app() {
         if (gen === this._genClustered) this.clustered.loading = false;
       }
     },
+
+    // ── shared filter helpers ──
+    _codeList() {
+      const raw = (this.filters.code || "").trim();
+      if (!raw) return [];
+      return [
+        ...new Set(
+          raw
+            .split(",")
+            .map((c) => c.trim().toLowerCase())
+            .filter(Boolean),
+        ),
+      ];
+    },
+    _isoFrom() {
+      return this.filters.from
+        ? new Date(this.filters.from + "T00:00:00Z").toISOString()
+        : null;
+    },
+    _isoTo() {
+      return this.filters.to
+        ? new Date(this.filters.to + "T23:59:59Z").toISOString()
+        : null;
+    },
+
     buildClusteredParams() {
-      const getCodeParam = () => {
-        const raw = (this.filters.code || "").trim();
-        if (!raw) return null;
-        const parts = raw
-          .split(",")
-          .map((c) => c.trim().toLowerCase())
-          .filter(Boolean);
-        const unique = [...new Set(parts)];
-        if (unique.length === 0) return null;
-        return unique.length === 1 ? unique[0] : unique;
-      };
-      const getGenreParam = () => {
-        if (this.filters.genres.length === 0) return null;
-        if (this.filters.genres.length === 1) return this.filters.genres[0];
-        return this.filters.genres;
-      };
+      const codes = this._codeList();
+      const genres = this.filters.genres;
       const q = this.lastQuery?.trim() || null;
       const limit =
         Number.isFinite(this.clusterPrefs.candidateLimit) &&
@@ -684,83 +687,40 @@ function app() {
         cluster_selection_epsilon: this.clusterPrefs.epsilon,
         cluster_candidate_limit: limit,
         candidate_source: this.clusterPrefs.candidateSource,
-        genre: getGenreParam(),
+        genre:
+          genres.length === 0 ? null : genres.length === 1 ? genres[0] : genres,
         genres_mode: this.filters.genresMode,
-        code: getCodeParam(),
-        min_release_date: this.filters.from
-          ? new Date(this.filters.from + "T00:00:00Z").toISOString()
-          : null,
-        max_release_date: this.filters.to
-          ? new Date(this.filters.to + "T23:59:59Z").toISOString()
-          : null,
+        code: codes.length === 0 ? null : codes.length === 1 ? codes[0] : codes,
+        min_release_date: this._isoFrom(),
+        max_release_date: this._isoTo(),
         min_similarity: null,
         completion_filter: this.filters.completionFilter,
       };
     },
+
+    // Builds the request for the active paginated mode.
+    //   search / browse -> GET /search_grouped (query present only in search)
+    //   similar         -> POST /similar (no grouped equivalent: needs a video embedding)
     buildParams(reset) {
-      const getCodeParam = () => {
-        const raw = (this.filters.code || "").trim();
-        if (!raw) return null;
-        const parts = raw
-          .split(",")
-          .map((c) => c.trim().toLowerCase())
-          .filter(Boolean);
-        const unique = [...new Set(parts)];
-        if (unique.length === 0) return null;
-        return unique.length === 1 ? unique[0] : unique;
-      };
-      const getGenreParam = () => {
-        if (this.filters.genres.length === 0) return null;
-        if (this.filters.genres.length === 1) return this.filters.genres[0];
-        return this.filters.genres;
-      };
-      if (this.mode === "search") {
-        if (!this.lastQuery) {
-          this.mode = "browse";
-          this.similarOf = null;
-          this.syncURL();
-          return this.buildParams(reset);
-        }
-        // ✅ Replaced /search with /search_grouped.
-        // GroupedSearchRequest schema: query, code, genre, genres_mode,
-        // min_release_date, max_release_date, completion_filter,
-        // min_similarity, diversity, fetch_k (plus pagination fields the
-        // endpoint accepts on its own — kept optional / server-driven).
-        return {
-          path: "/search_grouped",
-          method: "POST",
-          body: {
-            query: this.lastQuery,
-            cursor: reset ? null : this.cursor,
-            code: getCodeParam(),
-            genre: getGenreParam(),
-            genres_mode: this.filters.genresMode,
-            min_release_date: this.filters.from
-              ? new Date(this.filters.from + "T00:00:00Z").toISOString()
-              : null,
-            max_release_date: this.filters.to
-              ? new Date(this.filters.to + "T23:59:59Z").toISOString()
-              : null,
-            completion_filter: this.filters.completionFilter,
-            min_similarity: null,
-            diversity: Number.isFinite(this.diversity) ? this.diversity : 0.0,
-            fetch_k:
-              Number.isFinite(this.fetchK) && this.fetchK > 0
-                ? this.fetchK
-                : null,
-          },
-        };
-      }
       if (this.mode === "similar") {
+        const codes = this._codeList();
+        const genres = this.filters.genres;
         return {
+          kind: "similar",
           path: "/similar",
           method: "POST",
           body: {
             video_id: this.similarOf,
-            limit: 20,
+            limit: PAGE_SIZE,
             cursor: reset ? null : this.cursor,
-            genre: getGenreParam(),
-            code: getCodeParam(),
+            genre:
+              genres.length === 0
+                ? null
+                : genres.length === 1
+                  ? genres[0]
+                  : genres,
+            code:
+              codes.length === 0 ? null : codes.length === 1 ? codes[0] : codes,
             genres_mode: this.filters.genresMode,
             sort: "similarity",
             order: "desc",
@@ -768,33 +728,36 @@ function app() {
           },
         };
       }
-      // browse
+
+      if (this.mode === "search" && !this.lastQuery) {
+        this.mode = "browse";
+        this.similarOf = null;
+        this.syncURL();
+      }
+
       const p = new URLSearchParams();
-      p.set("limit", "20");
-      p.set("offset", reset ? "0" : String(this.page * 20));
-      const codeVal = getCodeParam();
-      if (codeVal) {
-        if (Array.isArray(codeVal)) codeVal.forEach((c) => p.append("code", c));
-        else p.set("code", codeVal);
-      }
-      const browseSort =
-        this.sort === "release_date" || this.sort === "created_at"
-          ? this.sort
-          : "release_date";
-      p.set("sort", browseSort);
-      p.set("order", this.order || "desc");
+      if (this.mode === "search" && this.lastQuery)
+        p.set("query", this.lastQuery);
+      p.set("limit", String(PAGE_SIZE));
+      if (!reset && this.cursor) p.set("cursor", this.cursor);
+
+      this._codeList().forEach((c) => p.append("code", c));
+      this.filters.genres.forEach((g) => p.append("genre", g));
       p.set("genres_mode", this.filters.genresMode);
-      if (this.filters.completionFilter !== "all") {
+
+      const from = this._isoFrom();
+      const to = this._isoTo();
+      if (from) p.set("min_release_date", from);
+      if (to) p.set("max_release_date", to);
+      if (this.filters.completionFilter !== "all")
         p.set("completion_filter", this.filters.completionFilter);
-      }
-      const genreVal = getGenreParam();
-      if (genreVal) {
-        if (Array.isArray(genreVal))
-          genreVal.forEach((g) => p.append("genre", g));
-        else p.set("genre", genreVal);
-      }
-      return { path: `/browse?${p}`, method: "GET" };
+
+      const div = DIVERSITY_LEVELS[this.diversity] ?? 0;
+      if (div > 0) p.set("diversity", String(div));
+
+      return { kind: "grouped", path: `/search_grouped?${p}`, method: "GET" };
     },
+
     async fetchFacets() {
       try {
         let qs = "";
@@ -809,6 +772,7 @@ function app() {
         /* ignore */
       }
     },
+
     // ── cluster view helpers ──
     clusterTier(c) {
       if (!c || c.is_noise) return "grey";
@@ -877,12 +841,7 @@ function app() {
       this.findSimilar(id);
     },
     clusterUiFor(id) {
-      return (
-        this.clusterUi[id] || {
-          coreOnly: false,
-          hidden: false,
-        }
-      );
+      return this.clusterUi[id] || { coreOnly: false, hidden: false };
     },
     toggleClusterCoreOnly(id) {
       const cur = this.clusterUiFor(id);
@@ -898,6 +857,7 @@ function app() {
         [id]: { ...cur, hidden: !cur.hidden },
       };
     },
+
     // ── detail modal ──
     async openDetail(id) {
       this.detail = { open: true, loading: true, video: null };
@@ -917,6 +877,7 @@ function app() {
     closeDetail() {
       this.detail = { open: false, loading: false, video: null };
     },
+
     // ── toasts ──
     toast(type, msg) {
       const id = Math.random().toString(36).slice(2);

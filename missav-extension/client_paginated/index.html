@@ -550,74 +550,22 @@
                 </label>
               </span>
             </div>
-            <!-- ✅ NEW: Grouped-search tuning (diversity + fetch_k) for search mode -->
+            <!-- Diversity selector -->
             <div
-              x-show="mode === 'search'"
-              class="inline-flex flex-wrap items-center gap-1.5 rounded-full border border-accent-500/30 bg-accent-500/10 px-2.5 py-1 text-[11px] font-medium text-accent-200"
-              title="Tuning for /search_grouped"
-            >
-              <i data-lucide="boxes" class="h-3 w-3"></i>
-              <label
-                class="flex items-center gap-1"
-                title="MMR diversity (0 = off)"
-              >
-                div
-                <input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.1"
-                  x-model.number="diversity"
-                  @change="applySearchTuning()"
-                  class="w-12 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-accent-100 focus:outline-none"
-                />
-              </label>
-              <span class="text-accent-400/60">|</span>
-              <label
-                class="flex items-center gap-1"
-                title="fetch_k before MMR (empty = server default)"
-              >
-                fetch k
-                <input
-                  type="number"
-                  min="1"
-                  step="10"
-                  placeholder="auto"
-                  x-model.number="fetchK"
-                  @change="applySearchTuning()"
-                  class="w-16 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-accent-100 placeholder:text-accent-400/40 focus:outline-none"
-                />
-              </label>
-              <span
-                x-show="diversityApplied"
-                class="text-[10px] text-emerald-300/80"
-                title="Server reports diversity was applied"
-                >· mmr</span
-              >
-            </div>
-            <!-- Sort & Order selector — ONLY for browse mode now -->
-            <div
-              x-show="mode === 'browse'"
+              x-show="mode === 'browse' || mode === 'search'"
               class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/80 px-2.5 py-1 text-[11px] font-medium text-slate-400"
-              title="Sort order"
+              title="Diversify results (MMR)"
             >
-              <i data-lucide="arrow-up-down" class="h-3 w-3"></i>
+              <i data-lucide="shuffle" class="h-3 w-3"></i>
               <select
-                x-model="sort"
-                @change="refetch()"
+                :value="diversity"
+                @change="setDiversity($event.target.value)"
                 class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
               >
-                <option value="release_date">Newest release</option>
-                <option value="created_at">Recently added</option>
-              </select>
-              <span class="text-slate-600">|</span>
-              <select
-                x-model="order"
-                @change="refetch()"
-                class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
-              >
-                <option value="desc">Desc</option>
-                <option value="asc">Asc</option>
+                <option value="off">Diversity: off</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
               </select>
             </div>
             <!-- genre pills -->
@@ -633,6 +581,10 @@
                   <i data-lucide="x" class="h-3 w-3"></i>
                 </button>
               </span>
+            </template>
+            <!-- code pill (legacy display if needed, though chips are in sidebar) -->
+            <template x-if="filters.code">
+              <!-- Hidden or shown depending on preference, currently handled by sidebar chips -->
             </template>
             <!-- date pill -->
             <template x-if="filters.from || filters.to">
@@ -788,6 +740,7 @@
                           @mouseleave="setPreview()"
                           @click="v.id ? clickPreview(`home-0-${v.id}`) : null"
                         >
+                          <!-- Video Preview -->
                           <video
                             :src="v.preview"
                             :id="`preview-home-0-${v.id}`"
@@ -800,6 +753,7 @@
                             @error="previewError(`home-0-${v.id}`)"
                             @loadeddata="isPreviewActive(`home-0-${v.id}`) && playPreview(`home-0-${v.id}`)"
                           ></video>
+                          <!-- Fallback Image -->
                           <img
                             :src="v.thumbnail"
                             :alt="v.title"
@@ -828,6 +782,7 @@
                           >
                             <i data-lucide="zap" class="h-2.5 w-2.5"></i>
                           </div>
+                          <!-- Hover Actions -->
                           <div
                             class="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100"
                           >
@@ -987,6 +942,7 @@
                   @mouseleave="setPreview()"
                   @click="v.id ? clickPreview(`home-0-${v.id}`) : null"
                 >
+                  <!-- Video Preview -->
                   <video
                     :src="v.preview"
                     :id="`preview-home-0-${v.id}`"
@@ -999,6 +955,7 @@
                     @error="previewError(`home-0-${v.id}`)"
                     @loadeddata="isPreviewActive(`home-0-${v.id}`) && playPreview(`home-0-${v.id}`)"
                   ></video>
+                  <!-- Fallback Image -->
                   <img
                     :src="v.thumbnail"
                     :alt="v.title"
@@ -1018,20 +975,12 @@
                     <i data-lucide="target" class="h-3 w-3"></i>
                     <span x-text="(v.similarity * 100).toFixed(0) + '%'"></span>
                   </div>
-                  <!-- Video count badge for grouped results -->
-                  <div
-                    x-show="(v.video_count ?? 1) > 1"
-                    class="absolute left-2 bottom-2 flex items-center gap-1 rounded-full bg-violet-500/80 px-2 py-0.5 text-[10px] font-bold text-ink-950 backdrop-blur"
-                    :title="`${v.video_count} videos share this code+episode`"
-                  >
-                    <i data-lucide="layers" class="h-3 w-3"></i>
-                    <span x-text="v.video_count"></span>
-                  </div>
                   <div
                     x-show="v.release_date"
                     class="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-slate-300 backdrop-blur"
                     x-text="v.release_date?.slice(0,4)"
                   ></div>
+                  <!-- Hover Actions -->
                   <div
                     class="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100"
                   >
@@ -1171,6 +1120,7 @@
           </button>
         </div>
         <div class="p-4">
+          <!-- Sort Controls -->
           <div class="mb-4 flex items-center gap-2">
             <span class="text-xs text-slate-500">Sort by:</span>
             <button
@@ -1198,6 +1148,7 @@
               ></i>
             </button>
           </div>
+          <!-- Grid -->
           <div class="max-h-[60vh] overflow-y-auto custom-scrollbar">
             <div class="flex flex-wrap gap-2">
               <template x-for="g in sortedGenresForModal" :key="g.name">
