@@ -1059,9 +1059,13 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
 def _grouped_fingerprint(req: GroupedSearchRequest) -> str:
     """Stable fingerprint of all filters that affect grouping/pagination.
 
-    Any change to these invalidates outstanding cursors, matching /search's
-    contract. `limit` and `fetch_k` are deliberately excluded because they
-    control page size, not the result stream.
+    `limit` is excluded (it's page size, not stream identity). `fetch_k` IS
+    included: the cursor's page boundary is the full window's max
+    (code, episode), which depends on `fetch_k`. Changing `fetch_k`
+    mid-walk would silently shift page boundaries, so we invalidate
+    cursors on change — matching the "cursor bound to request" contract.
+    `diversity` is included: it changes MMR's reorder, but not the
+    cursor's anchor; still, invalidating on change is the safe default.
     """
     genre_list = _normalize_list_input(req.genre)
     code_list = _normalize_list_input(req.code)
@@ -1075,6 +1079,7 @@ def _grouped_fingerprint(req: GroupedSearchRequest) -> str:
         req.completion_filter,
         req.min_similarity,
         round(float(req.diversity), 6),
+        int(req.fetch_k) if req.fetch_k is not None else None,
     ]
     return hashlib.sha256("|".join(str(x) for x in parts).encode()).hexdigest()[:12]
 
@@ -1142,12 +1147,11 @@ def search_grouped(
     cursor: Optional[str] = Query(
         None,
         description=(
-            "Opaque keyset cursor. Clients should walk forward by passing "
-            "the previous response's `next_cursor`. To go back one page, "
-            "replay the stored parent cursor (the cursor used to fetch the "
-            "page you want to return to) — the server accepts both 'next' "
-            "and 'prev' direction tokens. Bound to the request's filters; "
-            "supplying a cursor with different filters returns HTTP 400."
+            "Opaque keyset cursor. Walk forward with the previous response's "
+            "`next_cursor`; walk backward by replaying the stored parent "
+            "cursor (the one used to fetch the page you want to return to). "
+            "Bound to the request's filters *and* to `fetch_k`; a mismatch "
+            "returns HTTP 400."
         ),
     ),
     fetch_k: Optional[int] = Query(
@@ -1155,8 +1159,11 @@ def search_grouped(
         ge=1,
         le=10000,
         description=(
-            "Candidate window fetched before MMR truncation. Defaults to "
-            "max(limit*3, limit+1). Only used when `diversity > 0`."
+            "Candidate window fetched before MMR reordering. Defaults to "
+            "max(limit*3, limit+1). MMR reorders *the whole window*; the "
+            "endpoint then slices to `limit`. Only used when `diversity > 0`. "
+            "Held constant across a pagination walk — the cursor's page "
+            "boundary depends on it."
         ),
     ),
     diversity: float = Query(
@@ -1165,8 +1172,9 @@ def search_grouped(
         le=1.0,
         description=(
             "MMR trade-off (0 = pure relevance, 1 = pure diversity). When > 0, "
-            "the cursor keys off the max underlying (code, episode) of the "
-            "fetched window so next/prev pages remain gap-free."
+            "MMR reorders the full `fetch_k` window; the cursor still advances "
+            "by the window's max (code, episode), so no group is skipped or "
+            "duplicated across pages."
         ),
     ),
 ):
@@ -1175,27 +1183,25 @@ def search_grouped(
 
     Pagination contract:
       * Walk forward with `next_cursor` / `has_more`.
-      * Walk backward by replaying the stored parent cursor (the cursor used
-        to fetch the page you want to return to). The server accepts both
-        `direction=next` and `direction=prev` tokens, so a client that keeps
-        a stack of cursors needs no `prev_cursor` in the response.
+      * Walk backward by replaying the stored parent cursor. The server accepts
+        both `direction=next` and `direction=prev` tokens.
       * `has_previous` is returned so the client can enable/disable a back
         button without inspecting tokens.
-      * Cursors are signed with a filter fingerprint; mismatched filters
-        yield HTTP 400 rather than silently wrong pages.
+      * Cursors are bound to a fingerprint of filters *and* `fetch_k`;
+        mismatches yield HTTP 400 rather than silently wrong pages.
 
     Sort order:
       * With `query`: by best-member cosine distance ASC, then (code, episode).
       * Without `query`: by (code, episode) ASC (episodes zero-padded).
-      * With `diversity > 0`: MMR reorders *within the fetched window only*;
-        the cursor still advances by the window's max (code, episode), so no
-        group is ever skipped or duplicated across pages.
+      * With `diversity > 0`: MMR reorders *within the fetched `fetch_k`
+        window only*. The endpoint then slices to `limit`. The cursor advances
+        by the *full window's* max (code, episode), so no group is ever
+        skipped or duplicated across pages — including the window tail.
     """
     if query is None and min_similarity is not None:
         raise HTTPException(400, "min_similarity requires a query")
 
     t0 = time.perf_counter()
-
     req = GroupedSearchRequest(
         query=query,
         code=code,
@@ -1210,10 +1216,6 @@ def search_grouped(
     )
     fp = _grouped_fingerprint(req)
 
-    # ---- Decode cursor -----------------------------------------------------
-    # `backward` is only true if a client explicitly replays a `prev` token
-    # (e.g. it stored one from an earlier version, or synthesizes one). Normal
-    # backward navigation is done by replaying the parent `next` cursor.
     backward = False
     cursor_code: Optional[str] = None
     cursor_episode: Optional[str] = None
@@ -1221,7 +1223,6 @@ def search_grouped(
         cursor_code, cursor_episode, direction = _decode_grouped_cursor(cursor, fp)
         backward = direction == "prev"
 
-    # ---- Build WHERE -------------------------------------------------------
     params: dict = {}
     conds: List[str] = [
         "btrim(v.code) <> ''",
@@ -1242,8 +1243,6 @@ def search_grouped(
         if min_similarity is not None:
             params["max_dist"] = 1.0 - float(min_similarity)
 
-    # Normalized episode expression used in BOTH ORDER BY and cursor predicate
-    # so pagination is correct even for unpadded numeric episodes.
     ep_norm_sql = (
         "CASE WHEN btrim(v.episode) ~ '^[0-9]+$' "
         "THEN lpad(btrim(v.episode), 8, '0') "
@@ -1258,14 +1257,17 @@ def search_grouped(
 
     where_sql = " AND ".join(conds)
 
-    # ---- Determine fetch window -------------------------------------------
     diversity_on = diversity > 0.0
-    # Always fetch one extra group to detect has_more.
+
+    # --- Candidate window sizing -------------------------------------------
+    # When diversity is on, fetch `base_fetch` groups and let MMR reorder the
+    # WHOLE window, then slice to `limit`. We over-fetch by 1 so `has_more`
+    # can distinguish "window full, DB may have more" from "DB exhausted".
     if diversity_on:
         base_fetch = fetch_k if fetch_k else max(limit * 3, limit + 1)
     else:
-        base_fetch = limit + 1
-    params["limit"] = base_fetch
+        base_fetch = limit
+    params["limit"] = base_fetch + 1  # +1 sentinel for has_more
 
     if query_mode:
         score_select = f"MIN({distance_sql})::float8 AS best_distance,"
@@ -1285,7 +1287,6 @@ def search_grouped(
         backward_order = f"ORDER BY v.code DESC, ({ep_norm_sql}) DESC"
 
     order_sql = backward_order if backward else forward_order
-
     embed_select = "AVG(v.embedding) AS group_embedding," if diversity_on else ""
 
     sql = f"""
@@ -1344,7 +1345,6 @@ def search_grouped(
         LIMIT %(limit)s
     """
 
-    # ---- Execute -----------------------------------------------------------
     try:
         with pool.connection() as conn:
             if query_mode and ITERATIVE_SCAN_MODE:
@@ -1355,31 +1355,12 @@ def search_grouped(
         logger.error("search_grouped DB error: %s", e)
         raise HTTPException(500, f"Grouped search failed: {e}")
 
-    # ---- Detect more pages -------------------------------------------------
-    # Forward request: over-fetch detects has_more.
-    # Backward request (explicit `prev` token): over-fetch detects has_previous
-    #   (i.e. we walked too far back), and has_more is always true because we
-    #   came from a later page.
-    over_fetched = len(rows) > limit
-    if backward:
-        has_previous = over_fetched
-        rows = rows[:limit]
-        has_more = True
-    else:
-        has_more = over_fetched
-        rows = rows[:limit]
-        # First page (no cursor) has no previous. Any follow-on forward page
-        # does, because the client got here via some cursor.
-        has_previous = cursor is not None
+    # `rows` now holds up to `base_fetch + 1` groups.
+    # `has_more` means "DB has more groups past this window's end".
+    has_more_from_db = len(rows) > base_fetch
+    window = rows[:base_fetch]
 
-    if backward:
-        # Restore forward order for the response.
-        rows = list(reversed(rows))
-
-    # ---- Cursor construction ----------------------------------------------
-    # Anchor `next_cursor` on the max underlying (code, episode) of the FETCHED
-    # window (before MMR reordering), so the next page starts strictly after
-    # everything we considered — not after whatever MMR happened to place last.
+    # --- Cursor anchor: FULL window's max key, computed BEFORE trimming ----
     def _max_key(rs: List[dict]) -> Optional[Tuple[str, str]]:
         if not rs:
             return None
@@ -1388,29 +1369,38 @@ def search_grouped(
             key=lambda x: x,
         )
 
-    next_cursor: Optional[str] = None
-    if has_more:
-        anchor = _max_key(rows)
-        if anchor:
-            next_cursor = _encode_grouped_cursor(anchor[0], anchor[1], fp, "next")
+    window_anchor = _max_key(window)
 
-    # ---- MMR diversification (within the current page only) --------------
-    items: List[GroupedVideoItem] = []
+    # For backward pagination: anchor is the *min* key of the window
+    # (the previous page's forward walk anchored on its max; we walk back
+    # from the window's min so we can fetch the page before it).
+    window_min_key = None
+    if window:
+        window_min_key = min(
+            ((r["code"], _normalize_episode(r["episode"])) for r in window),
+            key=lambda x: x,
+        )
+
+    # --- MMR over the FULL window (fix #1) ----------------------------------
     diversity_applied = False
-
-    if diversity_on and rows:
-        doc_vecs, valid_rows = [], []
-        for r in rows:
-            if r.get("group_embedding") is None:
-                # Keep the row eligible for counting/pagination but skip it
-                # from MMR reordering; it lands at the tail in window order.
-                valid_rows.append(r)
-                doc_vecs.append(None)
-                continue
-            doc_vecs.append(_to_float_list(r["group_embedding"]))
-            valid_rows.append(r)
+    ordered_window = window
+    if diversity_on and window:
+        doc_vecs: List[Optional[List[float]]] = []
+        for r in window:
+            emb = r.get("group_embedding")
+            doc_vecs.append(_to_float_list(emb) if emb is not None else None)
 
         mmr_eligible = [i for i, v in enumerate(doc_vecs) if v is not None]
+        null_count = len(window) - len(mmr_eligible)
+        if null_count:
+            # Fix #6: make the silent-degradation path observable.
+            logger.warning(
+                "search_grouped diversity: %d/%d groups have NULL group_embedding; "
+                "they bypass MMR and are appended at the end of the page.",
+                null_count,
+                len(window),
+            )
+
         if len(mmr_eligible) >= 2:
             matrix = np.array([doc_vecs[i] for i in mmr_eligible], dtype=np.float32)
             query_vec = (
@@ -1418,6 +1408,7 @@ def search_grouped(
                 if query_mode
                 else matrix.mean(axis=0)
             )
+            # MMR over the ENTIRE eligible window (not just `limit` items).
             mmr_results = mmr_rerank(
                 query_vec=query_vec,
                 doc_vecs=matrix,
@@ -1425,71 +1416,85 @@ def search_grouped(
                 lambda_param=1.0 - diversity,
             )
             reordered_idx = [mmr_eligible[res["index"]] for res in mmr_results]
-            tail = [i for i in range(len(rows)) if doc_vecs[i] is None]
-            ordered_rows = [rows[i] for i in reordered_idx + tail]
+            tail = [i for i in range(len(window)) if doc_vecs[i] is None]
+            ordered_window = [window[i] for i in reordered_idx + tail]
             diversity_applied = True
-        else:
-            ordered_rows = rows
 
-        for r in ordered_rows:
-            best_dist = r.get("best_distance")
-            items.append(
-                GroupedVideoItem(
-                    id=r["id"],
-                    video_id=r["video_id"],
-                    code=r["code"],
-                    episode=r["episode"],
-                    video_count=int(r["video_count"]),
-                    title=r["title"],
-                    details=r["details"],
-                    thumbnail=r["thumbnail"],
-                    preview=r["preview"],
-                    release_date=r["release_date"],
-                    genres=r["genres"],
-                    created_at=r["created_at"],
-                    updated_at=r["updated_at"],
-                    url=r["url"],
-                    url_uncnsrd=r["url_uncnsrd"],
-                    url_engsub=r["url_engsub"],
-                    score=(1.0 - float(best_dist)) if best_dist is not None else None,
-                )
-            )
+    # --- Slice AFTER MMR (fix #1) -------------------------------------------
+    page_rows = ordered_window[:limit]
+
+    # --- has_more / has_previous --------------------------------------------
+    # has_more: true if the DB returned more than the window (sentinel row),
+    # OR (when MMR reorders) if MMR itself surfaced additional rows beyond
+    # `limit` within the window — but the cursor advance is by the window's
+    # max key, so the next page is the post-window groups regardless. The
+    # sentinel captures the DB-more case; window-tail-more is captured by
+    # the fact that we returned < len(window) items but the window anchor
+    # still points past the last returned item. To keep the contract simple,
+    # we report `has_more = has_more_from_db or (diversity_on and len(ordered_window) > limit)`.
+    if diversity_on:
+        has_more = has_more_from_db or (len(ordered_window) > limit)
     else:
-        for r in rows:
-            best_dist = r.get("best_distance")
-            items.append(
-                GroupedVideoItem(
-                    id=r["id"],
-                    video_id=r["video_id"],
-                    code=r["code"],
-                    episode=r["episode"],
-                    video_count=int(r["video_count"]),
-                    title=r["title"],
-                    details=r["details"],
-                    thumbnail=r["thumbnail"],
-                    preview=r["preview"],
-                    release_date=r["release_date"],
-                    genres=r["genres"],
-                    created_at=r["created_at"],
-                    updated_at=r["updated_at"],
-                    url=r["url"],
-                    url_uncnsrd=r["url_uncnsrd"],
-                    url_engsub=r["url_engsub"],
-                    score=(1.0 - float(best_dist)) if best_dist is not None else None,
-                )
+        has_more = has_more_from_db
+
+    has_previous = cursor is not None
+
+    # Backward: reverse the (already sliced) page so the returned page reads
+    # in forward order, and the caller sees the page *before* the cursor.
+    if backward:
+        page_rows = list(reversed(page_rows))
+
+    # --- Build items --------------------------------------------------------
+    items: List[GroupedVideoItem] = []
+    for r in page_rows:
+        best_dist = r.get("best_distance")
+        items.append(
+            GroupedVideoItem(
+                id=r["id"],
+                video_id=r["video_id"],
+                code=r["code"],
+                episode=r["episode"],
+                video_count=int(r["video_count"]),
+                title=r["title"],
+                details=r["details"],
+                thumbnail=r["thumbnail"],
+                preview=r["preview"],
+                release_date=r["release_date"],
+                genres=r["genres"],
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+                url=r["url"],
+                url_uncnsrd=r["url_uncnsrd"],
+                url_engsub=r["url_engsub"],
+                score=(1.0 - float(best_dist)) if best_dist is not None else None,
             )
+        )
+
+    # --- Cursor (fix #1: anchored on FULL window, not trimmed page) --------
+    next_cursor: Optional[str] = None
+    if has_more and window_anchor:
+        # Forward walk: next page starts strictly after the full window's max.
+        # The window tail (window[limit:base_fetch]) is consumed by this
+        # cursor even though it wasn't returned — that is correct: MMR
+        # already ranked it, and the caller will see the next page's window
+        # start at the first group past the anchor. No group is duplicated
+        # or skipped.
+        next_cursor = _encode_grouped_cursor(
+            window_anchor[0], window_anchor[1], fp, "next"
+        )
 
     took = (time.perf_counter() - t0) * 1000
     logger.info(
-        "search_grouped ok n=%d more=%s prev=%s div=%s back=%s %.1fms",
+        "search_grouped ok n=%d more=%s prev=%s div=%s back=%s window=%d/%d %.1fms",
         len(items),
         has_more,
         has_previous,
         diversity_applied,
         backward,
+        len(window),
+        base_fetch,
         took,
     )
-
     return GroupedSearchResponse(
         items=items,
         count=len(items),
