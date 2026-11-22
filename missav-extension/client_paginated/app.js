@@ -23,21 +23,25 @@ function app() {
     lastTook: null,
     filtersOpen: false,
     filters: {
-      code: "", // Kept for URL sync, but UI uses codeChips
+      code: "",
       from: "",
       to: "",
       genresMode: "any",
       genres: [],
       completionFilter: "all",
     },
+    // Grouped-search tuning (passed to /search_grouped)
+    diversity: 0.0,
+    fetchK: null, // null = server default
+    diversityApplied: false,
     // New state for Code Autocomplete
     codeInput: "",
     codeSuggestions: [],
     showCodeDropdown: false,
     // New state for Genres Modal
     genresModalOpen: false,
-    genreSortBy: "count", // 'name' | 'count'
-    genreSortOrder: "desc", // 'asc' | 'desc'
+    genreSortBy: "count",
+    genreSortOrder: "desc",
     facets: { genres: [], years: [], codes: [] },
     detail: { open: false, loading: false, video: null },
     similarOf: null,
@@ -46,9 +50,9 @@ function app() {
     previousMode: null,
     previousQuery: null,
     // ── preview state (hover previews) ──
-    showPreview: null, // key of currently-hovered preview, e.g. "home-0-gigl-007"
-    holdPreviews: [], // keys held by click (persistent)
-    _previewPlayer: null, // currently playing HTMLVideoElement
+    showPreview: null,
+    holdPreviews: [],
+    _previewPlayer: null,
     // ── generation counters ──
     _gen: 0,
     _genClustered: 0,
@@ -130,13 +134,11 @@ function app() {
       this.$watch("clustered.data", () =>
         this.$nextTick(() => this.refreshIcons()),
       );
-      // Keep the actual <video> playback in sync with preview state.
       this.$watch("showPreview", (key) => {
         this._pauseCurrentPreview();
         if (key) this.$nextTick(() => this._playPreview(key));
       });
       this.$watch("holdPreviews", (keys) => {
-        // If nothing is hovered and nothing held, stop playback.
         if (!this.showPreview && keys.length === 0) this._pauseCurrentPreview();
       });
     },
@@ -174,7 +176,6 @@ function app() {
     setPreview(key) {
       const next = key || null;
       if (this.showPreview === next) return;
-      // Pause whatever was playing before switching.
       this._pauseCurrentPreview();
       this.showPreview = next;
     },
@@ -207,12 +208,10 @@ function app() {
       if (!key) return;
       if (this.holdPreviews.includes(key)) {
         this._releaseHoldPreview(key);
-        // If the mouse is no longer over the card, let the preview stop.
         if (this.showPreview !== key) this._pauseCurrentPreview();
         return;
       }
       this._holdPreview(key);
-      // Make sure it starts playing even if the hover already ended.
       if (this.showPreview !== key) {
         this._pauseCurrentPreview();
         this._playPreview(key);
@@ -233,18 +232,10 @@ function app() {
       const p = new URLSearchParams(location.search);
       const urlMode = p.get("mode");
       const hasQ = !!p.get("q");
-      // Store previous state for back navigation logic if needed,
-      // but primarily we just restore state from URL.
       this.mode = urlMode || (hasQ ? "search" : "browse");
       this.query = p.get("q") || "";
       this.lastQuery = this.query;
       this.filters.code = p.get("code") || "";
-      // Sync chips from URL code param
-      if (this.filters.code) {
-        // We don't strictly need to populate codeChips here if we rely on filters.code for API,
-        // but for UI consistency we might want to parse it.
-        // For simplicity, we keep filters.code as the source of truth for API.
-      }
       this.filters.from = p.get("from") || "";
       this.filters.to = p.get("to") || "";
       this.filters.genresMode = p.get("gmode") || "any";
@@ -252,6 +243,17 @@ function app() {
       const cf = p.get("cf");
       this.filters.completionFilter =
         cf === "complete" || cf === "incomplete" ? cf : "all";
+      // Grouped-search tuning from URL
+      const divRaw = p.get("div");
+      if (divRaw != null && divRaw !== "") {
+        const d = parseFloat(divRaw);
+        if (Number.isFinite(d)) this.diversity = Math.min(1, Math.max(0, d));
+      }
+      const fkRaw = p.get("fk");
+      if (fkRaw != null && fkRaw !== "") {
+        const fk = parseInt(fkRaw, 10);
+        this.fetchK = Number.isFinite(fk) && fk > 0 ? fk : null;
+      }
       this.similarOf = p.get("sim") || null;
       if (this.mode === "clustered") {
         const clRaw = p.get("cl");
@@ -315,6 +317,13 @@ function app() {
         p.set("mode", "similar");
         p.set("sim", this.similarOf);
       }
+      // Grouped-search tuning
+      if (this.mode === "search") {
+        if (this.diversity !== 0.0) p.set("div", String(this.diversity));
+        if (Number.isFinite(this.fetchK) && this.fetchK > 0) {
+          p.set("fk", String(this.fetchK));
+        }
+      }
       // Serialize code chips/filters
       if (this.filters.code) p.set("code", this.filters.code);
       if (this.filters.from) p.set("from", this.filters.from);
@@ -325,6 +334,7 @@ function app() {
         p.set("genres", this.filters.genres.join(","));
       if (this.filters.completionFilter !== "all")
         p.set("cf", this.filters.completionFilter);
+      // sort/order only meaningful for browse (search grouped has no sort)
       if (this.mode === "browse") {
         if (this.sort !== "similarity") p.set("sort", this.sort);
         if (this.order !== "desc") p.set("order", this.order);
@@ -359,17 +369,11 @@ function app() {
         if (this.mode !== "browse") this.doBrowse();
         return;
       }
-      this.previousMode = this.mode; // Track for back button if needed
+      this.previousMode = this.mode;
       this.mode = "search";
       this.lastQuery = q;
       this.similarOf = null;
-      if (
-        this.sort === "release_date" &&
-        !new URLSearchParams(location.search).get("sort")
-      ) {
-        this.sort = "similarity";
-      }
-      this.syncURL(true); // Push state
+      this.syncURL(true);
       this.refetch();
     },
     doBrowse() {
@@ -379,7 +383,7 @@ function app() {
       if (!new URLSearchParams(location.search).get("sort")) {
         this.sort = "release_date";
       }
-      this.syncURL(true); // Push state
+      this.syncURL(true);
       this.refetch();
     },
     toggleClusterMode() {
@@ -393,7 +397,7 @@ function app() {
       this.mode = "clustered";
       this.lastQuery = this.query.trim();
       this.similarOf = null;
-      this.syncURL(true); // Push state
+      this.syncURL(true);
       this.fetchClustered();
     },
     applyClusterPrefs() {
@@ -412,14 +416,19 @@ function app() {
       this.clusterPrefs.epsilon = p.epsilon;
       this.applyClusterPrefs();
     },
+    // Grouped-search tuning setters
+    applySearchTuning() {
+      this.syncURL();
+      if (this.mode === "search") this.refetch();
+    },
     findSimilar(id) {
       clearTimeout(this._deb);
       this.closeDetail();
       this.previousMode = this.mode;
-      this.previousQuery = this.lastQuery; // Save context
+      this.previousQuery = this.lastQuery;
       this.mode = "similar";
       this.similarOf = id;
-      this.syncURL(true); // Push state for Back button support
+      this.syncURL(true);
       this.refetch();
     },
     goBack() {
@@ -431,7 +440,6 @@ function app() {
       this.updateCodeSuggestions();
     },
     onCodeInputBlur() {
-      // Delay hiding to allow click selection
       setTimeout(() => {
         this.showCodeDropdown = false;
       }, 200);
@@ -439,7 +447,6 @@ function app() {
     updateCodeSuggestions() {
       const input = this.codeInput.toLowerCase();
       if (!input) {
-        // Show top codes if empty
         this.codeSuggestions = this.facets.codes.slice(0, 10);
       } else {
         this.codeSuggestions = this.facets.codes
@@ -449,7 +456,6 @@ function app() {
     },
     addCodeChip(codeObj) {
       const code = codeObj.code;
-      // Add to filters.code string (comma separated for backend compatibility)
       const currentCodes = this.filters.code
         ? this.filters.code
             .split(",")
@@ -526,12 +532,10 @@ function app() {
       if (this.genreSortOrder === "asc" && this.genreSortBy === "count") {
         genres.reverse();
       }
-      // Note: name sort is usually asc by default, count desc.
-      // Simplified logic:
       if (this.genreSortBy === "name") {
         return this.genreSortOrder === "desc" ? genres.reverse() : genres;
       }
-      return genres; // Default count desc
+      return genres;
     },
     toggleGenreSort(by) {
       if (this.genreSortBy === by) {
@@ -587,10 +591,17 @@ function app() {
           this.page = 0;
           this.exhausted = false;
         }
-        this.items.push(...page.items);
+        // Normalize grouped items: `score` → `similarity` so the rest of the
+        // template (badges, sorting pill, etc.) keeps working unchanged.
+        const normalized = (page.items || []).map((it) => ({
+          ...it,
+          similarity: it.similarity ?? it.score ?? null,
+        }));
+        this.items.push(...normalized);
         this.cursor = page.next_cursor;
         this.exhausted = !page.has_more || !page.next_cursor;
         this.lastTook = page.took_ms ?? null;
+        this.diversityApplied = !!page.diversity_applied;
         if (this.mode === "browse") this.page += 1;
         this.$nextTick(() => this.refreshIcons());
       } catch (e) {
@@ -703,15 +714,6 @@ function app() {
         if (this.filters.genres.length === 1) return this.filters.genres[0];
         return this.filters.genres;
       };
-      const sortFor = (mode) => {
-        if (mode === "similar") return "similarity";
-        if (mode === "browse") return this.sort || "release_date";
-        return this.sort || "similarity";
-      };
-      const orderFor = (mode) => {
-        if (mode === "similar") return "desc";
-        return this.order || "desc";
-      };
       if (this.mode === "search") {
         if (!this.lastQuery) {
           this.mode = "browse";
@@ -719,12 +721,16 @@ function app() {
           this.syncURL();
           return this.buildParams(reset);
         }
+        // ✅ Replaced /search with /search_grouped.
+        // GroupedSearchRequest schema: query, code, genre, genres_mode,
+        // min_release_date, max_release_date, completion_filter,
+        // min_similarity, diversity, fetch_k (plus pagination fields the
+        // endpoint accepts on its own — kept optional / server-driven).
         return {
-          path: "/search",
+          path: "/search_grouped",
           method: "POST",
           body: {
             query: this.lastQuery,
-            limit: 20,
             cursor: reset ? null : this.cursor,
             code: getCodeParam(),
             genre: getGenreParam(),
@@ -735,9 +741,13 @@ function app() {
             max_release_date: this.filters.to
               ? new Date(this.filters.to + "T23:59:59Z").toISOString()
               : null,
-            sort: sortFor("search"),
-            order: orderFor("search"),
             completion_filter: this.filters.completionFilter,
+            min_similarity: null,
+            diversity: Number.isFinite(this.diversity) ? this.diversity : 0.0,
+            fetch_k:
+              Number.isFinite(this.fetchK) && this.fetchK > 0
+                ? this.fetchK
+                : null,
           },
         };
       }
@@ -794,7 +804,6 @@ function app() {
         const r = await fetch(`${API}/facets${qs}`);
         const data = await r.json();
         this.facets = data;
-        // Initialize suggestions
         this.codeSuggestions = data.codes.slice(0, 10);
       } catch {
         /* ignore */
