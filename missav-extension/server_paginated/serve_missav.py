@@ -1,10 +1,13 @@
 """
 Video Search API (FastAPI + psycopg 3 + pgvector).
+
 Target Table: public.videos
 
 Endpoints:
   POST /search          semantic search + filters + cursor pagination
   POST /search_clustered semantic search + dynamic clustering (cluster_utils)
+  GET  /search_grouped  grouped search (code, episode) + MMR + keyset cursor
+  GET  /similar_grouped grouped similar-to-video (stored embedding) + MMR
   POST /similar         similar-to-video (reuses stored embedding)
   POST /hybrid          FTS + vector RRF hybrid
   GET  /browse          plain listing (release_date / created_at)
@@ -466,6 +469,7 @@ class GroupedSearchRequest(BaseModel):
     """Internal request model for fingerprinting and filter application."""
 
     query: Optional[str] = None
+    video_id: Optional[str] = None  # NEW: source video for /similar_grouped
     code: GenreCodeInput = None
     genre: GenreCodeInput = None
     genres_mode: Literal["any", "all"] = "any"
@@ -1066,11 +1070,14 @@ def _grouped_fingerprint(req: GroupedSearchRequest) -> str:
     cursors on change — matching the "cursor bound to request" contract.
     `diversity` is included: it changes MMR's reorder, but not the
     cursor's anchor; still, invalidating on change is the safe default.
+    `video_id` is included so a /similar_grouped cursor can't be replayed
+    against a different source video.
     """
     genre_list = _normalize_list_input(req.genre)
     code_list = _normalize_list_input(req.code)
     parts = [
         req.query or "",
+        req.video_id or "",
         sorted(genre_list) if genre_list else None,
         req.genres_mode,
         sorted(code_list) if code_list else None,
@@ -1137,72 +1144,43 @@ def _normalize_episode(episode: str) -> str:
     return ep.lower()
 
 
-@app.get("/search_grouped", response_model=GroupedSearchResponse)
-def search_grouped(
-    query: Optional[str] = Query(None, min_length=1),
-    code: Annotated[Optional[List[str]], Query()] = None,
-    genre: Annotated[Optional[List[str]], Query()] = None,
-    genres_mode: Literal["any", "all"] = "any",
-    min_release_date: Optional[datetime] = None,
-    max_release_date: Optional[datetime] = None,
-    completion_filter: CompletionFilter = Query("all"),
-    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0),
-    limit: int = Query(50, ge=1, le=500),
-    cursor: Optional[str] = Query(
-        None,
-        description=(
-            "Opaque forward keyset cursor. Walk forward with `next_cursor`; "
-            "walk backward by replaying the stored parent cursor. Bound to the "
-            "request's filters, `diversity` and `fetch_k`; mismatch -> HTTP 400."
-        ),
-    ),
-    fetch_k: Optional[int] = Query(
-        None,
-        ge=1,
-        le=10000,
-        description=(
-            "Candidate window reordered by MMR (only when diversity > 0). "
-            "Defaults to max(limit*3, limit+1). Pages are slices of the "
-            "MMR-ordered window; the keyset anchor advances only when the "
-            "window is exhausted."
-        ),
-    ),
-    diversity: float = Query(0.0, ge=0.0, le=1.0),
-):
+def _grouped_core(
+    *,
+    tag: str,
+    req: GroupedSearchRequest,
+    emb: Optional[List[float]],
+    limit: int,
+    cursor: Optional[str],
+    exclude_group: Optional[Tuple[str, str]] = None,
+) -> GroupedSearchResponse:
     """
-    Grouped search over `public.videos`, keyed on `(code, episode)`.
+    Shared grouped-search engine for /search_grouped and /similar_grouped.
 
-    Sort / keyset order (the cursor anchor always matches it):
-      * With `query`: (best_distance, code, episode_norm) ASC  -> HAVING keyset
-      * Without `query`: (code, episode_norm) ASC              -> WHERE keyset
-
-    With `diversity > 0`, a window of `fetch_k` groups is fetched in the base
-    order and MMR-reordered (deterministic). Each page is a slice of that
-    ordered window; the cursor holds (anchor before window, offset in window),
-    so nothing is skipped or duplicated.
+    emb is None      -> browse mode, order (code, episode_norm)
+    emb is a vector  -> ranked mode, order (best_distance, code, episode_norm)
+    exclude_group    -> (code, episode) removed from results (the source video).
     """
-    if query is None and min_similarity is not None:
-        raise HTTPException(400, "min_similarity requires a query")
-
     t0 = time.perf_counter()
-    req = GroupedSearchRequest(
-        query=query,
-        code=code,
-        genre=genre,
-        genres_mode=genres_mode,
-        min_release_date=min_release_date,
-        max_release_date=max_release_date,
-        completion_filter=completion_filter,
-        min_similarity=min_similarity,
-        diversity=diversity,
-        fetch_k=fetch_k,
-    )
     fp = _grouped_fingerprint(req)
+    diversity = req.diversity
+    fetch_k = req.fetch_k
+    min_similarity = req.min_similarity
 
     anchor: Optional[Tuple[Optional[float], str, str]] = None
     window_offset = 0
     if cursor:
         anchor, window_offset = _decode_grouped_cursor(cursor, fp)
+    logger.info(
+        "%s start ranked=%s limit=%d cursor=%s div=%.2f fetch_k=%s min_sim=%s excl=%s",
+        tag,
+        emb is not None,
+        limit,
+        bool(cursor),
+        diversity,
+        fetch_k,
+        min_similarity,
+        exclude_group,
+    )
 
     params: dict = {}
     conds: List[str] = [
@@ -1216,10 +1194,14 @@ def search_grouped(
     ]
     _apply_filters(req, params, conds)
 
-    query_mode = query is not None
+    if exclude_group is not None:
+        params["ex_code"], params["ex_ep"] = exclude_group
+        conds.append("NOT (v.code = %(ex_code)s AND v.episode = %(ex_ep)s)")
+
+    query_mode = emb is not None
     distance_sql = ""
     if query_mode:
-        params["emb"] = list(_embed_query(query))
+        params["emb"] = emb
         distance_sql = "(v.embedding <=> %(emb)s::vector)"
         conds.append("v.embedding IS NOT NULL")
 
@@ -1228,7 +1210,6 @@ def search_grouped(
         "THEN lpad(btrim(v.episode), 8, '0') "
         "ELSE lower(btrim(v.episode)) END"
     )
-
     having: List[str] = []
     if query_mode:
         if min_similarity is not None:
@@ -1261,7 +1242,6 @@ def search_grouped(
     else:
         base_fetch = limit
     params["limit"] = base_fetch + 1
-
     embed_select = "AVG(v.embedding) AS group_embedding," if diversity_on else ""
 
     sql = f"""
@@ -1319,7 +1299,6 @@ def search_grouped(
         {order_sql}
         LIMIT %(limit)s
     """
-
     try:
         with pool.connection() as conn:
             if query_mode and ITERATIVE_SCAN_MODE:
@@ -1327,13 +1306,11 @@ def search_grouped(
                 conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {int(MAX_SCAN_TUPLES)}")
             rows = conn.execute(sql, params).fetchall()
     except Exception as e:
-        logger.error("search_grouped DB error: %s", e)
+        logger.error("%s DB error: %s", tag, e)
         raise HTTPException(500, f"Grouped search failed: {e}")
 
     has_more_from_db = len(rows) > base_fetch
-    window = rows[:base_fetch]  # base (DB) order
-
-    # Anchor for the *next window* = last row of this window in DB order.
+    window = rows[:base_fetch]
     window_end_anchor: Optional[Tuple[Optional[float], str, str]] = None
     if window:
         last = window[-1]
@@ -1344,31 +1321,28 @@ def search_grouped(
             _normalize_episode(last["episode"]),
         )
 
-    # ---- MMR (deterministic: same window -> same order) ----
     diversity_applied = False
     ordered_window = window
     if diversity_on and window:
         doc_vecs: List[Optional[List[float]]] = []
         for r in window:
-            emb = r.get("group_embedding")
-            doc_vecs.append(_to_float_list(emb) if emb is not None else None)
+            g_emb = r.get("group_embedding")
+            doc_vecs.append(_to_float_list(g_emb) if g_emb is not None else None)
 
         mmr_eligible = [i for i, v in enumerate(doc_vecs) if v is not None]
         null_count = len(window) - len(mmr_eligible)
         if null_count:
             logger.warning(
-                "search_grouped diversity: %d/%d groups have NULL group_embedding; "
+                "%s diversity: %d/%d groups have NULL group_embedding; "
                 "they bypass MMR and are appended at the end of the window.",
+                tag,
                 null_count,
                 len(window),
             )
-
         if len(mmr_eligible) >= 2:
             matrix = np.array([doc_vecs[i] for i in mmr_eligible], dtype=np.float32)
             query_vec = (
-                np.array(params["emb"], dtype=np.float32)
-                if query_mode
-                else matrix.mean(axis=0)
+                np.array(emb, dtype=np.float32) if query_mode else matrix.mean(axis=0)
             )
             mmr_results = mmr_rerank(
                 query_vec=query_vec,
@@ -1381,18 +1355,15 @@ def search_grouped(
             ordered_window = [window[i] for i in reordered_idx + tail]
             diversity_applied = True
 
-    # ---- slice the page out of the (re)ordered window ----
     page_rows = ordered_window[window_offset : window_offset + limit]
     consumed = window_offset + len(page_rows)
     window_has_remaining = consumed < len(ordered_window)
 
     next_cursor: Optional[str] = None
     if window_has_remaining:
-        # Same window, further in: keep the anchor that produced it.
         next_cursor = _encode_grouped_cursor(anchor, consumed, fp)
         has_more = True
     elif has_more_from_db and window_end_anchor is not None:
-        # Window exhausted: move the keyset anchor past the whole window.
         next_cursor = _encode_grouped_cursor(window_end_anchor, 0, fp)
         has_more = True
     else:
@@ -1427,7 +1398,8 @@ def search_grouped(
 
     took = (time.perf_counter() - t0) * 1000
     logger.info(
-        "search_grouped ok n=%d more=%s prev=%s div=%s window=%d/%d off=%d %.1fms",
+        "%s ok n=%d more=%s prev=%s div=%s window=%d/%d off=%d %.1fms",
+        tag,
         len(items),
         has_more,
         has_previous,
@@ -1445,6 +1417,159 @@ def search_grouped(
         has_more=has_more,
         has_previous=has_previous,
         diversity_applied=diversity_applied,
+    )
+
+
+@app.get("/search_grouped", response_model=GroupedSearchResponse)
+def search_grouped(
+    query: Optional[str] = Query(None, min_length=1),
+    code: Annotated[Optional[List[str]], Query()] = None,
+    genre: Annotated[Optional[List[str]], Query()] = None,
+    genres_mode: Literal["any", "all"] = "any",
+    min_release_date: Optional[datetime] = None,
+    max_release_date: Optional[datetime] = None,
+    completion_filter: CompletionFilter = Query("all"),
+    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0),
+    limit: int = Query(50, ge=1, le=500),
+    cursor: Optional[str] = Query(
+        None,
+        description=(
+            "Opaque forward keyset cursor. Walk forward with `next_cursor`; "
+            "walk backward by replaying the stored parent cursor. Bound to the "
+            "request's filters, `diversity` and `fetch_k`; mismatch -> HTTP 400."
+        ),
+    ),
+    fetch_k: Optional[int] = Query(
+        None,
+        ge=1,
+        le=10000,
+        description=(
+            "Candidate window reordered by MMR (only when diversity > 0). "
+            "Defaults to max(limit*3, limit+1). Pages are slices of the "
+            "MMR-ordered window; the keyset anchor advances only when the "
+            "window is exhausted."
+        ),
+    ),
+    diversity: float = Query(0.0, ge=0.0, le=1.0),
+):
+    """
+    Grouped search over `public.videos`, keyed on `(code, episode)`.
+
+    Sort / keyset order (the cursor anchor always matches it):
+      * With `query`: (best_distance, code, episode_norm) ASC  -> HAVING keyset
+      * Without `query`: (code, episode_norm) ASC              -> WHERE keyset
+
+    With `diversity > 0`, a window of `fetch_k` groups is fetched in the base
+    order and MMR-reordered (deterministic). Each page is a slice of that
+    ordered window; the cursor holds (anchor before window, offset in window),
+    so nothing is skipped or duplicated.
+
+    Implementation lives in `_grouped_core` (shared with /similar_grouped).
+    """
+    if query is None and min_similarity is not None:
+        raise HTTPException(400, "min_similarity requires a query")
+
+    req = GroupedSearchRequest(
+        query=query,
+        code=code,
+        genre=genre,
+        genres_mode=genres_mode,
+        min_release_date=min_release_date,
+        max_release_date=max_release_date,
+        completion_filter=completion_filter,
+        min_similarity=min_similarity,
+        diversity=diversity,
+        fetch_k=fetch_k,
+    )
+    emb = list(_embed_query(query)) if query is not None else None
+    return _grouped_core(
+        tag="search_grouped",
+        req=req,
+        emb=emb,
+        limit=limit,
+        cursor=cursor,
+    )
+
+
+@app.get("/similar_grouped", response_model=GroupedSearchResponse)
+def similar_grouped(
+    video_id: str = Query(
+        ..., min_length=1, description="Source video id (public.videos.id)."
+    ),
+    code: Annotated[Optional[List[str]], Query()] = None,
+    genre: Annotated[Optional[List[str]], Query()] = None,
+    genres_mode: Literal["any", "all"] = "any",
+    min_release_date: Optional[datetime] = None,
+    max_release_date: Optional[datetime] = None,
+    completion_filter: CompletionFilter = Query("all"),
+    min_similarity: Optional[float] = Query(None, ge=0.0, le=1.0),
+    limit: int = Query(50, ge=1, le=500),
+    cursor: Optional[str] = Query(
+        None,
+        description=(
+            "Opaque forward keyset cursor from `next_cursor`. Bound to the "
+            "source `video_id`, filters, `diversity` and `fetch_k`; "
+            "mismatch -> HTTP 400."
+        ),
+    ),
+    fetch_k: Optional[int] = Query(
+        None,
+        ge=1,
+        le=10000,
+        description=(
+            "Candidate window reordered by MMR (only when diversity > 0). "
+            "Defaults to max(limit*3, limit+1)."
+        ),
+    ),
+    diversity: float = Query(0.0, ge=0.0, le=1.0),
+):
+    """
+    Grouped "more like this", keyed on `(code, episode)`.
+
+    Uses the stored embedding of `video_id` as the query vector, then behaves
+    like /search_grouped (best-distance ranking, keyset cursor, MMR diversity).
+    The source video's own group is excluded so its variants
+    (uncensored-leak / english-subtitle) never appear as "similar".
+    """
+    t0 = time.perf_counter()
+    with pool.connection() as conn:
+        src = conn.execute(
+            "SELECT embedding, code, episode FROM public.videos WHERE id = %s",
+            (video_id,),
+        ).fetchone()
+    if not src or src["embedding"] is None:
+        logger.warning("similar_grouped source not found/no embedding: %r", video_id)
+        raise HTTPException(404, "Source video or embedding not found")
+
+    emb = _to_float_list(src["embedding"])
+    logger.info(
+        "similar_grouped source=%r group=(%s, %s) dim=%d lookup=%.1fms",
+        video_id,
+        src["code"],
+        src["episode"],
+        len(emb),
+        (time.perf_counter() - t0) * 1000,
+    )
+
+    req = GroupedSearchRequest(
+        video_id=video_id,
+        code=code,
+        genre=genre,
+        genres_mode=genres_mode,
+        min_release_date=min_release_date,
+        max_release_date=max_release_date,
+        completion_filter=completion_filter,
+        min_similarity=min_similarity,
+        diversity=diversity,
+        fetch_k=fetch_k,
+    )
+    return _grouped_core(
+        tag="similar_grouped",
+        req=req,
+        emb=emb,
+        limit=limit,
+        cursor=cursor,
+        exclude_group=(src["code"], src["episode"]),
     )
 
 
