@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-21T21:50:07.838220
+Generated: 2026-11-22T08:12:49.427184
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -12,7 +12,7 @@ Tables: videos, videos_title_backup
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.videos (82436 rows)
+### Table: public.videos (94519 rows)
 ```sql
 CREATE TABLE "public"."videos" (
     "id" text NOT NULL,
@@ -79,20 +79,20 @@ CREATE TABLE "public"."videos_title_backup" (
 ### Table: videos
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | text | 82436 | 0.0% |
-| `embedding` | vector(768) | 78742 | 0.0% |
-| `url` | text | 78587 | 0.0% |
-| `code` | text | 3205 | 0.0% |
-| `episode` | text | 4200 | 0.0% |
-| `video_id` | text | 75052 | 0.0% |
-| `title` | text | 62123 | 0.48% |
-| `thumbnail` | text | 79258 | 0.0% |
-| `preview` | text | 78529 | 0.0% |
-| `details` | text | 25976 | 54.93% |
-| `release_date` | timestamp with time zone | 18416 | 54.74% |
-| `created_at` | timestamp with time zone | 5511 | 0.0% |
-| `updated_at` | timestamp with time zone | 546 | 0.0% |
-| `genres` | text[] | 26778 | 44.01% |
+| `id` | text | 94519 | 0.0% |
+| `embedding` | vector(768) | 90853 | 0.0% |
+| `url` | text | 88355 | 0.0% |
+| `code` | text | 3211 | 0.0% |
+| `episode` | text | 4328 | 0.0% |
+| `video_id` | text | 84818 | 0.0% |
+| `title` | text | 69620 | 0.42% |
+| `thumbnail` | text | 91805 | 0.0% |
+| `preview` | text | 88295 | 0.0% |
+| `details` | text | 34429 | 47.7% |
+| `release_date` | timestamp with time zone | 24938 | 47.02% |
+| `created_at` | timestamp with time zone | 5659 | 0.0% |
+| `updated_at` | timestamp with time zone | 707 | 0.0% |
+| `genres` | text[] | 36009 | 38.38% |
 
 ### Table: videos_title_backup
 | Column | Type | Distinct Values | Null % |
@@ -109,9 +109,9 @@ CREATE TABLE "public"."videos_title_backup" (
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-11ai8nk | [-0.012903948,0.042120714,-0.02795241,0.009049855,… | https://missav.ws/en/sprd-1478-english-subtitle | sprd | 1478 | sprd-1478 | Tabiji Mother and play Traveling Yuri Tadokoro | https://fourhoi.com/sprd-1478-english-subtitle/cov… | https://fourhoi.com/sprd-1478-english-subtitle/pre… | Yuri who lost her husband early and raised her son… | 2021-11-11 11:00:40+08 | 2026-11-12 13:24:47.556815+08 | 2026-11-16 21:12:37.409468+08 | {"English subtitle","Mature Woman",Mother,Wife,Inc… |
-| jav-11azgar | [0.018382048,0.007798423,-0.0010025469,0.036643162… | https://missav.ws/dm45/en/juq-805 | juq | 805 | juq-805 | A married woman who was given a spare key to her r… | https://fourhoi.com/juq-805/cover-n.jpg | https://fourhoi.com/juq-805/preview.mp4 | One day, Arita, who lives alone, meets a married w… | 2024-07-05 10:00:00+08 | 2026-11-16 04:56:50.158039+08 | 2026-11-16 21:12:37.409468+08 | {"Mature Woman",Wife,Adultery,Slim,Individual,Crea… |
-| jav-11b5c1p | [0.029449383,0.036444865,-0.007918624,0.033791665,… | https://missav.ws/dm53/en/juq-235-uncensored-leak | juq | 235 | juq-235 | Fully Prepared In 0 Seconds A Voluptuous Mistress… | https://fourhoi.com/juq-235-uncensored-leak/cover-… | https://fourhoi.com/juq-235-uncensored-leak/previe… | I met a married woman, Marina, who lives in the ne… | 2023-05-19 10:00:00+08 | 2026-11-16 05:03:36.271639+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak","Mature Woman",Wife,Adultery,"F… |
+| jav-1dj2sme | [0.056928087,0.017732276,-0.06654117,0.032515366,0… | https://missav.ws/en/roe-431-uncensored-leak | roe | 431 | roe-431-uncensored-leak | When I returned home, I found out that my grandfat… | https://fourhoi.com/roe-431-uncensored-leak/cover-… | https://fourhoi.com/roe-431-uncensored-leak/previe… | I had been living alone in a dormitory near my sch… | 2025-12-05 00:00:00+08 | 2026-11-21 18:42:46.951717+08 | 2026-11-21 18:46:11.434342+08 | {"Uncensored leak","Mature Woman",Mother,Wife,"Big… |
+| jav-xcz7co | [0.027618011,-0.00023862824,-0.01892923,0.08493942… | https://missav.ws/en/roe-433-uncensored-leak | roe | 433 | roe-433-uncensored-leak | My stepdaughter calls her male friends over and ma… | https://fourhoi.com/roe-433-uncensored-leak/cover-… | https://fourhoi.com/roe-433-uncensored-leak/previe… | Just recently, I got married to a man with a child… | 2025-12-05 00:00:00+08 | 2026-11-21 18:42:46.951717+08 | 2026-11-21 18:46:11.434342+08 | {"Uncensored leak",Humiliation,"Mature Woman",Wife… |
+| jav-u175kt | [0.025897102,-0.005319078,-0.022666482,0.08800552,… | https://missav.ws/en/roe-433 | roe | 433 | roe-433 | My stepdaughter calls her male friends over and ma… | https://fourhoi.com/roe-433/cover-n.jpg | https://fourhoi.com/roe-433/preview.mp4 | Just recently, I got married to a man with a child… | 2025-12-05 00:00:00+08 | 2026-11-21 18:42:46.951717+08 | 2026-11-21 18:46:11.434342+08 | {Humiliation,"Mature Woman",Wife,Creampie,Orgy,Hd,… |
 
 ### Table: videos_title_backup (first 3 rows)
 | id | code | episode | title | backed_up_at |
