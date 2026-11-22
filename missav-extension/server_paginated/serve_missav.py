@@ -38,6 +38,7 @@ from jet.adapters.llama_cpp.config import (
     EMBED_MODEL,
     EMBED_QUERY_PREFIX,
 )
+from jet.adapters.llama_cpp.diversity_utils.mmr import mmr_rerank
 from jet.adapters.llama_cpp.diversity_utils.semhash import (
     compute_shuffle_fetch_k,
     shuffle_and_diversify,
@@ -1064,9 +1065,21 @@ def search_grouped(
         None,
         ge=1,
         le=5000,
+        description="Number of diverse groups to return.",
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Number of groups to skip before selecting candidates.",
+    ),
+    fetch_k: Optional[int] = Query(
+        None,
+        ge=1,
+        le=10000,
         description=(
-            "Optional cap on returned groups. Omit for the full grouped result "
-            "set (this endpoint is intentionally non-paginated)."
+            "Number of candidate groups to fetch from DB before diversification. "
+            "If omitted, defaults to limit * 3. Higher values improve diversity "
+            "but increase latency."
         ),
     ),
     diversity: float = Query(
@@ -1085,12 +1098,14 @@ def search_grouped(
     """
     Non-paginated search grouped by (code, episode).
     Supports optional MMR-based diversification via 'diversity' parameter.
+    Uses pre-computed embeddings from Postgres for maximum efficiency.
     """
     if query is None and min_similarity is not None:
         raise HTTPException(400, "min_similarity requires a query")
 
     t0 = time.perf_counter()
 
+    # --- Setup Filters ---
     class _Req:
         pass
 
@@ -1124,20 +1139,24 @@ def search_grouped(
 
     where_sql = " AND ".join(conds)
 
-    # Determine fetch size based on diversity
-    effective_limit = limit if limit else 5000
-    if diversity > 0.0:
-        from jet.adapters.llama_cpp.diversity_utils.semhash import compute_fetch_k
+    # --- Determine Fetch Size ---
+    effective_limit = limit if limit else 50
+    if fetch_k is None:
+        # Default to 3x limit if diversity is active, otherwise just limit
+        fetch_k = effective_limit * 3 if diversity > 0.0 else effective_limit
 
-        fetch_k = compute_fetch_k(effective_limit, diversity)
-        logger.info(
-            f"Diversity enabled: fetching {fetch_k} candidates for top-{effective_limit}"
-        )
-    else:
-        fetch_k = effective_limit
+    # Ensure fetch_k is at least the limit
+    fetch_k = max(fetch_k, effective_limit)
 
+    # Apply offset to the fetch query
     params["limit"] = fetch_k
+    params["offset"] = offset
 
+    logger.info(
+        f"Search Grouped: limit={effective_limit}, fetch_k={fetch_k}, offset={offset}, diversity={diversity}"
+    )
+
+    # --- Build SQL ---
     if query_mode:
         score_select = f"MIN({distance_sql})::float8 AS best_distance,"
         if min_similarity is not None:
@@ -1215,7 +1234,7 @@ def search_grouped(
         GROUP BY v.code, v.episode
         {group_having}
         {order_sql}
-        LIMIT %(limit)s
+        LIMIT %(limit)s OFFSET %(offset)s
     """
 
     try:
@@ -1230,69 +1249,78 @@ def search_grouped(
 
     items: List[GroupedVideoItem] = []
 
-    # Process Results with Diversity if requested
+    # --- Process Results with Diversity if requested ---
     if diversity > 0.0 and rows:
-        from jet.adapters.llama_cpp.diversity_utils.semhash import diversify_results
-
-        search_results = []
-        embeddings_list = []
+        # Prepare data for MMR
+        doc_vecs = []
+        relevance_scores = []
+        valid_rows = []
 
         for r in rows:
+            # Skip rows without valid embeddings
+            if r.get("group_embedding") is None:
+                continue
+
+            emb = _to_float_list(r["group_embedding"])
+            doc_vecs.append(emb)
+
+            # Calculate relevance score (1 - distance)
             best_dist = r.get("best_distance")
+            # If no query, treat all as equally relevant (1.0) or use recency
             score = (1.0 - float(best_dist)) if best_dist is not None else 1.0
+            relevance_scores.append(score)
+            valid_rows.append(r)
 
-            # Use title/details for document context
-            doc_text = (
-                f"{r['title']} {r['details']}" if r.get("details") else str(r["title"])
-            )
+        if doc_vecs:
+            doc_matrix = np.array(doc_vecs, dtype=np.float32)
 
-            search_results.append({"id": r["id"], "score": score, "document": doc_text})
-
-            # Use the aggregated group embedding
-            if r.get("group_embedding") is not None:
-                embeddings_list.append(_to_float_list(r["group_embedding"]))
+            # For MMR, we need a query vector.
+            # If query_mode is True, use the query embedding.
+            # If False, use the centroid of the candidates to maximize internal diversity.
+            if query_mode:
+                query_vec = np.array(params["emb"], dtype=np.float32)
             else:
-                # Fallback: if avg embedding is null (shouldn't happen if filtered), use zeros
-                embeddings_list.append(np.zeros(768, dtype=np.float32))
+                query_vec = np.mean(doc_matrix, axis=0)
 
-        if embeddings_list:
-            embeddings_matrix = np.array(embeddings_list, dtype=np.float32)
+            # Run MMR
+            # lambda_param: 1.0 = pure relevance, 0.0 = pure diversity
+            # We map 'diversity' (0-1) to lambda: high diversity -> low lambda
+            lambda_param = 1.0 - diversity
 
-            diversified_results = diversify_results(
-                results=search_results,
+            mmr_results = mmr_rerank(
+                query_vec=query_vec,
+                doc_vecs=doc_matrix,
                 top_k=effective_limit,
-                diversity=diversity,
-                embeddings=embeddings_matrix,
+                lambda_param=lambda_param,
             )
 
-            row_map = {r["id"]: r for r in rows}
+            # Map MMR results back to items
+            for res in mmr_results:
+                original_row = valid_rows[res["index"]]
+                best_dist = original_row.get("best_distance")
+                score = (1.0 - float(best_dist)) if best_dist is not None else None
 
-            for res in diversified_results:
-                original_row = row_map.get(res["id"])
-                if original_row:
-                    best_dist = original_row.get("best_distance")
-                    score = (1.0 - float(best_dist)) if best_dist is not None else None
-                    items.append(
-                        GroupedVideoItem(
-                            id=original_row["id"],
-                            video_id=original_row["video_id"],
-                            code=original_row["code"],
-                            episode=original_row["episode"],
-                            video_count=int(original_row["video_count"]),
-                            title=original_row["title"],
-                            details=original_row["details"],
-                            thumbnail=original_row["thumbnail"],
-                            preview=original_row["preview"],
-                            release_date=original_row["release_date"],
-                            genres=original_row["genres"],
-                            created_at=original_row["created_at"],
-                            updated_at=original_row["updated_at"],
-                            url=original_row["url"],
-                            url_uncnsrd=original_row["url_uncnsrd"],
-                            url_engsub=original_row["url_engsub"],
-                            score=score,
-                        )
+                items.append(
+                    GroupedVideoItem(
+                        id=original_row["id"],
+                        video_id=original_row["video_id"],
+                        code=original_row["code"],
+                        episode=original_row["episode"],
+                        video_count=int(original_row["video_count"]),
+                        title=original_row["title"],
+                        details=original_row["details"],
+                        thumbnail=original_row["thumbnail"],
+                        preview=original_row["preview"],
+                        release_date=original_row["release_date"],
+                        genres=original_row["genres"],
+                        created_at=original_row["created_at"],
+                        updated_at=original_row["updated_at"],
+                        url=original_row["url"],
+                        url_uncnsrd=original_row["url_uncnsrd"],
+                        url_engsub=original_row["url_engsub"],
+                        score=score,
                     )
+                )
     else:
         # Standard Behavior (No Diversity)
         for r in rows[:effective_limit]:
@@ -1322,10 +1350,11 @@ def search_grouped(
 
     took = (time.perf_counter() - t0) * 1000
     logger.info(
-        "search_grouped ok query=%s codes=%s limit=%s diversity=%.1f n=%d %.1fms",
+        "search_grouped ok query=%s codes=%s limit=%s fetch_k=%s diversity=%.1f n=%d %.1fms",
         bool(query_mode),
         _normalize_list_input(code),
-        limit,
+        effective_limit,
+        fetch_k,
         diversity,
         len(items),
         took,
