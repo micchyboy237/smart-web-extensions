@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-22T08:12:49.427184
+Generated: 2026-11-27T05:56:55.389336
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -12,7 +12,7 @@ Tables: videos, videos_title_backup
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.videos (94519 rows)
+### Table: public.videos (111955 rows)
 ```sql
 CREATE TABLE "public"."videos" (
     "id" text NOT NULL,
@@ -79,20 +79,20 @@ CREATE TABLE "public"."videos_title_backup" (
 ### Table: videos
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | text | 94519 | 0.0% |
-| `embedding` | vector(768) | 90853 | 0.0% |
-| `url` | text | 88355 | 0.0% |
-| `code` | text | 3211 | 0.0% |
-| `episode` | text | 4328 | 0.0% |
-| `video_id` | text | 84818 | 0.0% |
-| `title` | text | 69620 | 0.42% |
-| `thumbnail` | text | 91805 | 0.0% |
-| `preview` | text | 88295 | 0.0% |
-| `details` | text | 34429 | 47.7% |
-| `release_date` | timestamp with time zone | 24938 | 47.02% |
-| `created_at` | timestamp with time zone | 5659 | 0.0% |
-| `updated_at` | timestamp with time zone | 707 | 0.0% |
-| `genres` | text[] | 36009 | 38.38% |
+| `id` | text | 111955 | 0.0% |
+| `embedding` | vector(768) | 108162 | 0.0% |
+| `url` | text | 101937 | 0.0% |
+| `code` | text | 3225 | 0.0% |
+| `episode` | text | 4700 | 0.0% |
+| `video_id` | text | 98089 | 0.0% |
+| `title` | text | 82235 | 0.35% |
+| `thumbnail` | text | 108708 | 0.0% |
+| `preview` | text | 102519 | 0.0% |
+| `details` | text | 46794 | 42.15% |
+| `release_date` | timestamp with time zone | 31729 | 40.91% |
+| `created_at` | timestamp with time zone | 5878 | 0.0% |
+| `updated_at` | timestamp with time zone | 990 | 0.0% |
+| `genres` | text[] | 46450 | 32.4% |
 
 ### Table: videos_title_backup
 | Column | Type | Distinct Values | Null % |
@@ -109,9 +109,9 @@ CREATE TABLE "public"."videos_title_backup" (
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-1dj2sme | [0.056928087,0.017732276,-0.06654117,0.032515366,0… | https://missav.ws/en/roe-431-uncensored-leak | roe | 431 | roe-431-uncensored-leak | When I returned home, I found out that my grandfat… | https://fourhoi.com/roe-431-uncensored-leak/cover-… | https://fourhoi.com/roe-431-uncensored-leak/previe… | I had been living alone in a dormitory near my sch… | 2025-12-05 00:00:00+08 | 2026-11-21 18:42:46.951717+08 | 2026-11-21 18:46:11.434342+08 | {"Uncensored leak","Mature Woman",Mother,Wife,"Big… |
-| jav-xcz7co | [0.027618011,-0.00023862824,-0.01892923,0.08493942… | https://missav.ws/en/roe-433-uncensored-leak | roe | 433 | roe-433-uncensored-leak | My stepdaughter calls her male friends over and ma… | https://fourhoi.com/roe-433-uncensored-leak/cover-… | https://fourhoi.com/roe-433-uncensored-leak/previe… | Just recently, I got married to a man with a child… | 2025-12-05 00:00:00+08 | 2026-11-21 18:42:46.951717+08 | 2026-11-21 18:46:11.434342+08 | {"Uncensored leak",Humiliation,"Mature Woman",Wife… |
-| jav-u175kt | [0.025897102,-0.005319078,-0.022666482,0.08800552,… | https://missav.ws/en/roe-433 | roe | 433 | roe-433 | My stepdaughter calls her male friends over and ma… | https://fourhoi.com/roe-433/cover-n.jpg | https://fourhoi.com/roe-433/preview.mp4 | Just recently, I got married to a man with a child… | 2025-12-05 00:00:00+08 | 2026-11-21 18:42:46.951717+08 | 2026-11-21 18:46:11.434342+08 | {Humiliation,"Mature Woman",Wife,Creampie,Orgy,Hd,… |
+| jav-1ufew13 | [0.027087871,0.043751717,-0.03404353,0.044001475,0… | https://missav.ws/dm68/en/jusd-165 | jusd | 165 | jusd-165 | In Front Of My Beloved Husband... Omnibus 4 Hours… | https://fourhoi.com/jusd-165/cover-n.jpg | https://fourhoi.com/jusd-165/preview.mp4 | The best compilation of "Beloved Husband's Eyes...… | 2008-11-07 11:00:00+08 | 2026-11-21 21:29:00.924688+08 | 2026-11-21 21:31:12.51596+08 | {Humiliation,"Mature Woman",Wife,Collection,"Slim… |
+| jav-1tvfon5 | [0.033511966,0.050498962,-0.0077666417,0.044945106… | https://missav.ws/dm68/en/jusd-163 | jusd | 163 | jusd-163 | Slutty Wife In The Early Afternoon 18 People 4 Hou… | https://fourhoi.com/jusd-163/cover-n.jpg | https://fourhoi.com/jusd-163/preview.mp4 | The crotch of frustrated married women opens at no… | 2008-10-24 12:00:04+08 | 2026-11-21 21:29:00.924688+08 | 2026-11-21 21:31:12.51596+08 | {"Mature Woman",Wife,"Big Breasts",Ride,"Slim Pixe… |
+| jav-rztdaz | [0.006603393,0.054553166,0.002542359,0.058219478,0… | https://missav.ws/dm67/en/jusd-162 | jusd | 162 | jusd-162 | Horny Punishment Bride Teasing Omnibus 4 Hours - M… | https://fourhoi.com/jusd-162/cover-n.jpg | https://fourhoi.com/jusd-162/preview.mp4 | A selection of masterpieces from the popular drama… | 2008-10-24 12:00:03+08 | 2026-11-21 21:29:00.924688+08 | 2026-11-21 21:31:12.51596+08 | {Shame,"Mature Woman",Wife,Collection,"Slim Pixela… |
 
 ### Table: videos_title_backup (first 3 rows)
 | id | code | episode | title | backed_up_at |
