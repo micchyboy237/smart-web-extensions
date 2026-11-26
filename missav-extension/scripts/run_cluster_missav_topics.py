@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, TypedDict
 
-from jet.adapters.llama_cpp.cluster_utils import (
+from jet.adapters.llama_cpp.cluster_utils.clusterer import (
     NOISE_KEY,
     DetailedAnalysis,
     TextsClusterer,
@@ -193,6 +193,12 @@ def get_args():
         default=0.25,
         help="Cluster selection epsilon (lower=strict, higher=loose).",
     )
+    parser.add_argument(
+        "-k",
+        "--extract-keywords",
+        action="store_true",
+        help="Extract similar keywords per cluster.",
+    )
     return parser.parse_args()
 
 
@@ -229,24 +235,27 @@ if __name__ == "__main__":
 
     summary = clusterer.get_summary(analysis)
 
-    keywords = extract_cluster_keywords(
-        analysis,
-        top_n=None,  # No limit
-        min_coverage=0.2,  # At least 20% coverage
-        min_collocations=2,  # At least 2 collocations
-    )
-    keywords_report = build_keywords_report(analysis, keywords)
+    if args.extract_keywords:
+        keywords = extract_cluster_keywords(
+            analysis,
+            top_n=None,  # No limit
+            min_coverage=0.2,  # At least 20% coverage
+            min_collocations=2,  # At least 2 collocations
+        )
+        keywords_report = build_keywords_report(analysis, keywords)
 
-    print("\n" + "=" * 60)
-    print("CLUSTER KEYWORDS (largest cluster first):")
-    print("=" * 60)
-    for name, rep in keywords_report.items():
-        shown = ", ".join(f"{ng} ({n})" for ng, n in rep["keywords"].items()) or "-"
-        print(f"{name} [{rep['count']} texts]: {shown}")
+        print("\n" + "=" * 60)
+        print("CLUSTER KEYWORDS (largest cluster first):")
+        print("=" * 60)
+        for name, rep in keywords_report.items():
+            shown = ", ".join(f"{ng} ({n})" for ng, n in rep["keywords"].items()) or "-"
+            print(f"{name} [{rep['count']} texts]: {shown}")
 
-    keywords_path = OUTPUT_DIR / "keywords.json"
-    keywords_path.write_text(json.dumps(keywords_report, indent=2, ensure_ascii=False))
-    print(f"Keywords saved to {keywords_path}")
+        keywords_path = OUTPUT_DIR / "keywords.json"
+        keywords_path.write_text(
+            json.dumps(keywords_report, indent=2, ensure_ascii=False)
+        )
+        print(f"Keywords saved to {keywords_path}")
 
     saved = save_cluster_results(
         OUTPUT_DIR,

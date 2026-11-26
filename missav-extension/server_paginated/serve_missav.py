@@ -35,7 +35,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from jet.adapters.llama_cpp.chunking_utils import truncate_texts
-from jet.adapters.llama_cpp.cluster_utils import TextsClusterer
+from jet.adapters.llama_cpp.cluster_utils.clusterer import TextsClusterer
 from jet.adapters.llama_cpp.config import (
     EMBED_DOC_PREFIX,
     EMBED_MODEL,
@@ -2289,31 +2289,65 @@ def facets(
 
 
 @app.get("/facets/codes")
-def facets_codes():
+def facets_codes(
+    completion_filter: CompletionFilter = Query("all"),
+):
+    """
+    Returns ALL series codes with counts.
+    Respects the completion_filter to show counts for Complete/Incomplete/All videos.
+    """
+    extra = _completion_filter_sql(completion_filter)
     with pool.connection() as conn:
         codes = conn.execute(
-            """
+            f"""
             SELECT code,
-                    COUNT(*)::int AS count,
-                    SUM(CASE
-                        WHEN COALESCE(NULLIF(title, ''), NULL) IS NOT NULL
-                                AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL
-                                AND release_date IS NOT NULL
-                                AND genres IS NOT NULL AND cardinality(genres) > 0
-                        THEN 1 ELSE 0 END)::int AS completed
+                COUNT(*)::int AS count,
+                SUM(CASE
+                    WHEN COALESCE(NULLIF(title, ''), NULL) IS NOT NULL
+                    AND COALESCE(NULLIF(details, ''), NULL) IS NOT NULL
+                    AND release_date IS NOT NULL
+                    AND genres IS NOT NULL AND cardinality(genres) > 0
+                    THEN 1 ELSE 0 END)::int AS completed
             FROM public.videos
-            WHERE code IS NOT NULL
+            WHERE code IS NOT NULL {extra}
             GROUP BY code
             ORDER BY count DESC
-        """
+            """
         ).fetchall()
-    return {
-        "code_count": len(codes),
-        "codes": [
-            {"code": r["code"], "count": r["count"], "completed": r["completed"]}
-            for r in codes
-        ],
-    }
+        return {
+            "code_count": len(codes),
+            "codes": [
+                {"code": r["code"], "count": r["count"], "completed": r["completed"]}
+                for r in codes
+            ],
+        }
+
+
+@app.get("/facets/genres")
+def facets_genres(
+    completion_filter: CompletionFilter = Query("all"),
+):
+    """
+    Returns ALL genres, not just the top N.
+    Useful for the 'Show All Genres' modal.
+    """
+    extra = _completion_filter_sql(completion_filter)
+    with pool.connection() as conn:
+        # Removed LIMIT to get all genres
+        genres = conn.execute(
+            f"""
+            SELECT g AS name, COUNT(*)::int AS count
+            FROM public.videos, unnest(genres) AS g
+            WHERE genres IS NOT NULL {extra}
+            GROUP BY g 
+            ORDER BY count DESC NULLS LAST
+            """
+        ).fetchall()
+
+        return {
+            "genre_count": len(genres),
+            "genres": [{"name": r["name"], "count": r["count"]} for r in genres],
+        }
 
 
 # --------------------------------------------------------------------------- #

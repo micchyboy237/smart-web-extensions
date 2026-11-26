@@ -1,7 +1,4 @@
 // client_paginated/app.js
-// Search + browse now use GET /search_grouped (keyset cursor, grouped by code+episode).
-// Similar videos now use GET /similar_grouped (grouped by code+episode).
-// /search_clustered (HDBSCAN topics) is unchanged.
 function app() {
   const API = "http://localhost:9001";
   const PAGE_SIZE = 20;
@@ -10,20 +7,27 @@ function app() {
     amber: { consistency: 0.55, centroidSim: 0.6 },
     core: { silhouette: 0.4, probability: 0.7 },
   };
-  // Diversity presets -> /search_grouped & /similar_grouped `diversity` (MMR, 0 = off)
   const DIVERSITY_LEVELS = { off: 0, low: 0.25, medium: 0.5, high: 0.8 };
-  // Grouped item -> shape the card templates already expect.
+
+  // Helper to format numbers (1.1k, 11.1k, etc.)
+  function formatCount(num) {
+    if (num == null) return "0";
+    if (num < 1000) return num.toString();
+    if (num < 10000) return (num / 1000).toFixed(1) + "k";
+    return Math.floor(num / 1000) + "k";
+  }
+
   function normalizeGrouped(g) {
     return {
       ...g,
-      similarity: g.score ?? null, // score -> similarity
-      // Prefer standard url, fallback to uncensored or engsub if needed/available
+      similarity: g.score ?? null,
       url: g.url || g.url_uncnsrd || g.url_engsub || null,
     };
   }
+
   return {
     // ── state ──
-    mode: "browse", // 'search' | 'similar' | 'browse' | 'clustered'
+    mode: "browse",
     query: "",
     lastQuery: "",
     items: [],
@@ -41,15 +45,18 @@ function app() {
       genres: [],
       completionFilter: "all",
     },
-    // grouped-search diversity (MMR)
-    diversity: "off", // key of DIVERSITY_LEVELS
+    diversity: "off",
     codeInput: "",
     codeSuggestions: [],
     showCodeDropdown: false,
     genresModalOpen: false,
+    codesModalOpen: false, // New state for codes modal
     genreSortBy: "count",
     genreSortOrder: "desc",
+    codeSortBy: "count", // New state for code sorting
+    codeSortOrder: "desc",
     facets: { genres: [], years: [], codes: [] },
+    allGenres: [],
     detail: { open: false, loading: false, video: null },
     similarOf: null,
     toasts: [],
@@ -71,6 +78,7 @@ function app() {
       candidateSource: "recent",
     },
     clusterUi: {},
+
     // ── lifecycle ──
     boot() {
       this.hydrateFromURL();
@@ -86,6 +94,7 @@ function app() {
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
           if (this.genresModalOpen) this.genresModalOpen = false;
+          if (this.codesModalOpen) this.codesModalOpen = false;
           else this.closeDetail();
         }
         if (
@@ -139,9 +148,11 @@ function app() {
         if (!this.showPreview && keys.length === 0) this._pauseCurrentPreview();
       });
     },
+
     refreshIcons() {
       if (window.lucide) lucide.createIcons();
     },
+
     // ── preview playback ──
     _previewKeyOf(item) {
       return item?.id ? `home-0-${item.id}` : null;
@@ -220,6 +231,7 @@ function app() {
       this.showPreview = null;
       this.holdPreviews = [];
     },
+
     // ── URL sync ──
     hydrateFromURL() {
       const p = new URLSearchParams(location.search);
@@ -313,6 +325,7 @@ function app() {
         this.mode === "similar"
       );
     },
+
     // ── actions ──
     onQueryInput() {
       clearTimeout(this._deb);
@@ -350,7 +363,6 @@ function app() {
       this.syncURL(true);
       this.refetch();
     },
-    // Diversity (MMR) selector handler
     setDiversity(level) {
       if (!(level in DIVERSITY_LEVELS)) return;
       this.diversity = level;
@@ -400,6 +412,7 @@ function app() {
     goBack() {
       window.history.back();
     },
+
     // Code autocomplete
     onCodeInputFocus() {
       this.showCodeDropdown = true;
@@ -485,9 +498,10 @@ function app() {
         .slice(-10)
         .reverse();
     },
-    // Genre modal sorting
-    get sortedGenresForModal() {
-      const genres = [...this.facets.genres];
+
+    // Genre sorting
+    get sortedAllGenres() {
+      const genres = [...this.allGenres];
       if (this.genreSortBy === "name") {
         genres.sort((a, b) => a.name.localeCompare(b.name));
         return this.genreSortOrder === "desc" ? genres.reverse() : genres;
@@ -503,6 +517,26 @@ function app() {
         this.genreSortOrder = by === "count" ? "desc" : "asc";
       }
     },
+
+    // Code sorting
+    get sortedAllCodes() {
+      const codes = [...this.facets.codes];
+      if (this.codeSortBy === "name") {
+        codes.sort((a, b) => a.code.localeCompare(b.code));
+        return this.codeSortOrder === "desc" ? codes.reverse() : codes;
+      }
+      codes.sort((a, b) => b.count - a.count);
+      return this.codeSortOrder === "asc" ? codes.reverse() : codes;
+    },
+    toggleCodeSort(by) {
+      if (this.codeSortBy === by) {
+        this.codeSortOrder = this.codeSortOrder === "asc" ? "desc" : "asc";
+      } else {
+        this.codeSortBy = by;
+        this.codeSortOrder = by === "count" ? "desc" : "asc";
+      }
+    },
+
     // ── fetching (paginated modes) ──
     refetch() {
       this.clearPreviews();
@@ -547,8 +581,6 @@ function app() {
           this.cursor = null;
           this.exhausted = false;
         }
-        // /search_grouped and /similar_grouped items need normalizing;
-        // clustered items are handled separately.
         const incoming =
           params.kind === "grouped"
             ? page.items.map(normalizeGrouped)
@@ -566,6 +598,7 @@ function app() {
         if (gen === this._gen) this.loading = false;
       }
     },
+
     // ── fetching (clustered mode) ──
     async fetchClustered() {
       this.clearPreviews();
@@ -609,6 +642,7 @@ function app() {
         if (gen === this._genClustered) this.clustered.loading = false;
       }
     },
+
     // ── shared filter helpers ──
     _codeList() {
       const raw = (this.filters.code || "").trim();
@@ -657,79 +691,84 @@ function app() {
         completion_filter: this.filters.completionFilter,
       };
     },
-    // Builds the request for the active paginated mode.
-    //   search / browse / similar -> GET /search_grouped or /similar_grouped
     buildParams(reset) {
-      // Handle Similar Mode via /similar_grouped
       if (this.mode === "similar") {
         const p = new URLSearchParams();
         p.set("video_id", this.similarOf);
         p.set("limit", String(PAGE_SIZE));
         if (!reset && this.cursor) p.set("cursor", this.cursor);
-
         this._codeList().forEach((c) => p.append("code", c));
         this.filters.genres.forEach((g) => p.append("genre", g));
         p.set("genres_mode", this.filters.genresMode);
-
         const from = this._isoFrom();
         const to = this._isoTo();
         if (from) p.set("min_release_date", from);
         if (to) p.set("max_release_date", to);
         if (this.filters.completionFilter !== "all")
           p.set("completion_filter", this.filters.completionFilter);
-
         const div = DIVERSITY_LEVELS[this.diversity] ?? 0;
         if (div > 0) p.set("diversity", String(div));
-
         return {
           kind: "grouped",
           path: `/similar_grouped?${p}`,
           method: "GET",
         };
       }
-
       if (this.mode === "search" && !this.lastQuery) {
         this.mode = "browse";
         this.similarOf = null;
         this.syncURL();
       }
-
       const p = new URLSearchParams();
       if (this.mode === "search" && this.lastQuery)
         p.set("query", this.lastQuery);
       p.set("limit", String(PAGE_SIZE));
       if (!reset && this.cursor) p.set("cursor", this.cursor);
-
       this._codeList().forEach((c) => p.append("code", c));
       this.filters.genres.forEach((g) => p.append("genre", g));
       p.set("genres_mode", this.filters.genresMode);
-
       const from = this._isoFrom();
       const to = this._isoTo();
       if (from) p.set("min_release_date", from);
       if (to) p.set("max_release_date", to);
       if (this.filters.completionFilter !== "all")
         p.set("completion_filter", this.filters.completionFilter);
-
       const div = DIVERSITY_LEVELS[this.diversity] ?? 0;
       if (div > 0) p.set("diversity", String(div));
-
       return { kind: "grouped", path: `/search_grouped?${p}`, method: "GET" };
     },
     async fetchFacets() {
       try {
+        // 1. Fetch standard facets (for sidebar summary: top 60 genres, top 40 codes, years)
         let qs = "";
         if (this.filters.completionFilter !== "all") {
           qs = `?completion_filter=${this.filters.completionFilter}`;
         }
+
+        // We still need /facets for years and the limited sidebar lists
         const r = await fetch(`${API}/facets${qs}`);
         const data = await r.json();
-        this.facets = data;
-        this.codeSuggestions = data.codes.slice(0, 10);
+
+        // Use the limited list for the sidebar view to keep it clean
+        this.facets.genres = data.genres;
+        this.facets.years = data.years;
+
+        // 2. Fetch ALL genres from the new endpoint for the Modal
+        // Note: Ensure you have added /facets/genres to serve_missav.py as discussed previously
+        const genresRes = await fetch(`${API}/facets/genres${qs}`);
+        const genresData = await genresRes.json();
+        this.allGenres = genresData.genres || [];
+
+        // 3. Fetch ALL codes from /facets/codes WITH completion filter
+        const codesRes = await fetch(`${API}/facets/codes${qs}`);
+        const codesData = await codesRes.json();
+        this.facets.codes = codesData.codes || [];
+        this.codeSuggestions = this.facets.codes.slice(0, 10);
       } catch {
         /* ignore */
       }
     },
+
     // ── cluster view helpers ──
     clusterTier(c) {
       if (!c || c.is_noise) return "grey";
@@ -814,6 +853,7 @@ function app() {
         [id]: { ...cur, hidden: !cur.hidden },
       };
     },
+
     // ── detail modal ──
     async openDetail(id) {
       this.detail = { open: true, loading: true, video: null };
@@ -833,6 +873,7 @@ function app() {
     closeDetail() {
       this.detail = { open: false, loading: false, video: null };
     },
+
     // ── toasts ──
     toast(type, msg) {
       const id = Math.random().toString(36).slice(2);
@@ -842,5 +883,8 @@ function app() {
       }, 4000);
       this.$nextTick(() => this.refreshIcons());
     },
+
+    // Expose helper to template
+    formatCount,
   };
 }

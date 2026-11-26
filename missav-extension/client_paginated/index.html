@@ -106,8 +106,8 @@
             type="button"
             @click="toggleClusterMode()"
             :class="mode === 'clustered'
-          ? 'bg-violet-500 text-ink-950 shadow-glow'
-          : 'border border-white/10 text-slate-300 hover:border-white/20 hover:bg-white/5'"
+              ? 'bg-violet-500 text-ink-950 shadow-glow'
+              : 'border border-white/10 text-slate-300 hover:border-white/20 hover:bg-white/5'"
             class="hidden items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition md:flex"
             :title="mode === 'clustered' ? 'Exit grouped view' : 'Group results into topics'"
           >
@@ -147,6 +147,7 @@
         </button>
       </div>
     </header>
+
     <!-- ═══════════════════ MAIN LAYOUT ═══════════════════ -->
     <div
       class="relative z-10 mx-auto flex max-w-[1600px] gap-6 px-4 py-6 md:px-6"
@@ -172,6 +173,7 @@
               <i data-lucide="x" class="h-5 w-5"></i>
             </button>
           </div>
+
           <!-- Series Code Autocomplete -->
           <label class="mb-4 block relative">
             <span class="mb-1.5 block text-xs font-medium text-slate-500"
@@ -210,14 +212,15 @@
                     ></span>
                     <span
                       class="text-xs text-slate-500"
-                      x-text="codeObj.count"
+                      x-text="formatCount(codeObj.count)"
                     ></span>
                   </div>
                 </template>
               </div>
             </div>
+
             <!-- Chips Container -->
-            <div class="flex flex-wrap gap-2 mt-2">
+            <div class="flex flex-wrap gap-2 mt-2 mb-2">
               <template x-if="filters.code">
                 <template
                   x-for="code in filters.code.split(',').map(c => c.trim()).filter(Boolean)"
@@ -237,7 +240,16 @@
                 </template>
               </template>
             </div>
+
+            <!-- Show All Codes Button -->
+            <button
+              @click="codesModalOpen = true"
+              class="w-full text-xs text-accent-400 hover:text-accent-300 font-medium flex items-center justify-center gap-1 py-1 mb-4"
+            >
+              <i data-lucide="list" class="h-3 w-3"></i> Show All Codes
+            </button>
           </label>
+
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -270,6 +282,7 @@
               </button>
             </div>
           </div>
+
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -292,6 +305,7 @@
               />
             </div>
           </div>
+
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -317,6 +331,7 @@
               </button>
             </div>
           </div>
+
           <!-- Genres Section with Modal -->
           <div class="mb-4">
             <span
@@ -330,7 +345,8 @@
                 x-text="`${filters.genres.length} selected`"
               ></span>
             </span>
-            <!-- Visible Chips (Limited Height) -->
+
+            <!-- Visible Chips (Limited Height) - MOVED ABOVE BUTTON -->
             <div
               class="max-h-32 overflow-y-auto flex flex-wrap gap-1.5 mb-2 pr-1 custom-scrollbar"
             >
@@ -338,19 +354,20 @@
                 <button
                   @click="toggleGenre(g.name)"
                   :class="filters.genres.includes(g.name)
-                ? 'border-accent-500 bg-accent-500/15 text-accent-300'
-                : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                    ? 'border-accent-500 bg-accent-500/15 text-accent-300'
+                    : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
                   class="rounded-full border px-2.5 py-1 text-[11px] font-medium transition whitespace-nowrap"
-                  :title="`${g.count.toLocaleString()} videos`"
+                  :title="`${formatCount(g.count)} videos`"
                 >
                   <span x-text="g.name"></span>
                   <span
                     class="ml-1 text-[9px] opacity-60"
-                    x-text="g.count"
+                    x-text="formatCount(g.count)"
                   ></span>
                 </button>
               </template>
             </div>
+
             <button
               @click="genresModalOpen = true"
               class="w-full text-xs text-accent-400 hover:text-accent-300 font-medium flex items-center justify-center gap-1 py-1"
@@ -358,6 +375,7 @@
               <i data-lucide="list" class="h-3 w-3"></i> Show All Genres
             </button>
           </div>
+
           <div class="mb-4">
             <span
               class="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -369,15 +387,16 @@
                 <button
                   @click="pickYear(y.year)"
                   :class="filters.from === y.year+'-01-01' && filters.to === y.year+'-12-31'
-                ? 'border-violet-500 bg-violet-500/20 text-violet-300'
-                : 'border-white/10 bg-ink-800 text-slate-400 hover:text-slate-200'"
+                    ? 'border-violet-500 bg-violet-500/20 text-violet-300'
+                    : 'border-white/10 bg-ink-800 text-slate-400 hover:text-slate-200'"
                   class="rounded-md border px-2 py-1 text-[11px] font-medium transition"
-                  :title="`${y.count.toLocaleString()} videos`"
+                  :title="`${formatCount(y.count)} videos`"
                   x-text="y.year"
                 ></button>
               </template>
             </div>
           </div>
+
           <button
             @click="clearFilters()"
             class="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/10 py-2 text-xs font-semibold text-slate-400 transition hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300"
@@ -387,6 +406,7 @@
           </button>
         </div>
       </aside>
+
       <!-- ─── Results ─── -->
       <section class="min-w-0 flex-1">
         <!-- result header -->
@@ -465,6 +485,7 @@
               </template>
             </p>
           </div>
+
           <!-- active filter pills -->
           <div class="flex flex-wrap items-center gap-1.5">
             <!-- Clustered-mode config -->
@@ -550,6 +571,7 @@
                 </label>
               </span>
             </div>
+
             <!-- Diversity selector -->
             <div
               x-show="mode === 'browse' || mode === 'search' || mode === 'similar'"
@@ -568,6 +590,7 @@
                 <option value="high">High</option>
               </select>
             </div>
+
             <!-- genre pills -->
             <template x-for="g in filters.genres" :key="g">
               <span
@@ -582,10 +605,7 @@
                 </button>
               </span>
             </template>
-            <!-- code pill (legacy display if needed, though chips are in sidebar) -->
-            <template x-if="filters.code">
-              <!-- Hidden or shown depending on preference, currently handled by sidebar chips -->
-            </template>
+
             <!-- date pill -->
             <template x-if="filters.from || filters.to">
               <span
@@ -602,6 +622,7 @@
                 </button>
               </span>
             </template>
+
             <!-- completion filter pill -->
             <template x-if="filters.completionFilter !== 'all'">
               <span
@@ -622,6 +643,7 @@
             </template>
           </div>
         </div>
+
         <!-- ═══════════════════ CLUSTERED RESULTS ═══════════════════ -->
         <div x-show="mode === 'clustered'" x-cloak>
           <!-- skeleton -->
@@ -645,6 +667,7 @@
               </div>
             </template>
           </div>
+
           <!-- error -->
           <div
             x-show="clustered.error"
@@ -659,6 +682,7 @@
               Retry
             </button>
           </div>
+
           <!-- rows -->
           <div
             x-show="!clustered.loading && clustered.data && clustered.data.clusters.length"
@@ -702,8 +726,8 @@
                     @click="toggleClusterCoreOnly(c.cluster_id)"
                     class="ml-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition"
                     :class="clusterUiFor(c.cluster_id).coreOnly
-                  ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
-                  : 'border-white/10 text-slate-400 hover:text-slate-200'"
+                      ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
+                      : 'border-white/10 text-slate-400 hover:text-slate-200'"
                     title="Hide fringe items"
                   >
                     <i data-lucide="sparkles" class="h-3 w-3"></i>
@@ -722,6 +746,7 @@
                     ></i>
                   </button>
                 </header>
+
                 <!-- horizontal scroller -->
                 <div class="carousel-mask">
                   <div class="carousel flex gap-3 overflow-x-auto pb-2">
@@ -841,10 +866,10 @@
                               <div
                                 class="h-full rounded-full"
                                 :class="clusterTier(c) === 'green'
-                              ? 'bg-emerald-400'
-                              : clusterTier(c) === 'amber'
-                              ? 'bg-amber-400'
-                              : 'bg-slate-500'"
+                                  ? 'bg-emerald-400'
+                                  : clusterTier(c) === 'amber'
+                                  ? 'bg-amber-400'
+                                  : 'bg-slate-500'"
                                 :style="`width:${Math.round((v.probability ?? 0) * 100)}%`"
                               ></div>
                             </div>
@@ -879,6 +904,7 @@
               </section>
             </template>
           </div>
+
           <!-- empty -->
           <div
             x-show="!clustered.loading && clustered.data && !clustered.data.clusters.length"
@@ -903,6 +929,7 @@
             </button>
           </div>
         </div>
+
         <!-- ═══════════════════ PAGINATED RESULTS ═══════════════════ -->
         <div x-show="mode !== 'clustered'">
           <div
@@ -926,6 +953,7 @@
               </div>
             </template>
           </div>
+
           <div
             x-show="items.length > 0"
             class="grid gap-4"
@@ -1048,6 +1076,7 @@
               </article>
             </template>
           </div>
+
           <div
             x-show="!loading && items.length === 0"
             class="flex flex-col items-center justify-center py-24 text-center"
@@ -1070,6 +1099,7 @@
               Clear filters
             </button>
           </div>
+
           <div
             x-show="items.length > 0"
             class="mt-8 flex flex-col items-center gap-4"
@@ -1096,6 +1126,7 @@
         <div x-ref="sentinel" class="h-1"></div>
       </section>
     </div>
+
     <!-- ═══════════════════ GENRES MODAL ═══════════════════ -->
     <div
       x-show="genresModalOpen"
@@ -1151,18 +1182,19 @@
           <!-- Grid -->
           <div class="max-h-[60vh] overflow-y-auto custom-scrollbar">
             <div class="flex flex-wrap gap-2">
-              <template x-for="g in sortedGenresForModal" :key="g.name">
+              <!-- Changed facets.genres to allGenres -->
+              <template x-for="g in sortedAllGenres" :key="g.name">
                 <button
                   @click="toggleGenre(g.name)"
                   :class="filters.genres.includes(g.name)
-                ? 'border-accent-500 bg-accent-500/15 text-accent-300'
-                : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                    ? 'border-accent-500 bg-accent-500/15 text-accent-300'
+                    : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
                   class="rounded-full border px-3 py-1.5 text-sm font-medium transition flex items-center gap-2"
                 >
                   <span x-text="g.name"></span>
                   <span
                     class="rounded-full bg-ink-950 px-1.5 py-0.5 text-[10px] text-slate-500"
-                    x-text="g.count"
+                    x-text="formatCount(g.count)"
                   ></span>
                 </button>
               </template>
@@ -1171,6 +1203,83 @@
         </div>
       </div>
     </div>
+
+    <!-- ═══════════════════ CODES MODAL ═══════════════════ -->
+    <div
+      x-show="codesModalOpen"
+      x-cloak
+      class="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-backdrop"
+      @click.self="codesModalOpen = false"
+      x-transition.opacity
+    >
+      <div
+        class="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-white/10 bg-ink-900 shadow-2xl"
+        x-transition.scale.origin.center
+      >
+        <div
+          class="flex items-center justify-between border-b border-white/10 p-4"
+        >
+          <h2 class="text-lg font-bold text-slate-100">All Series Codes</h2>
+          <button
+            @click="codesModalOpen = false"
+            class="rounded-full p-1 text-slate-400 hover:bg-white/10 hover:text-slate-200"
+          >
+            <i data-lucide="x" class="h-5 w-5"></i>
+          </button>
+        </div>
+        <div class="p-4">
+          <!-- Sort Controls -->
+          <div class="mb-4 flex items-center gap-2">
+            <span class="text-xs text-slate-500">Sort by:</span>
+            <button
+              @click="toggleCodeSort('name')"
+              :class="codeSortBy === 'name' ? 'bg-accent-500 text-ink-950' : 'bg-ink-800 text-slate-400'"
+              class="rounded px-2 py-1 text-xs font-semibold transition"
+            >
+              Name
+            </button>
+            <button
+              @click="toggleCodeSort('count')"
+              :class="codeSortBy === 'count' ? 'bg-accent-500 text-ink-950' : 'bg-ink-800 text-slate-400'"
+              class="rounded px-2 py-1 text-xs font-semibold transition"
+            >
+              Count
+            </button>
+            <button
+              @click="codeSortOrder = codeSortOrder === 'asc' ? 'desc' : 'asc'"
+              class="ml-auto rounded bg-ink-800 p-1 text-slate-400 hover:text-slate-200"
+              :title="codeSortOrder === 'asc' ? 'Ascending' : 'Descending'"
+            >
+              <i
+                :data-lucide="codeSortOrder === 'asc' ? 'arrow-up' : 'arrow-down'"
+                class="h-4 w-4"
+              ></i>
+            </button>
+          </div>
+          <!-- Grid -->
+          <div class="max-h-[60vh] overflow-y-auto custom-scrollbar">
+            <div class="flex flex-wrap gap-2">
+              <template x-for="c in sortedAllCodes" :key="c.code">
+                <button
+                  @click="addCodeChip(c)"
+                  :class="_currentCodes().includes(c.code)
+                    ? 'border-violet-500 bg-violet-500/15 text-violet-300'
+                    : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                  class="rounded-full border px-3 py-1.5 text-sm font-medium transition flex items-center gap-2"
+                >
+                  <span class="font-mono" x-text="c.code"></span>
+                  <span
+                    class="rounded-full bg-ink-950 px-1.5 py-0.5 text-[10px] text-slate-500"
+                    x-text="formatCount(c.count)"
+                  ></span>
+                </button>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ═══════════════════ DETAIL MODAL ═══════════════════ -->
     <div
       x-show="detail.open"
@@ -1265,6 +1374,7 @@
         </template>
       </div>
     </div>
+
     <!-- ═══════════════════ TOASTS ═══════════════════ -->
     <div
       class="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2"
@@ -1273,10 +1383,10 @@
         <div
           class="pointer-events-auto flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm shadow-lg backdrop-blur-md"
           :class="{
-        'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
-        'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
-        'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
-      }"
+            'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
+            'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
+            'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
+          }"
           x-transition
         >
           <i

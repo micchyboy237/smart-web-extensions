@@ -1,33 +1,22 @@
-"""
-Demo: Topic Extraction Representative Docs
-Enhanced topic extraction with improved representation models.
-Demonstrates KeyBERT-inspired topic labeling, MMR diversity, and stop word removal
-for cleaner, more meaningful topic keywords.
-Uses reusable factory functions from jet.adapters.bertopic.factory_with_repr.
-"""
+"""Extract KeyNMF topics from MissAV documents and save inputs and outputs."""
 
-import argparse
 import json
 import shutil
 from pathlib import Path
-from typing import List, Optional
 
-from jet.adapters.llama_cpp.config import EMBED_MODEL_LG
-from jet.libs.bertopic.monkey_patches.add_check_array import init_patch
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-from rich.tree import Tree
-
-init_patch()
-
-from jet.adapters.bertopic.factory_with_repr import (
-    TopicExtractionResult,
-    create_bertopic_embedder,
-    extract_topics,
-    sanity_check_embedder,
-)
+import numpy as np
+import pandas as pd
+import topicwizard
+from jet.adapters.llama_cpp.chunking_utils import truncate_texts
+from jet.adapters.llama_cpp.config import EMBED_MODEL
+from jet.adapters.turftopic.embed import LlamaCppEncoder
 from jet.libs.bertopic.examples.mock import load_missav_videos
+from rich.console import Console
+from rich.table import Table
+from topicwizard.figures.documents import document_map
+from topicwizard.figures.topics import topic_barcharts, topic_map
+from turftopic import KeyNMF
+from turftopic.vectorizers.spacy import NounPhraseCountVectorizer
 
 console = Console()
 
@@ -35,256 +24,175 @@ OUTPUT_DIR = Path(__file__).parent / "generated" / Path(__file__).stem
 shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+INPUT_FILE = OUTPUT_DIR / "input_documents.json"
+TOPICS_FILE = OUTPUT_DIR / "topics.json"
+TOPICS_CSV = OUTPUT_DIR / "topics.csv"
+DOCUMENT_TOPICS_FILE = OUTPUT_DIR / "document_topics.json"
+REPRESENTATIVE_DOCS_FILE = OUTPUT_DIR / "representative_documents.json"
+TOPIC_BARCHARTS_FILE = OUTPUT_DIR / "topic_barcharts.html"
+REPRESENTATIVE_TOP_K = 10
+TOPIC_MAP_FILE = OUTPUT_DIR / "topic_map.html"
+DOCUMENT_MAP_FILE = OUTPUT_DIR / "document_map.html"
 
-def get_args():
-    """Parse command line arguments with defaults from existing config."""
-    parser = argparse.ArgumentParser(
-        description="Extract topics from video descriptions."
-    )
-    parser.add_argument(
-        "-c",
-        "--code",
-        type=str,
-        nargs="+",
-        default=None,
-        help="List of codes to filter missav videos on (e.g. -c ssni ssis snis). Defaults to load_missav_videos default when omitted.",
-    )
-    parser.add_argument(
-        "-l",
-        "--limit",
-        type=int,
-        default=None,
-        help="Max number of missav video rows to load. None (default) returns all.",
-    )
-    parser.add_argument(
-        "-m",
-        "--min-topic-size",
-        type=int,
-        default=3,
-        help="Minimum number of documents per topic",
-    )
-    parser.add_argument(
-        "-n",
-        "--top-n-words",
-        type=int,
-        default=10,
-        help="Number of keywords to extract per topic",
-    )
-    parser.add_argument(
-        "-r",
-        "--n-representative-docs",
-        type=int,
-        default=None,
-        help="Max representative docs per topic. None returns all.",
-    )
-    parser.add_argument(
-        "--no-mmr",
-        action="store_true",
-        help="Disable Maximal Marginal Relevance for diverse keywords (MMR is enabled by default)",
-    )
-    parser.add_argument(
-        "-div",
-        "--mmr-diversity",
-        type=float,
-        default=0.7,
-        help="Diversity parameter for MMR (0-1)",
-    )
-    parser.add_argument(
-        "--no-keybert",
-        action="store_true",
-        help="Disable KeyBERT inspired representation",
-    )
-    parser.add_argument(
-        "-ng",
-        "--n-gram-range",
-        type=int,
-        nargs=2,
-        default=[1, 2],
-        help="N-gram range for vectorizer (e.g., -ng 1 2)",
-    )
-    return parser.parse_args()
+saved_files: list[Path] = []
 
 
-def run_topic_extraction_demo(
-    documents: List[str],
-    min_topic_size: int = 3,
-    top_n_words: int = 10,
-    n_representative_docs: Optional[int] = None,
-    use_mmr: bool = True,
-    mmr_diversity: float = 0.7,
-    use_keybert: bool = True,
-    n_gram_range: tuple[int, int] = (1, 2),
-) -> TopicExtractionResult:
-    """
-    Demonstrate topic extraction using the reusable factory functions.
+def write_json(path: Path, data: object) -> None:
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    saved_files.append(path)
 
-    Args:
-        documents: List of text documents to analyze
-        min_topic_size: Minimum documents per topic
-        top_n_words: Number of keywords to extract per topic
-        n_representative_docs: Max representative docs per topic.
-            None (default) returns all available.
-        use_mmr: Use Maximal Marginal Relevance for diverse keywords
-        mmr_diversity: Diversity parameter for MMR
-        use_keybert: Use KeyBERT inspired representation
-        n_gram_range: The n-gram range for the vectorizer
 
-    Returns:
-        Structured topic extraction results
-    """
-    console.print(Panel.fit("[bold green]Starting Topic Extraction Demo[/bold green]"))
-    console.print(
-        f"[dim]Parameters: min_topic_size={min_topic_size}, top_n_words={top_n_words}, "
-        f"n_representative_docs={n_representative_docs}, use_mmr={use_mmr}, "
-        f"n_gram_range={n_gram_range}[/dim]"
-    )
-    console.print(f"[dim]Number of documents to process: {len(documents)}[/dim]")
+def write_figure(path: Path, figure) -> None:
+    figure.write_html(path, include_plotlyjs="cdn")
+    saved_files.append(path)
 
-    input_file = OUTPUT_DIR / "input_documents.json"
-    with open(input_file, "w", encoding="utf-8") as f:
-        json.dump(documents, f, indent=2, ensure_ascii=False)
 
-    console.print("[yellow]Creating BERTopic embedder...[/yellow]")
-    embedder = create_bertopic_embedder(model=EMBED_MODEL_LG)
+console.print("📄 Loading documents...")
+docs = load_missav_videos(code=["juc"])
+docs = truncate_texts(
+    docs, model=EMBED_MODEL, max_tokens=128, valid_sentences_only=True
+)
+corpus = [d for d in docs if d.strip()]
+corpus = corpus[:100]  # Temp limit
+console.print(f"   Loaded {len(corpus)} documents")
 
-    console.print("[yellow]Running embedder sanity check...[/yellow]")
-    sanity_check_embedder(embedder)
+write_json(
+    INPUT_FILE,
+    {
+        "total_documents": len(corpus),
+        "documents": [{"index": i, "content": doc} for i, doc in enumerate(corpus)],
+    },
+)
+console.print(f"💾 Saved input documents ({len(corpus)})")
 
-    console.print("[yellow]Starting topic extraction...[/yellow]")
-    result = extract_topics(
-        documents=documents,
-        embedder=embedder,
-        min_topic_size=min_topic_size,
-        top_n_words=top_n_words,
-        remove_stop_words=True,
-        use_keybert=use_keybert,
-        use_mmr=use_mmr,
-        mmr_diversity=mmr_diversity,
-        n_representative_docs=n_representative_docs,
-        n_gram_range=n_gram_range,
-        verbose=True,
-    )
+console.print("Initializing NounPhraseCountVectorizer...")
+vectorizer = NounPhraseCountVectorizer("en_core_web_sm", min_df=1)
 
-    console.print(
-        Panel.fit(
-            f"[bold green]Extracted {len(result['topics'])} topics from {len(documents)} documents[/bold green]"
-        )
-    )
+console.print("Initializing LlamaCppEncoder...")
+encoder = LlamaCppEncoder(model=EMBED_MODEL, batch_size=64)
 
-    for topic in result["topics"]:
-        table = Table(
-            title=f"Topic {topic['topic_id']}: {topic['name']} (Size: {topic['size']})"
-        )
-        table.add_column("Rank", style="cyan", justify="right")
-        table.add_column("Keyword", style="magenta")
-        table.add_column("Score", style="green")
-        for i, ks in enumerate(topic["keyword_scores"][:10]):
-            table.add_row(str(i + 1), ks["word"], f"{ks['score']:.4f}")
-        console.print(table)
+console.print("Fitting KeyNMF model with noun-phrase vectorizer...")
+model = KeyNMF(n_components=5, vectorizer=vectorizer, encoder=encoder)
+document_topic_matrix = model.fit_transform(corpus)
 
-        if topic["representative_docs"]:
-            console.print("[bold blue]Top Representative Documents:[/bold blue]")
-            for i, ds in enumerate(topic["doc_scores"][:3]):
-                preview = (
-                    ds["text"][:100] + "..." if len(ds["text"]) > 100 else ds["text"]
-                )
-                console.print(f"  [{i + 1}] (Prob: {ds['score']:.2f}) {preview}")
-        console.print("")
-
-    outlier_indices = [
-        i for i, label in enumerate(result["topic_labels"]) if label == -1
+representative_topics = []
+for topic_id, topic_scores in enumerate(np.asarray(document_topic_matrix).T):
+    ranked = [
+        int(index) for index in np.argsort(-topic_scores) if topic_scores[index] > 0
     ]
-    outliers_data = {
-        "count": len(outlier_indices),
-        "indices": outlier_indices,
-        "documents": [documents[i] for i in outlier_indices],
+    chosen = ranked[:REPRESENTATIVE_TOP_K]
+    representative_topics.append(
+        {
+            "topic_id": topic_id,
+            "count": len(chosen),
+            "documents": [
+                {
+                    "index": index,
+                    "score": float(topic_scores[index]),
+                    "content": corpus[index],
+                }
+                for index in chosen
+            ],
+        }
+    )
+representative_by_topic = {item["topic_id"]: item for item in representative_topics}
+
+topics = []
+for topic_id, words in model.get_topics(top_k=10):
+    topic_id = int(topic_id)
+    topics.append(
+        {
+            "topic_id": topic_id,
+            "representative_document_count": representative_by_topic[topic_id]["count"],
+            "words": [{"word": word, "score": float(score)} for word, score in words],
+        }
+    )
+write_json(TOPICS_FILE, {"n_topics": len(topics), "topics": topics})
+write_json(
+    REPRESENTATIVE_DOCS_FILE,
+    {"top_k": REPRESENTATIVE_TOP_K, "topics": representative_topics},
+)
+model.topics_df(top_k=10, show_scores=True).to_csv(TOPICS_CSV, index=False)
+saved_files.append(TOPICS_CSV)
+
+topic_names = [str(name) for name in model.topic_names]
+document_topics = []
+for index, scores in enumerate(document_topic_matrix):
+    top_index = int(scores.argmax())
+    document_topics.append(
+        {
+            "index": index,
+            "topic_id": top_index,
+            "topic_name": topic_names[top_index],
+            "scores": [float(score) for score in scores],
+        }
+    )
+write_json(
+    DOCUMENT_TOPICS_FILE,
+    {
+        "topic_names": topic_names,
+        "n_documents": len(document_topics),
+        "documents": document_topics,
+    },
+)
+console.print(f"💾 Saved {len(topics)} topics and document assignments")
+
+topic_table = Table(title="Extracted topics", show_lines=True)
+topic_table.add_column("ID", justify="right", style="blue")
+topic_table.add_column("Rep. docs", justify="right", style="green")
+topic_table.add_column("Top words", style="magenta", max_width=80)
+for topic in topics:
+    words = ", ".join(item["word"] for item in topic["words"][:8])
+    topic_table.add_row(
+        str(topic["topic_id"]),
+        str(topic["representative_document_count"]),
+        words,
+    )
+console.print(topic_table)
+
+console.print("Preparing topic visualization...")
+topic_data = model.prepare_topic_data(corpus)
+rep_counts = [item["count"] for item in representative_topics]
+
+barcharts = topic_barcharts(topic_data)
+for annotation, count in zip(barcharts.layout.annotations, rep_counts):
+    annotation.text = f"{annotation.text}<br>({count} representative docs)"
+write_figure(TOPIC_BARCHARTS_FILE, barcharts)
+
+topic_map_fig = topic_map(topic_data)
+topic_map_fig.update_traces(
+    text=[
+        f"<b>{name}</b><br>{count} docs"
+        for name, count in zip(topic_data["topic_names"], rep_counts)
+    ],
+    hovertemplate="%{text}<extra></extra>",
+    hoverinfo="text",
+)
+write_figure(TOPIC_MAP_FILE, topic_map_fig)
+
+represented_by = [[] for _ in corpus]
+for item in representative_topics:
+    for document in item["documents"]:
+        represented_by[document["index"]].append(str(item["topic_id"]))
+document_metadata = pd.DataFrame(
+    {
+        "preview": [doc[:160].replace("\n", " ") for doc in corpus],
+        "representative_of": [
+            ", ".join(topic_ids) if topic_ids else "—" for topic_ids in represented_by
+        ],
     }
-    outliers_file = OUTPUT_DIR / "outliers.json"
-    with open(outliers_file, "w", encoding="utf-8") as f:
-        json.dump(outliers_data, f, indent=2, ensure_ascii=False)
-    console.print(f"[dim]Outliers saved to: {outliers_file}[/dim]")
+)
+write_figure(
+    DOCUMENT_MAP_FILE,
+    document_map(topic_data, document_metadata=document_metadata),
+)
+console.print("💾 Saved visualization figures")
 
-    topics_output = []
-    for topic in result["topics"]:
-        topics_output.append(
-            {
-                "topic_id": topic["topic_id"],
-                "name": topic["name"],
-                "keywords": topic["keywords"],
-                "keyword_scores": topic["keyword_scores"],
-                "size": topic["size"],
-                "representative_docs": topic["representative_docs"],
-                "doc_scores": topic["doc_scores"],
-            }
-        )
-    topics_file = OUTPUT_DIR / "topics.json"
-    with open(topics_file, "w", encoding="utf-8") as f:
-        json.dump(topics_output, f, indent=2, ensure_ascii=False)
-    console.print(f"[dim]Topics saved to: {topics_file}[/dim]")
-
-    labels_file = OUTPUT_DIR / "topic_labels.json"
-    with open(labels_file, "w", encoding="utf-8") as f:
-        json.dump(result["topic_labels"], f, indent=2)
-
-    topic_info_file = OUTPUT_DIR / "topic_info.csv"
-    result["topic_info"].to_csv(topic_info_file, index=False)
-
-    embeddings_file = OUTPUT_DIR / "embeddings.npy"
-    import numpy as np
-
-    np.save(embeddings_file, result["embeddings"])
-
-    summary = {
-        "num_documents": len(documents),
-        "num_topics": len(result["topics"]),
-        "min_topic_size": min_topic_size,
-        "top_n_words": top_n_words,
-        "n_representative_docs": n_representative_docs,
-        "embeddings_shape": list(result["embeddings"].shape),
-        "output_directory": str(OUTPUT_DIR),
-    }
-    summary_file = OUTPUT_DIR / "summary.json"
-    with open(summary_file, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-
-    console.print(f"[green]All outputs saved to: {OUTPUT_DIR}[/green]")
-    console.print("\n[bold white]Generated Files:[/bold white]")
-    tree = Tree(f"[dir]{OUTPUT_DIR.name}")
-    for file_path in sorted(OUTPUT_DIR.glob("*")):
-        if file_path.is_file():
-            file_url = file_path.as_uri()
-            display_name = file_path.name
-            tree.add(f"[link={file_url}]{display_name}[/link]")
-    console.print(tree)
-
-    return result
-
-
-if __name__ == "__main__":
-    args = get_args()
-
-    codes = args.code
+console.print("\n[bold green]📂 Saved files:[/bold green]")
+for path in saved_files:
     console.print(
-        f"[dim]Loading missav videos (code={codes or 'default'}, limit={args.limit})...[/dim]"
-    )
-    docs = load_missav_videos(code=codes, limit=args.limit)
-    if not docs:
-        raise ValueError("No missav videos returned; cannot run topic extraction.")
-    console.print(f"[dim]Loaded {len(docs)} documents from missav videos[/dim]")
-
-    result = run_topic_extraction_demo(
-        docs,
-        min_topic_size=args.min_topic_size,
-        top_n_words=args.top_n_words,
-        n_representative_docs=args.n_representative_docs,
-        use_mmr=not args.no_mmr,
-        mmr_diversity=args.mmr_diversity,
-        use_keybert=not args.no_keybert,
-        n_gram_range=tuple(args.n_gram_range),
+        f"   [bold bright_blue][link=file://{path.resolve()}]{path.name}[/link][/bold bright_blue]"
     )
 
-    console.print(
-        Panel.fit(
-            "[bold green]Topic extraction pipeline completed successfully[/bold green]"
-        )
-    )
+console.print("\nLaunching TopicWizard...")
+topicwizard.visualize(topic_data=topic_data)

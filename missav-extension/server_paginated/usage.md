@@ -207,7 +207,7 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 ## `POST /search_clustered`
 
 Semantic grouping — fetches a candidate pool, hands the embeddings to
-`jet.adapters.llama_cpp.cluster_utils.TextsClusterer`, and returns clusters with
+`jet.adapters.llama_cpp.cluster_utils.clusterer.TextsClusterer`, and returns clusters with
 full per-item and per-cluster metrics.
 
 **The cluster count is chosen dynamically by `cluster_utils`** (HDBSCAN when
