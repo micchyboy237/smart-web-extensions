@@ -26,10 +26,11 @@ import logging
 import os
 import re
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from functools import lru_cache
-from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union
+from typing import Annotated, Dict, List, Literal, Optional, Tuple, TypedDict, Union
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
@@ -47,6 +48,7 @@ from jet.adapters.llama_cpp.diversity_utils.semhash import (
     shuffle_and_diversify,
 )
 from jet.adapters.llama_cpp.embed_utils import embed, shutdown_embed_pool
+from jet.adapters.turftopic.missav import ClusterTopicsResult, cluster_topics
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -546,6 +548,105 @@ class DiscoverRequest(BaseModel):
         le=1.0,
         description="Trade-off between diversity (1.0) and relevance/recency (0.0).",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Topics types & models
+# --------------------------------------------------------------------------- #
+
+# --- TypedDicts for GET Responses (Strict Structure) ---
+
+
+class TopicWordTD(TypedDict):
+    word: str
+    score: float
+    rank: int
+
+
+class RepresentativeDocTD(TypedDict):
+    content: str
+    membership_score: Optional[float]
+    source_index: Optional[int]
+    video_id: Optional[str]
+
+
+class TopicSummaryTD(TypedDict):
+    id: str
+    topic_id: int
+    name: Optional[str]
+    representative_doc_count: int
+    words: List[TopicWordTD]
+    representative_docs: List[RepresentativeDocTD]
+
+
+class DocumentAssignmentTD(TypedDict):
+    source_index: int
+    topic_id: int
+    topic_name: str
+    scores: List[float]
+    content: str
+
+
+class RunMetadataTD(TypedDict):
+    id: str
+    code: str
+    n_topics: int
+    n_docs: int
+    top_k: int
+    no_llm: bool
+    created_at: datetime
+
+
+class TopicRunDetailTD(TypedDict):
+    run: RunMetadataTD
+    topics: List[TopicSummaryTD]
+    assignments: List[DocumentAssignmentTD]
+
+
+# --- Pydantic Models for POST/GET ---
+
+
+class SaveTopicsRequest(BaseModel):
+    """Mirrors parse_args from run_extract_missav_topics.py"""
+
+    code: str = Field("juc", description="MissAV video code prefix")
+    n_topics: int = Field(5, ge=1, description="Number of topics to extract")
+    n_docs: int = Field(100, ge=1, description="Number of documents to process")
+    top_k: int = Field(10, ge=1, description="Number of top words per topic")
+    no_llm: bool = Field(False, description="Disable LLM-based topic naming")
+
+
+class SavedTopicSummary(BaseModel):
+    topic_id: int
+    name: Optional[str]
+    word_count: int
+    rep_doc_count: int
+
+
+class SaveTopicsResponse(BaseModel):
+    run_id: str
+    message: str
+    code: str
+    n_topics: int
+    total_documents_processed: int
+    topics_summary: List[SavedTopicSummary]
+
+
+class TopicRunListItem(BaseModel):
+    id: str
+    code: str
+    n_topics: int
+    n_docs: int
+    created_at: datetime
+
+
+class TopicSearchResultItem(BaseModel):
+    run_id: str
+    code: str
+    topic_id: int
+    topic_name: Optional[str]
+    word: str
+    score: float
 
 
 # --------------------------------------------------------------------------- #
@@ -2519,6 +2620,332 @@ def ingest(req: IngestRequest) -> IngestResponse:
         skipped=skipped,
         took_ms=took,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Topics endpoints
+# --------------------------------------------------------------------------- #
+
+
+def _map_results_to_db_format(
+    results: ClusterTopicsResult,
+) -> Tuple[List[dict], List[dict]]:
+    """Transforms ClusterTopicsResult into DB-ready lists."""
+    topics_data = []
+    assignments_data = []
+
+    rep_by_topic = {
+        item["topic_id"]: item for item in results.get("representative_topics", [])
+    }
+    topic_names = [str(name) for name in results["model"].topic_names]
+
+    for topic in results.get("topics", []):
+        topic_id = topic["topic_id"]
+        rep_info = rep_by_topic.get(topic_id, {})
+
+        words = [
+            {"word": w["word"], "score": w["score"], "rank": i}
+            for i, w in enumerate(topic["words"])
+        ]
+
+        rep_docs = [
+            {
+                "content": doc["content"],
+                "membership_score": doc["score"],
+                "source_index": doc["index"],
+                "video_id": None,
+            }
+            for doc in rep_info.get("documents", [])
+        ]
+
+        topics_data.append(
+            {
+                "topic_id": topic_id,
+                "name": topic_names[topic_id] if topic_id < len(topic_names) else None,
+                "representative_doc_count": topic["representative_document_count"],
+                "words": words,
+                "representative_docs": rep_docs,
+            }
+        )
+
+    corpus = results.get("corpus", [])
+    for assignment in results.get("document_topics", []):
+        idx = assignment["index"]
+        assignments_data.append(
+            {
+                "source_index": idx,
+                "topic_id": assignment["topic_id"],
+                "topic_name": assignment["topic_name"],
+                "scores": assignment["scores"],
+                "content": corpus[idx] if idx < len(corpus) else "",
+            }
+        )
+
+    return topics_data, assignments_data
+
+
+@app.post("/save_topics", response_model=SaveTopicsResponse)
+def save_topics(req: SaveTopicsRequest) -> SaveTopicsResponse:
+    """Execute topic modeling on the server and save results to the database."""
+    t0 = time.perf_counter()
+    run_id = str(uuid.uuid4())
+
+    try:
+        logger.info(
+            "Starting cluster_topics for code=%s, n_topics=%d, n_docs=%d",
+            req.code,
+            req.n_topics,
+            req.n_docs,
+        )
+
+        results: ClusterTopicsResult = cluster_topics(
+            code=req.code,
+            n_topics=req.n_topics,
+            n_docs=req.n_docs,
+            top_k=req.top_k,
+            no_llm=req.no_llm,
+            representative_top_k=None,
+        )
+
+        topics_data, assignments_data = _map_results_to_db_format(results)
+
+        with pool.connection() as conn:
+            # Insert Run Metadata
+            conn.execute(
+                """
+                INSERT INTO public.topic_runs (id, code, n_topics, n_docs, top_k, no_llm)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+                (run_id, req.code, req.n_topics, req.n_docs, req.top_k, req.no_llm),
+            )
+
+            # Insert Topics and Related Data
+            for topic in topics_data:
+                topic_uuid = str(uuid.uuid4())
+                conn.execute(
+                    """
+                    INSERT INTO public.topics (id, run_id, topic_id, name, representative_doc_count)
+                    VALUES (%s, %s, %s, %s, %s)
+                """,
+                    (
+                        topic_uuid,
+                        run_id,
+                        topic["topic_id"],
+                        topic["name"],
+                        topic["representative_doc_count"],
+                    ),
+                )
+
+                for word in topic["words"]:
+                    conn.execute(
+                        """
+                        INSERT INTO public.topic_words (id, topic_id, word, score, rank)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """,
+                        (
+                            str(uuid.uuid4()),
+                            topic_uuid,
+                            word["word"],
+                            word["score"],
+                            word["rank"],
+                        ),
+                    )
+
+                for doc in topic["representative_docs"]:
+                    conn.execute(
+                        """
+                        INSERT INTO public.topic_representative_docs (id, topic_id, content, membership_score, source_index, video_id)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                        (
+                            str(uuid.uuid4()),
+                            topic_uuid,
+                            doc["content"],
+                            doc["membership_score"],
+                            doc["source_index"],
+                            doc["video_id"],
+                        ),
+                    )
+
+            # Insert Document Assignments
+            for assignment in assignments_data:
+                conn.execute(
+                    """
+                    INSERT INTO public.document_topic_assignments (id, run_id, source_index, topic_id, topic_name, scores, content)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                    (
+                        str(uuid.uuid4()),
+                        run_id,
+                        assignment["source_index"],
+                        assignment["topic_id"],
+                        assignment["topic_name"],
+                        assignment["scores"],
+                        assignment["content"],
+                    ),
+                )
+
+            conn.commit()
+
+        # Prepare Response Summary
+        topics_summary = [
+            SavedTopicSummary(
+                topic_id=t["topic_id"],
+                name=t["name"],
+                word_count=len(t["words"]),
+                rep_doc_count=t["representative_doc_count"],
+            )
+            for t in topics_data
+        ]
+
+    except Exception as e:
+        logger.error("Failed to save topics: %s", e)
+        raise HTTPException(500, f"Failed to save topics: {e}")
+
+    took = (time.perf_counter() - t0) * 1000
+    logger.info("Saved topics run %s in %.1fms", run_id, took)
+
+    return SaveTopicsResponse(
+        run_id=run_id,
+        message="Topics extracted and saved successfully",
+        code=req.code,
+        n_topics=req.n_topics,
+        total_documents_processed=len(assignments_data),
+        topics_summary=topics_summary,
+    )
+
+
+@app.get("/topics/runs", response_model=List[TopicRunListItem])
+def list_topic_runs(
+    code: Optional[str] = Query(None, description="Filter by code prefix"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List all topic modeling runs."""
+    params: dict = {"limit": limit, "offset": offset}
+    conds: List[str] = []
+
+    if code:
+        conds.append("code = %(code)s")
+        params["code"] = code
+
+    where_sql = " AND ".join(conds) if conds else "TRUE"
+
+    sql = f"""
+        SELECT id, code, n_topics, n_docs, created_at
+        FROM public.topic_runs
+        WHERE {where_sql}
+        ORDER BY created_at DESC
+        LIMIT %(limit)s OFFSET %(offset)s
+    """
+
+    with pool.connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+@app.get("/topics/runs/{run_id}", response_model=TopicRunDetailTD)
+def get_topic_run_detail(run_id: str):
+    """Get detailed information about a specific topic run."""
+    try:
+        with pool.connection() as conn:
+            # Get run metadata
+            run_row = conn.execute(
+                """
+                SELECT id, code, n_topics, n_docs, top_k, no_llm, created_at
+                FROM public.topic_runs WHERE id = %s
+            """,
+                (run_id,),
+            ).fetchone()
+
+            if not run_row:
+                raise HTTPException(404, "Topic run not found")
+
+            # Get topics
+            topics_rows = conn.execute(
+                """
+                SELECT id, topic_id, name, representative_doc_count
+                FROM public.topics WHERE run_id = %s ORDER BY topic_id ASC
+            """,
+                (run_id,),
+            ).fetchall()
+
+            topics_list: List[TopicSummaryTD] = []
+            for t in topics_rows:
+                words_rows = conn.execute(
+                    """
+                    SELECT word, score, rank FROM public.topic_words
+                    WHERE topic_id = %s ORDER BY rank ASC
+                """,
+                    (t["id"],),
+                ).fetchall()
+
+                docs_rows = conn.execute(
+                    """
+                    SELECT content, membership_score, source_index, video_id
+                    FROM public.topic_representative_docs
+                    WHERE topic_id = %s ORDER BY membership_score DESC
+                """,
+                    (t["id"],),
+                ).fetchall()
+
+                topics_list.append(
+                    {
+                        "id": str(t["id"]),
+                        "topic_id": t["topic_id"],
+                        "name": t["name"],
+                        "representative_doc_count": t["representative_doc_count"],
+                        "words": [dict(w) for w in words_rows],
+                        "representative_docs": [dict(d) for d in docs_rows],
+                    }
+                )
+
+            # Get assignments
+            assignments_rows = conn.execute(
+                """
+                SELECT source_index, topic_id, topic_name, scores, content
+                FROM public.document_topic_assignments WHERE run_id = %s
+                ORDER BY source_index ASC
+            """,
+                (run_id,),
+            ).fetchall()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("DB error getting topic run detail: %s", e)
+        raise HTTPException(500, f"Failed to get topic run detail: {e}")
+
+    return {
+        "run": dict(run_row),
+        "topics": topics_list,
+        "assignments": [dict(a) for a in assignments_rows],
+    }
+
+
+@app.get("/topics/search", response_model=List[TopicSearchResultItem])
+def search_topics_by_word(
+    word: str = Query(..., min_length=1, description="Word to search for"),
+    limit: int = Query(10, ge=1, le=50),
+):
+    """Search for topics that contain a specific word."""
+    sql = """
+        SELECT DISTINCT 
+            tr.id as run_id, tr.code, t.topic_id, t.name as topic_name,
+            tw.word, tw.score
+        FROM public.topic_words tw
+        JOIN public.topics t ON tw.topic_id = t.id
+        JOIN public.topic_runs tr ON t.run_id = tr.id
+        WHERE LOWER(tw.word) = LOWER(%(word)s)
+        ORDER BY tw.score DESC
+        LIMIT %(limit)s
+    """
+
+    with pool.connection() as conn:
+        rows = conn.execute(sql, {"word": word, "limit": limit}).fetchall()
+
+    return [dict(r) for r in rows]
 
 
 if __name__ == "__main__":
