@@ -3,6 +3,7 @@
 import json
 import shutil
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -35,7 +36,7 @@ TOPICS_CSV = OUTPUT_DIR / "topics.csv"
 DOCUMENT_TOPICS_FILE = OUTPUT_DIR / "document_topics.json"
 REPRESENTATIVE_DOCS_FILE = OUTPUT_DIR / "representative_documents.json"
 TOPIC_BARCHARTS_FILE = OUTPUT_DIR / "topic_barcharts.html"
-REPRESENTATIVE_TOP_K = 10
+REPRESENTATIVE_TOP_K: Optional[int] = None
 TOPIC_MAP_FILE = OUTPUT_DIR / "topic_map.html"
 DOCUMENT_MAP_FILE = OUTPUT_DIR / "document_map.html"
 
@@ -69,7 +70,6 @@ write_json(
 )
 console.print(f"💾 Saved input documents ({len(corpus)})")
 
-
 preprocessed_corpus = preprocess_texts(corpus)
 write_json(
     PREROCESSED_DOCS_FILE,
@@ -94,9 +94,7 @@ write_json(
 )
 console.print(f"💾 Saved scored documents ({len(results)})")
 
-sorted_corpus = [corpus[r["index"]] for r in results]  # map to original doc
-# sorted_corpus = [r["text"] for r in results]  # use preprocessed text
-
+sorted_corpus = [corpus[r["index"]] for r in results]
 write_json(
     SORTED_INPUT_FILE,
     {
@@ -109,7 +107,7 @@ write_json(
 console.print(f"💾 Saved sorted input documents ({len(sorted_corpus)})")
 
 corpus = sorted_corpus
-corpus = corpus[:100]  # Temp limit
+corpus = corpus[:100]
 
 console.print("Initializing NounPhraseCountVectorizer...")
 vectorizer = NounPhraseCountVectorizer("en_core_web_sm", min_df=1)
@@ -126,7 +124,7 @@ for topic_id, topic_scores in enumerate(np.asarray(document_topic_matrix).T):
     ranked = [
         int(index) for index in np.argsort(-topic_scores) if topic_scores[index] > 0
     ]
-    chosen = ranked[:REPRESENTATIVE_TOP_K]
+    chosen = ranked if REPRESENTATIVE_TOP_K is None else ranked[:REPRESENTATIVE_TOP_K]
     representative_topics.append(
         {
             "topic_id": topic_id,
@@ -141,8 +139,8 @@ for topic_id, topic_scores in enumerate(np.asarray(document_topic_matrix).T):
             ],
         }
     )
-representative_by_topic = {item["topic_id"]: item for item in representative_topics}
 
+representative_by_topic = {item["topic_id"]: item for item in representative_topics}
 topics = []
 for topic_id, words in model.get_topics(top_k=10):
     topic_id = int(topic_id)
@@ -153,11 +151,13 @@ for topic_id, words in model.get_topics(top_k=10):
             "words": [{"word": word, "score": float(score)} for word, score in words],
         }
     )
+
 write_json(TOPICS_FILE, {"n_topics": len(topics), "topics": topics})
 write_json(
     REPRESENTATIVE_DOCS_FILE,
     {"top_k": REPRESENTATIVE_TOP_K, "topics": representative_topics},
 )
+
 model.topics_df(top_k=10, show_scores=True).to_csv(TOPICS_CSV, index=False)
 saved_files.append(TOPICS_CSV)
 
@@ -198,8 +198,8 @@ console.print(topic_table)
 
 console.print("Preparing topic visualization...")
 topic_data = model.prepare_topic_data(corpus)
-rep_counts = [item["count"] for item in representative_topics]
 
+rep_counts = [item["count"] for item in representative_topics]
 barcharts = topic_barcharts(topic_data)
 for annotation, count in zip(barcharts.layout.annotations, rep_counts):
     annotation.text = f"{annotation.text}<br>({count} representative docs)"
@@ -220,6 +220,7 @@ represented_by = [[] for _ in corpus]
 for item in representative_topics:
     for document in item["documents"]:
         represented_by[document["index"]].append(str(item["topic_id"]))
+
 document_metadata = pd.DataFrame(
     {
         "preview": [doc[:160].replace("\n", " ") for doc in corpus],
