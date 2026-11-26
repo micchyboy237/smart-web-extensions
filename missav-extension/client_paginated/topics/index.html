@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MissAV Topic Modeling Dashboard</title>
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      :root {
+        --bg-color: #f4f7f6;
+        --card-bg: #ffffff;
+        --text-primary: #333;
+        --accent: #4a90e2;
+      }
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: var(--bg-color);
+        color: var(--text-primary);
+        margin: 0;
+        padding: 20px;
+      }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      /* Header & Controls */
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+      }
+      .controls {
+        display: flex;
+        gap: 10px;
+      }
+      input,
+      select,
+      button {
+        padding: 8px 12px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+      }
+      button {
+        background: var(--accent);
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      button:hover {
+        opacity: 0.9;
+      }
+
+      /* Grid Layout */
+      .dashboard-grid {
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        gap: 20px;
+      }
+      .sidebar {
+        background: var(--card-bg);
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+        height: fit-content;
+      }
+      .main-content {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      /* Cards */
+      .card {
+        background: var(--card-bg);
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+      }
+      .topic-list {
+        list-style: none;
+        padding: 0;
+      }
+      .topic-item {
+        padding: 10px;
+        border-bottom: 1px solid #eee;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .topic-item:hover,
+      .topic-item.active {
+        background: #eef5ff;
+      }
+      .topic-name {
+        font-weight: bold;
+        color: var(--accent);
+      }
+
+      /* Charts */
+      .chart-container {
+        position: relative;
+        height: 300px;
+        width: 100%;
+      }
+
+      /* Representative Docs */
+      .doc-snippet {
+        font-size: 0.9em;
+        color: #666;
+        margin-top: 5px;
+        font-style: italic;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>📊 MissAV Topic Explorer</h1>
+        <div class="controls">
+          <select id="codeSelect">
+            <option value="juc">JUC</option>
+            <option value="fc2">FC2</option>
+          </select>
+          <button onclick="loadRuns()">Load Runs</button>
+        </div>
+      </header>
+
+      <div class="dashboard-grid">
+        <!-- Sidebar: List of Runs and Topics -->
+        <div class="sidebar">
+          <h3>Topic Runs</h3>
+          <ul id="runList" class="topic-list"></ul>
+
+          <h3 style="margin-top: 20px">Topics in Run</h3>
+          <ul id="topicList" class="topic-list"></ul>
+        </div>
+
+        <!-- Main Content: Visualizations -->
+        <div class="main-content">
+          <div class="card">
+            <h2 id="currentTopicTitle">Select a Topic</h2>
+            <div class="chart-container">
+              <canvas id="wordChart"></canvas>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Representative Documents</h3>
+            <div id="repDocsContainer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const API_BASE = "http://localhost:9001";
+      let wordChartInstance = null;
+      let currentRunId = null;
+
+      // 1. Load Runs
+      async function loadRuns() {
+        const code = document.getElementById("codeSelect").value;
+        const res = await fetch(
+          `${API_BASE}/topics/runs?code=${code}&limit=10`,
+        );
+        const runs = await res.json();
+
+        const list = document.getElementById("runList");
+        list.innerHTML = "";
+        runs.forEach((run) => {
+          const li = document.createElement("li");
+          li.className = "topic-item";
+          li.innerHTML = `<div>${run.code.toUpperCase()} - ${new Date(run.created_at).toLocaleDateString()}</div>`;
+          li.onclick = () => loadRunDetails(run.id);
+          list.appendChild(li);
+        });
+      }
+
+      // 2. Load Run Details
+      async function loadRunDetails(runId) {
+        currentRunId = runId;
+        const res = await fetch(`${API_BASE}/topics/runs/${runId}`);
+        const data = await res.json();
+
+        const list = document.getElementById("topicList");
+        list.innerHTML = "";
+        data.topics.forEach((topic) => {
+          const li = document.createElement("li");
+          li.className = "topic-item";
+          li.innerHTML = `<span class="topic-name">#${topic.topic_id} ${topic.name || "Unnamed"}</span>`;
+          li.onclick = () => showTopicDetails(topic);
+          list.appendChild(li);
+        });
+      }
+
+      // 3. Show Topic Details (Chart + Docs)
+      function showTopicDetails(topic) {
+        document.getElementById("currentTopicTitle").innerText =
+          `Topic #${topic.topic_id}: ${topic.name || "Unnamed"}`;
+
+        // Render Word Chart
+        const ctx = document.getElementById("wordChart").getContext("2d");
+        if (wordChartInstance) wordChartInstance.destroy();
+
+        wordChartInstance = new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels: topic.words.map((w) => w.word),
+            datasets: [
+              {
+                label: "Relevance Score",
+                data: topic.words.map((w) => w.score),
+                backgroundColor: "#4a90e2",
+              },
+            ],
+          },
+          options: { responsive: true, maintainAspectRatio: false },
+        });
+
+        // Render Representative Docs
+        const docsContainer = document.getElementById("repDocsContainer");
+        docsContainer.innerHTML = "";
+        topic.representative_docs.forEach((doc) => {
+          const div = document.createElement("div");
+          div.className = "doc-snippet";
+          div.innerText = `"${doc.content.substring(0, 150)}..." (Score: ${doc.membership_score?.toFixed(2)})`;
+          docsContainer.appendChild(div);
+        });
+      }
+
+      // Initial load
+      loadRuns();
+    </script>
+  </body>
+</html>

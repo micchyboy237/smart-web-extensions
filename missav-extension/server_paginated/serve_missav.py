@@ -2839,10 +2839,23 @@ def list_topic_runs(
         LIMIT %(limit)s OFFSET %(offset)s
     """
 
-    with pool.connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
+    try:
+        with pool.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
 
-    return [dict(r) for r in rows]
+        # Explicitly convert UUIDs to strings to prevent Pydantic validation errors
+        result = []
+        for r in rows:
+            item = dict(r)
+            if "id" in item and item["id"] is not None:
+                item["id"] = str(item["id"])
+            result.append(item)
+
+        return result
+
+    except Exception as e:
+        logger.error("DB error listing topic runs: %s", e)
+        raise HTTPException(500, f"Failed to list topic runs: {e}")
 
 
 @app.get("/topics/runs/{run_id}", response_model=TopicRunDetailTD)
@@ -2862,6 +2875,11 @@ def get_topic_run_detail(run_id: str):
             if not run_row:
                 raise HTTPException(404, "Topic run not found")
 
+            # Convert run ID to string
+            run_data = dict(run_row)
+            if "id" in run_data:
+                run_data["id"] = str(run_data["id"])
+
             # Get topics
             topics_rows = conn.execute(
                 """
@@ -2873,12 +2891,14 @@ def get_topic_run_detail(run_id: str):
 
             topics_list: List[TopicSummaryTD] = []
             for t in topics_rows:
+                topic_uuid = str(t["id"])  # Convert UUID to string
+
                 words_rows = conn.execute(
                     """
                     SELECT word, score, rank FROM public.topic_words
                     WHERE topic_id = %s ORDER BY rank ASC
                 """,
-                    (t["id"],),
+                    (topic_uuid,),
                 ).fetchall()
 
                 docs_rows = conn.execute(
@@ -2887,12 +2907,12 @@ def get_topic_run_detail(run_id: str):
                     FROM public.topic_representative_docs
                     WHERE topic_id = %s ORDER BY membership_score DESC
                 """,
-                    (t["id"],),
+                    (topic_uuid,),
                 ).fetchall()
 
                 topics_list.append(
                     {
-                        "id": str(t["id"]),
+                        "id": topic_uuid,
                         "topic_id": t["topic_id"],
                         "name": t["name"],
                         "representative_doc_count": t["representative_doc_count"],
@@ -2918,7 +2938,7 @@ def get_topic_run_detail(run_id: str):
         raise HTTPException(500, f"Failed to get topic run detail: {e}")
 
     return {
-        "run": dict(run_row),
+        "run": run_data,
         "topics": topics_list,
         "assignments": [dict(a) for a in assignments_rows],
     }
@@ -2942,10 +2962,23 @@ def search_topics_by_word(
         LIMIT %(limit)s
     """
 
-    with pool.connection() as conn:
-        rows = conn.execute(sql, {"word": word, "limit": limit}).fetchall()
+    try:
+        with pool.connection() as conn:
+            rows = conn.execute(sql, {"word": word, "limit": limit}).fetchall()
 
-    return [dict(r) for r in rows]
+        # Convert UUIDs to strings
+        result = []
+        for r in rows:
+            item = dict(r)
+            if "run_id" in item and item["run_id"] is not None:
+                item["run_id"] = str(item["run_id"])
+            result.append(item)
+
+        return result
+
+    except Exception as e:
+        logger.error("DB error searching topics: %s", e)
+        raise HTTPException(500, f"Failed to search topics: {e}")
 
 
 if __name__ == "__main__":
