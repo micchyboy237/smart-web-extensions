@@ -10,6 +10,9 @@ import pandas as pd
 import topicwizard
 from jet.adapters.llama_cpp.chunking_utils import truncate_texts
 from jet.adapters.llama_cpp.config import EMBED_MODEL
+
+# [NEW] Import the local LLM analyzer for topic naming
+from jet.adapters.turftopic.chat import LlamaCppAnalyzer
 from jet.adapters.turftopic.embed import LlamaCppEncoder
 from jet.libs.bertopic.examples.mock import load_missav_videos
 from jet.wordnet.keywords.helpers import preprocess_texts
@@ -107,7 +110,7 @@ write_json(
 console.print(f"💾 Saved sorted input documents ({len(sorted_corpus)})")
 
 corpus = sorted_corpus
-corpus = corpus[:100]
+corpus = corpus[:100]  # Keep small for demo speed
 
 console.print("Initializing NounPhraseCountVectorizer...")
 vectorizer = NounPhraseCountVectorizer("en_core_web_sm", min_df=1)
@@ -122,6 +125,26 @@ model = KeyNMF(
     encoder=encoder,
 )
 document_topic_matrix = model.fit_transform(corpus)
+
+# --- [NEW] START: LLM Topic Naming ---
+console.print("🤖 Generating topic names with LLM...")
+try:
+    # Initialize the local LLM analyzer
+    # It uses the DEFAULT_LLM_MODEL from config (e.g., qwen3.5-uncensored:2b)
+    namer = LlamaCppAnalyzer()
+
+    # Rename topics using the analyzer
+    # use_documents=True provides context from representative documents for better naming
+    model.rename_topics(namer, use_documents=True)
+
+    console.print("[green]✓ Topics renamed successfully.[/green]")
+    console.print("[dim]New topic names:[/dim]")
+    for i, name in enumerate(model.topic_names):
+        console.print(f"  Topic {i}: {name}")
+except Exception as e:
+    console.print(f"[red]✗ Failed to generate LLM names: {e}[/red]")
+    console.print("[yellow]Falling back to default keyword-based names.[/yellow]")
+# --- [NEW] END: LLM Topic Naming ---
 
 representative_topics = []
 for topic_id, topic_scores in enumerate(np.asarray(document_topic_matrix).T):
@@ -145,6 +168,7 @@ for topic_id, topic_scores in enumerate(np.asarray(document_topic_matrix).T):
     )
 
 representative_by_topic = {item["topic_id"]: item for item in representative_topics}
+
 topics = []
 for topic_id, words in model.get_topics(top_k=10):
     topic_id = int(topic_id)
@@ -165,7 +189,9 @@ write_json(
 model.topics_df(top_k=10, show_scores=True).to_csv(TOPICS_CSV, index=False)
 saved_files.append(TOPICS_CSV)
 
+# [IMPORTANT] topic_names now reflects the LLM-generated names
 topic_names = [str(name) for name in model.topic_names]
+
 document_topics = []
 for index, scores in enumerate(document_topic_matrix):
     top_index = int(scores.argmax())
@@ -177,6 +203,7 @@ for index, scores in enumerate(document_topic_matrix):
             "scores": [float(score) for score in scores],
         }
     )
+
 write_json(
     DOCUMENT_TOPICS_FILE,
     {
@@ -185,22 +212,29 @@ write_json(
         "documents": document_topics,
     },
 )
+
 console.print(f"💾 Saved {len(topics)} topics and document assignments")
 
 topic_table = Table(title="Extracted topics", show_lines=True)
 topic_table.add_column("ID", justify="right", style="blue")
+topic_table.add_column("Name", style="cyan")  # [NEW] Added Name column
 topic_table.add_column("Rep. docs", justify="right", style="green")
 topic_table.add_column("Top words", style="magenta", max_width=80)
+
 for topic in topics:
     words = ", ".join(item["word"] for item in topic["words"][:8])
+    # [NEW] Get the LLM name for this topic
+    topic_name = topic_names[topic["topic_id"]]
     topic_table.add_row(
         str(topic["topic_id"]),
+        topic_name,  # [NEW] Display LLM name
         str(topic["representative_document_count"]),
         words,
     )
 console.print(topic_table)
 
 console.print("Preparing topic visualization...")
+# [IMPORTANT] prepare_topic_data captures the CURRENT model state, including new names
 topic_data = model.prepare_topic_data(corpus)
 
 rep_counts = [item["count"] for item in representative_topics]
@@ -237,6 +271,7 @@ write_figure(
     DOCUMENT_MAP_FILE,
     document_map(topic_data, document_metadata=document_metadata),
 )
+
 console.print("💾 Saved visualization figures")
 
 console.print("\n[bold green]📂 Saved files:[/bold green]")
@@ -246,4 +281,5 @@ for path in saved_files:
     )
 
 console.print("\nLaunching TopicWizard...")
+# TopicWizard will now use the LLM-generated names stored in topic_data
 topicwizard.visualize(topic_data=topic_data)
