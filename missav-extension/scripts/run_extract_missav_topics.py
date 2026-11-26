@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 import topicwizard
-from jet.adapters.turftopic.missav import cluster_topics
+from jet.adapters.turftopic.missav import ClusterTopicsResult, cluster_topics
 from rich.console import Console
 from rich.table import Table
 
@@ -86,13 +86,13 @@ def main():
         saved_files.append(path)
 
     # Call the core business logic
-    results = cluster_topics(
+    results: ClusterTopicsResult = cluster_topics(
         code=args.code,
         n_topics=args.n_topics,
         n_docs=args.n_docs,
         top_k=args.top_k,
         no_llm=args.no_llm,
-        representative_top_k=None,  # Can be exposed as an arg if needed
+        representative_top_k=None,
     )
 
     # Save Input Data
@@ -115,18 +115,7 @@ def main():
         f"💾 Saved preprocessed documents ({len(results['preprocessed_corpus'])})"
     )
 
-    write_json(
-        SCORED_DOCS_FILE,
-        [
-            {
-                **r,
-                "document": results["corpus"][r["index"]]
-                if r["index"] < len(results["corpus"])
-                else "",
-            }
-            for r in results["scored_results"]
-        ],
-    )
+    write_json(SCORED_DOCS_FILE, results["scored_results"])
     console.print(f"💾 Saved scored documents ({len(results['scored_results'])})")
 
     write_json(
