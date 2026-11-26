@@ -11,6 +11,8 @@ from jet.adapters.llama_cpp.chunking_utils import truncate_texts
 from jet.adapters.llama_cpp.config import EMBED_MODEL
 from jet.adapters.turftopic.embed import LlamaCppEncoder
 from jet.libs.bertopic.examples.mock import load_missav_videos
+from jet.wordnet.keywords.helpers import preprocess_texts
+from jet.wordnet.n_grams import score_documents_by_ngrams
 from rich.console import Console
 from rich.table import Table
 from topicwizard.figures.documents import document_map
@@ -25,6 +27,9 @@ shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 INPUT_FILE = OUTPUT_DIR / "input_documents.json"
+PREROCESSED_DOCS_FILE = OUTPUT_DIR / "preprocessed_documents.json"
+SCORED_DOCS_FILE = OUTPUT_DIR / "scored_documents.json"
+SORTED_INPUT_FILE = OUTPUT_DIR / "sorted_input_documents.json"
 TOPICS_FILE = OUTPUT_DIR / "topics.json"
 TOPICS_CSV = OUTPUT_DIR / "topics.csv"
 DOCUMENT_TOPICS_FILE = OUTPUT_DIR / "document_topics.json"
@@ -53,7 +58,6 @@ docs = truncate_texts(
     docs, model=EMBED_MODEL, max_tokens=128, valid_sentences_only=True
 )
 corpus = [d for d in docs if d.strip()]
-corpus = corpus[:100]  # Temp limit
 console.print(f"   Loaded {len(corpus)} documents")
 
 write_json(
@@ -64,6 +68,48 @@ write_json(
     },
 )
 console.print(f"💾 Saved input documents ({len(corpus)})")
+
+
+preprocessed_corpus = preprocess_texts(corpus)
+write_json(
+    PREROCESSED_DOCS_FILE,
+    {
+        "total_documents": len(corpus),
+        "documents": [
+            {"index": i, "content": doc} for i, doc in enumerate(preprocessed_corpus)
+        ],
+    },
+)
+console.print(f"💾 Saved preprocessed documents ({len(preprocessed_corpus)})")
+
+results = score_documents_by_ngrams(
+    preprocessed_corpus,
+    min_words=1,
+    max_words=3,
+    min_doc_count=2,
+)
+write_json(
+    SCORED_DOCS_FILE,
+    results,
+)
+console.print(f"💾 Saved scored documents ({len(results)})")
+
+sorted_corpus = [corpus[r["index"]] for r in results]  # map to original doc
+# sorted_corpus = [r["text"] for r in results]  # use preprocessed text
+
+write_json(
+    SORTED_INPUT_FILE,
+    {
+        "total_documents": len(sorted_corpus),
+        "documents": [
+            {"index": i, "content": doc} for i, doc in enumerate(sorted_corpus)
+        ],
+    },
+)
+console.print(f"💾 Saved sorted input documents ({len(sorted_corpus)})")
+
+corpus = sorted_corpus
+corpus = corpus[:100]  # Temp limit
 
 console.print("Initializing NounPhraseCountVectorizer...")
 vectorizer = NounPhraseCountVectorizer("en_core_web_sm", min_df=1)
