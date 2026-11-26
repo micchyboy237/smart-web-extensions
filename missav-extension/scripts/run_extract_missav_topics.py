@@ -90,7 +90,7 @@ results = score_documents_by_ngrams(
 )
 write_json(
     SCORED_DOCS_FILE,
-    results,
+    [{**r, "document": corpus[r["index"]]} for r in results],
 )
 console.print(f"💾 Saved scored documents ({len(results)})")
 
@@ -116,7 +116,11 @@ console.print("Initializing LlamaCppEncoder...")
 encoder = LlamaCppEncoder(model=EMBED_MODEL, batch_size=64)
 
 console.print("Fitting KeyNMF model with noun-phrase vectorizer...")
-model = KeyNMF(n_components=5, vectorizer=vectorizer, encoder=encoder)
+model = KeyNMF(
+    n_components=5,
+    vectorizer=vectorizer,
+    encoder=encoder,
+)
 document_topic_matrix = model.fit_transform(corpus)
 
 representative_topics = []
