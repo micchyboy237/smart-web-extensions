@@ -603,6 +603,18 @@ class TopicRunDetailTD(TypedDict):
     assignments: List[DocumentAssignmentTD]
 
 
+class CodeDashboardSummaryTD(TypedDict):
+    """Lightweight summary for the dashboard grid."""
+
+    code: str
+    run_id: str
+    created_at: datetime
+    n_topics: int
+    n_docs: int
+    top_topic_name: Optional[str]  # The name of the most dominant topic
+    top_topic_words: List[str]  # Top 3 words of that topic
+
+
 # --- Pydantic Models for POST/GET ---
 
 
@@ -647,6 +659,28 @@ class TopicSearchResultItem(BaseModel):
     topic_name: Optional[str]
     word: str
     score: float
+
+
+class WordScoreTD(TypedDict):
+    word: str
+    score: float
+
+
+class CodeDashboardSummaryTD(TypedDict):
+    """Lightweight summary for the dashboard grid."""
+
+    code: str
+    run_id: str
+    created_at: datetime
+    n_topics: int
+    n_docs: int
+    top_topic_name: Optional[str]
+    top_topic_words: List[WordScoreTD]  # Now includes scores
+    top_topic_rep_count: Optional[int]  # Count of docs in the primary topic
+
+
+class DashboardResponse(BaseModel):
+    codes: List[CodeDashboardSummaryTD]
 
 
 # --------------------------------------------------------------------------- #
@@ -2817,11 +2851,11 @@ def save_topics(req: SaveTopicsRequest) -> SaveTopicsResponse:
 
 @app.get("/topics/runs", response_model=List[TopicRunListItem])
 def list_topic_runs(
-    code: Optional[str] = Query(None, description="Filter by code prefix"),
+    code: Optional[str] = Query(None, description="Filter by code prefix (optional)"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """List all topic modeling runs."""
+    """List all topic modeling runs. If no code is provided, returns all runs."""
     params: dict = {"limit": limit, "offset": offset}
     conds: List[str] = []
 
@@ -2843,7 +2877,6 @@ def list_topic_runs(
         with pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
 
-        # Explicitly convert UUIDs to strings to prevent Pydantic validation errors
         result = []
         for r in rows:
             item = dict(r)
@@ -2979,6 +3012,81 @@ def search_topics_by_word(
     except Exception as e:
         logger.error("DB error searching topics: %s", e)
         raise HTTPException(500, f"Failed to search topics: {e}")
+
+
+@app.get("/topics/dashboard", response_model=DashboardResponse)
+def get_topics_dashboard():
+    """
+    Fetches the latest topic run for every unique code with enriched summary data.
+    """
+    sql = """
+        WITH latest_runs AS (
+            SELECT DISTINCT ON (code) 
+                id, code, n_topics, n_docs, created_at
+            FROM public.topic_runs
+            ORDER BY code, created_at DESC
+        ),
+        top_topics AS (
+            SELECT t.id as topic_uuid, t.run_id, t.name, t.representative_doc_count
+            FROM public.topics t
+            JOIN latest_runs lr ON t.run_id = lr.id
+            WHERE t.topic_id = 0
+        ),
+        ranked_words AS (
+            SELECT 
+                tw.topic_id,
+                tw.word,
+                tw.score,
+                ROW_NUMBER() OVER (PARTITION BY tw.topic_id ORDER BY tw.rank ASC) as rn
+            FROM public.topic_words tw
+            JOIN top_topics tt ON tw.topic_id = tt.topic_uuid
+        )
+        SELECT 
+            lr.id as run_id, 
+            lr.code, 
+            lr.n_topics, 
+            lr.n_docs, 
+            lr.created_at,
+            tt.name as top_topic_name,
+            tt.representative_doc_count as top_topic_rep_count,
+            -- Aggregate words and scores into a JSONB array for easy client parsing
+            COALESCE(
+                jsonb_agg(
+                    jsonb_build_object('word', rw.word, 'score', rw.score) 
+                    ORDER BY rw.rn ASC
+                ) FILTER (WHERE rw.rn <= lr.n_topics), 
+                '[]'::jsonb
+            ) as top_topic_words
+        FROM latest_runs lr
+        LEFT JOIN top_topics tt ON tt.run_id = lr.id
+        LEFT JOIN ranked_words rw ON rw.topic_id = tt.topic_uuid
+        GROUP BY lr.id, lr.code, lr.n_topics, lr.n_docs, lr.created_at, tt.name, tt.representative_doc_count
+        ORDER BY lr.code ASC
+    """
+
+    try:
+        with pool.connection() as conn:
+            rows = conn.execute(sql).fetchall()
+
+        result = []
+        for r in rows:
+            item = dict(r)
+            item["run_id"] = str(item["run_id"])
+            # psycopg returns jsonb as a string or dict depending on config; ensure it's a list
+            if isinstance(item["top_topic_words"], str):
+                import json
+
+                item["top_topic_words"] = json.loads(item["top_topic_words"])
+            elif item["top_topic_words"] is None:
+                item["top_topic_words"] = []
+
+            result.append(item)
+
+        return {"codes": result}
+
+    except Exception as e:
+        logger.error("DB error fetching dashboard: %s", e)
+        raise HTTPException(500, f"Failed to load dashboard: {e}")
 
 
 if __name__ == "__main__":
