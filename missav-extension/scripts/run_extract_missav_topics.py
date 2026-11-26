@@ -54,6 +54,13 @@ def parse_args():
         help="Number of top words per topic (default: 10)",
     )
     parser.add_argument(
+        "-c",
+        "--code",
+        type=str,
+        default="juc",
+        help="MissAV video code prefix to load (default: juc)",
+    )
+    parser.add_argument(
         "--no-llm",
         action="store_true",
         help="Disable LLM-based topic naming (use default keyword names)",
@@ -65,6 +72,7 @@ def main():
     args = parse_args()
 
     OUTPUT_DIR = Path(__file__).parent / "generated" / Path(__file__).stem
+    OUTPUT_DIR = OUTPUT_DIR / args.code
     shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -94,7 +102,8 @@ def main():
         saved_files.append(path)
 
     console.print("📄 Loading documents...")
-    docs = load_missav_videos(code=["juc"])
+    # [UPDATED] Use argument for code prefix
+    docs = load_missav_videos(code=[args.code])
     docs = truncate_texts(
         docs, model=EMBED_MODEL, max_tokens=128, valid_sentences_only=True
     )
