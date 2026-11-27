@@ -2,6 +2,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Query
 from models.schemas.topic import (
+    CodeDashboardSummary,
     DashboardResponse,
     SaveTopicsRequest,
     TopicRunListItem,
@@ -9,7 +10,6 @@ from models.schemas.topic import (
     TopicSearchResultItem,
 )
 from models.types.topic import (
-    CodeDashboardSummaryTD,
     TopicRunDetailTD,
 )
 from services.cluster_service import (
@@ -23,9 +23,10 @@ from services.cluster_service import (
 router = APIRouter()
 
 
-@router.post("/save_topics", response_model=CodeDashboardSummaryTD)
-def save_topics_endpoint(req: SaveTopicsRequest) -> CodeDashboardSummaryTD:
-    return save_topics(req.code, req.n_topics, req.n_docs, req.top_k, req.no_llm)
+@router.post("/save_topics", response_model=CodeDashboardSummary)
+def save_topics_endpoint(req: SaveTopicsRequest) -> CodeDashboardSummary:
+    summary = save_topics(req.code, req.n_topics, req.n_docs, req.top_k, req.no_llm)
+    return summary
 
 
 @router.get("/runs", response_model=List[TopicRunListItem])
