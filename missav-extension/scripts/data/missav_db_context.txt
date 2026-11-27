@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-27T14:36:46.210116
+Generated: 2026-11-27T17:33:30.021430
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -12,7 +12,7 @@ Tables: document_topic_assignments, topic_representative_docs, topic_runs, topic
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.document_topic_assignments (300 rows)
+### Table: public.document_topic_assignments (10881 rows)
 ```sql
 CREATE TABLE "public"."document_topic_assignments" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -47,7 +47,7 @@ CREATE TABLE "public"."document_topic_assignments" (
 - `idx_doc_topic_assignments_topic_id`: CREATE INDEX idx_doc_topic_assignments_topic_id ON public.document_topic_assignments USING btree (run_id, topic_id)
 - `idx_doc_topic_assignments_video_id`: CREATE INDEX idx_doc_topic_assignments_video_id ON public.document_topic_assignments USING btree (video_id)
 
-### Table: public.topic_representative_docs (686 rows)
+### Table: public.topic_representative_docs (26251 rows)
 ```sql
 CREATE TABLE "public"."topic_representative_docs" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -75,7 +75,7 @@ CREATE TABLE "public"."topic_representative_docs" (
 - `idx_topic_rep_docs_video_id`: CREATE INDEX idx_topic_rep_docs_video_id ON public.topic_representative_docs USING btree (video_id)
 - `topic_representative_docs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_representative_docs_pkey ON public.topic_representative_docs USING btree (id)
 
-### Table: public.topic_runs (3 rows)
+### Table: public.topic_runs (126 rows)
 ```sql
 CREATE TABLE "public"."topic_runs" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -103,7 +103,7 @@ CREATE TABLE "public"."topic_runs" (
 **Indexes:**
 - `topic_runs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_runs_pkey ON public.topic_runs USING btree (id)
 
-### Table: public.topic_words (150 rows)
+### Table: public.topic_words (6300 rows)
 ```sql
 CREATE TABLE "public"."topic_words" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -129,7 +129,7 @@ CREATE TABLE "public"."topic_words" (
 - `idx_topic_words_topic_id`: CREATE INDEX idx_topic_words_topic_id ON public.topic_words USING btree (topic_id)
 - `topic_words_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_words_pkey ON public.topic_words USING btree (id)
 
-### Table: public.topics (15 rows)
+### Table: public.topics (630 rows)
 ```sql
 CREATE TABLE "public"."topics" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -211,54 +211,54 @@ CREATE TABLE "public"."videos" (
 ### Table: document_topic_assignments
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 300 | 0.0% |
-| `run_id` | uuid | 3 | 0.0% |
+| `id` | uuid | 10881 | 0.0% |
+| `run_id` | uuid | 126 | 0.0% |
 | `source_index` | integer | 100 | 0.0% |
 | `topic_id` | integer | 5 | 0.0% |
-| `topic_name` | text | 15 | 0.0% |
-| `scores` | double precision[] | 300 | 0.0% |
-| `content` | text | 300 | 0.0% |
-| `video_id` | text | 300 | 0.0% |
+| `topic_name` | text | 555 | 0.0% |
+| `scores` | double precision[] | 10880 | 0.0% |
+| `content` | text | 10080 | 0.0% |
+| `video_id` | text | 10081 | 0.0% |
 
 ### Table: topic_representative_docs
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 686 | 0.0% |
-| `topic_id` | uuid | 15 | 0.0% |
-| `content` | text | 300 | 0.0% |
-| `membership_score` | double precision | 686 | 0.0% |
-| `video_id` | text | 300 | 0.0% |
+| `id` | uuid | 26251 | 0.0% |
+| `topic_id` | uuid | 630 | 0.0% |
+| `content` | text | 10079 | 0.0% |
+| `membership_score` | double precision | 26248 | 0.0% |
+| `video_id` | text | 10080 | 0.0% |
 
 ### Table: topic_runs
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 3 | 0.0% |
-| `code` | text | 3 | 0.0% |
+| `id` | uuid | 126 | 0.0% |
+| `code` | text | 118 | 0.0% |
 | `n_topics` | integer | 1 | 0.0% |
 | `n_docs` | integer | 1 | 0.0% |
 | `top_k` | integer | 1 | 0.0% |
 | `no_llm` | boolean | 1 | 0.0% |
-| `created_at` | timestamp with time zone | 3 | 0.0% |
+| `created_at` | timestamp with time zone | 126 | 0.0% |
 | `model_params` | jsonb | 1 | 0.0% |
 
 ### Table: topic_words
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 150 | 0.0% |
-| `topic_id` | uuid | 15 | 0.0% |
-| `word` | text | 113 | 0.0% |
-| `score` | double precision | 150 | 0.0% |
+| `id` | uuid | 6300 | 0.0% |
+| `topic_id` | uuid | 630 | 0.0% |
+| `word` | text | 3314 | 0.0% |
+| `score` | double precision | 6300 | 0.0% |
 | `rank` | integer | 10 | 0.0% |
 
 ### Table: topics
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 15 | 0.0% |
-| `run_id` | uuid | 3 | 0.0% |
+| `id` | uuid | 630 | 0.0% |
+| `run_id` | uuid | 126 | 0.0% |
 | `topic_id` | integer | 5 | 0.0% |
-| `name` | text | 15 | 0.0% |
-| `representative_doc_count` | integer | 12 | 0.0% |
-| `embedding` | vector(768) | 15 | 0.0% |
+| `name` | text | 555 | 0.0% |
+| `representative_doc_count` | integer | 81 | 0.0% |
+| `embedding` | vector(768) | 600 | 0.0% |
 | `search_vector` | tsvector | 0 | 100.0% |
 
 ## JSONB COLUMN METADATA
