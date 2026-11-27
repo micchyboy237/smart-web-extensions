@@ -1,23 +1,20 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from models.types.topic import MatchType, WordScoreTD
+from models.types.topic import WordScoreTD
 
 
 class TopicSearchRequest(BaseModel):
-    word: str = Field(..., min_length=1)
-    limit: int = Field(10, ge=1, le=50)
-    match_type: MatchType = Field(
-        "all", description="Filter by match strategy: all, semantic, keyword, or hybrid"
+    query: str = Field(
+        ...,
+        min_length=1,
+        description="The search query. Can be a single word or phrase.",
     )
-    # New filtering parameters
+    limit: int = Field(10, ge=1, le=50)
     min_topic_score: float = Field(
-        0.0,
-        ge=0.0,
-        le=1.0,
-        description="Minimum relevance score for a topic to be included",
+        0.0, ge=0.0, le=1.0, description="Minimum relevance score for a topic"
     )
     min_doc_score: float = Field(
         0.0,
@@ -27,6 +24,9 @@ class TopicSearchRequest(BaseModel):
     )
     max_rep_docs: int = Field(
         5, ge=1, le=20, description="Max number of representative docs per topic"
+    )
+    use_ngram_fusion: bool = Field(
+        True, description="If true, breaks query into n-grams for fusion search"
     )
 
 
@@ -47,8 +47,6 @@ class TopicRunListItem(BaseModel):
 
 
 class RepresentativeDocWithVideo(BaseModel):
-    """Represents a single representative document with its full video metadata."""
-
     video_id: str
     title: Optional[str]
     thumbnail: Optional[str]
@@ -66,12 +64,10 @@ class TopicSearchResultItem(BaseModel):
     doc_count: int = Field(alias="representative_doc_count")
     created_at: datetime
     relevance_score: float
-    matched_keywords: List[str] = Field(default_factory=list)
-    match_type: Literal["semantic", "keyword", "hybrid"]
-    top_words: List[WordScoreTD] = Field(
-        default_factory=list, description="Top 5 defining words for this topic"
+    matched_ngrams: List[str] = Field(
+        default_factory=list, description="Which n-grams contributed to this result"
     )
-    # Replaced single snippet with list of rich objects
+    top_words: List[WordScoreTD] = Field(default_factory=list)
     representative_docs: List[RepresentativeDocWithVideo] = Field(default_factory=list)
 
     class Config:

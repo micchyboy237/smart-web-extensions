@@ -16,7 +16,7 @@ from services.cluster_service import (
     get_topics_dashboard,
     list_topic_runs,
     save_topics,
-    search_topics_by_word,
+    search_topics_by_ngrams,
 )
 
 router = APIRouter()
@@ -42,40 +42,31 @@ def get_topic_run_detail_endpoint(run_id: str):
     return get_topic_run_detail(run_id)
 
 
-@router.get("/search", response_model=List[TopicSearchResultItem])
-def search_topics_by_word_endpoint(
-    word: str = Query(..., min_length=1),
-    limit: int = Query(10, ge=1, le=50),
-    match_type: str = Query(
-        "all", description="Filter by match strategy: all, semantic, keyword, or hybrid"
-    ),
-    min_topic_score: float = Query(
-        0.0, ge=0.0, le=1.0, description="Minimum relevance score for a topic"
-    ),
-    min_doc_score: float = Query(
-        0.0,
-        ge=0.0,
-        le=1.0,
-        description="Minimum membership score for representative docs",
-    ),
-    max_rep_docs: int = Query(
-        5, ge=1, le=20, description="Max number of representative docs per topic"
-    ),
-):
-    """
-    Search topics by word using Hybrid Search.
-    Results include full video metadata for representative documents.
-    """
-    return search_topics_by_word(
-        word=word,
-        limit=limit,
-        match_type=match_type,
-        min_topic_score=min_topic_score,
-        min_doc_score=min_doc_score,
-        max_rep_docs=max_rep_docs,
-    )
-
-
 @router.get("/dashboard", response_model=DashboardResponse)
 def get_topics_dashboard_endpoint():
     return get_topics_dashboard()
+
+
+@router.get("/search", response_model=List[TopicSearchResultItem])
+def search_topics_endpoint(
+    query: str = Query(..., min_length=1, description="Search query"),
+    limit: int = Query(10, ge=1, le=50),
+    min_topic_score: float = Query(0.0, ge=0.0, le=1.0),
+    min_doc_score: float = Query(0.0, ge=0.0, le=1.0),
+    max_rep_docs: int = Query(5, ge=1, le=20),
+    use_ngram_fusion: bool = Query(
+        True, description="Enable multi-ngram semantic fusion"
+    ),
+):
+    """
+    Search topics using Multi-Vector Semantic Fusion.
+    Automatically breaks the query into n-grams for better precision and recall.
+    """
+    return search_topics_by_ngrams(
+        query=query,
+        limit=limit,
+        min_topic_score=min_topic_score,
+        min_doc_score=min_doc_score,
+        max_rep_docs=max_rep_docs,
+        use_ngram_fusion=use_ngram_fusion,
+    )
