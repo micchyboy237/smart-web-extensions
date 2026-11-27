@@ -15,7 +15,7 @@ from rich.progress import (
 from rich.table import Table
 
 URL = "http://localhost:9001/topics/save_topics"
-BATCH_SIZE = 20
+BATCH_SIZE = 2
 
 CODES = [
     "juy",
@@ -163,7 +163,8 @@ def send_batch(batch: list[str]) -> tuple[str, str, str]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        # Timeout removed completely (blocks indefinitely until response/error)
+        with urllib.request.urlopen(request) as response:
             body = response.read().decode("utf-8")
             return ("OK", f"HTTP {response.status}", body)
     except urllib.error.HTTPError as exc:
@@ -176,12 +177,13 @@ def send_batch(batch: list[str]) -> tuple[str, str, str]:
 def build_progress() -> Progress:
     return Progress(
         SpinnerColumn(),
-        TextColumn("[bold blue]{task.description}[/bold blue]"),
+        TextColumn("[bold blue]{task.description}[/bold blue]", table_column=None),
         BarColumn(),
         MofNCompleteColumn(),
         TaskProgressColumn(),
         TimeElapsedColumn(),
         console=console,
+        expand=True,
     )
 
 
@@ -207,15 +209,15 @@ def main() -> None:
         task_id = progress.add_task("Initializing...", total=total)
 
         for index, batch in enumerate(batches, start=1):
-            # Format a clean preview of codes in the current batch (e.g., first 3 + count)
-            preview_limit = 3
+            # Format preview of codes in the current batch
+            preview_limit = 4
             preview_str = ", ".join(batch[:preview_limit])
             if len(batch) > preview_limit:
-                preview_str += f", ... (+{len(batch) - preview_limit} more)"
+                preview_str += f", ... (+{len(batch) - preview_limit})"
 
             progress.update(
                 task_id,
-                description=f"Batch {index}/{total} | Processing [{preview_str}] | [green]OK: {ok_count}[/green] [red]Err: {err_count}[/red]",
+                description=f"Batch {index}/{total} [{preview_str}] | [green]OK: {ok_count}[/green] [red]Err: {err_count}[/red]",
             )
 
             status, detail, body = send_batch(batch)
