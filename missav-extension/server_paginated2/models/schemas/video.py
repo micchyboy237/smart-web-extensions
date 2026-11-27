@@ -83,7 +83,7 @@ class FacetsResponse(BaseModel):
 
 
 class VideoIngestItem(BaseModel):
-    id: str
+    id: Optional[str] = None  # Made optional; will be generated if missing
     url: str
     code: str
     episode: str

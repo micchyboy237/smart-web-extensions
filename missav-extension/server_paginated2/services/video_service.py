@@ -161,24 +161,19 @@ def search_video(req: SearchRequest) -> SearchResponse:
     last_id: Optional[str] = None
     if req.cursor:
         sort_key, last_id = decode_cursor(req.cursor, fp)
-
     emb = list(embed_query(req.query))
     params: dict = {"emb": emb, "limit": req.limit + 1}
     conds: List[str] = []
     apply_filters(req, params, conds)
-
     if req.min_similarity is not None:
         conds.append("(embedding <=> %(emb)s::vector) <= %(max_dist)s")
         params["max_dist"] = 1.0 - req.min_similarity
-
     distance_sql = "(embedding <=> %(emb)s::vector)"
     order_clause, _ = build_order_clause(req.sort, req.order, distance_sql=distance_sql)
-
     if last_id is not None:
         params["_cursor_key"] = sort_key
         params["_cursor_id"] = last_id
         cursor_predicate(req.sort, req.order, params, conds, distance_sql=distance_sql)
-
     where_sql = " AND ".join(conds) if conds else "TRUE"
     sql = f"""
         SELECT id, title, details, url, code, episode, release_date, genres,
@@ -197,7 +192,6 @@ def search_video(req: SearchRequest) -> SearchResponse:
     except Exception as e:
         logger.error("DB error: %s", e)
         raise HTTPException(500, f"Search failed: {e}")
-
     has_more = len(rows) > req.limit
     rows = rows[: req.limit]
     next_cursor = None
@@ -213,7 +207,6 @@ def search_video(req: SearchRequest) -> SearchResponse:
                 else (str(sv) if sv is not None else None)
             )
         next_cursor = encode_cursor(key_val, last["id"], fp)
-
     took = (time.perf_counter() - t0) * 1000
     return SearchResponse(
         items=[row_to_item(r) for r in rows],
@@ -225,15 +218,14 @@ def search_video(req: SearchRequest) -> SearchResponse:
 
 def similar_video(req: SimilarRequest) -> SearchResponse:
     t0 = time.perf_counter()
+    # Changed to lookup by video_id since it's now unique
     with pool.connection() as conn:
         src = conn.execute(
-            "SELECT embedding FROM public.videos WHERE id = %s", (req.video_id,)
+            "SELECT embedding FROM public.videos WHERE video_id = %s", (req.video_id,)
         ).fetchone()
-
     raw_emb = src["embedding"] if src else None
     if not src or raw_emb is None:
         raise HTTPException(404, "Source video or embedding not found")
-
     emb = to_float_list(raw_emb)
 
     class SyntheticReq:
@@ -256,20 +248,16 @@ def similar_video(req: SimilarRequest) -> SearchResponse:
     last_id: Optional[str] = None
     if req.cursor:
         sort_key, last_id = decode_cursor(req.cursor, fp)
-
     params: dict = {"emb": emb, "limit": req.limit + 1}
-    conds: List[str] = ["id <> %(src)s"]
+    conds: List[str] = ["video_id <> %(src)s"]
     params["src"] = req.video_id
     apply_filters(synthetic, params, conds)
-
     distance_sql = "(embedding <=> %(emb)s::vector)"
     order_clause, _ = build_order_clause(req.sort, req.order, distance_sql=distance_sql)
-
     if last_id is not None:
         params["_cursor_key"] = sort_key
         params["_cursor_id"] = last_id
         cursor_predicate(req.sort, req.order, params, conds, distance_sql=distance_sql)
-
     where_sql = " AND ".join(conds)
     sql = f"""
         SELECT id, title, details, url, code, episode, release_date, genres,
@@ -284,7 +272,6 @@ def similar_video(req: SimilarRequest) -> SearchResponse:
             conn.execute(f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}")
             conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {int(MAX_SCAN_TUPLES)}")
         rows = conn.execute(sql, params).fetchall()
-
     has_more = len(rows) > req.limit
     rows = rows[: req.limit]
     next_cursor = None
@@ -300,7 +287,6 @@ def similar_video(req: SimilarRequest) -> SearchResponse:
                 else (str(sv) if sv is not None else None)
             )
         next_cursor = encode_cursor(key_val, last["id"], fp)
-
     took = (time.perf_counter() - t0) * 1000
     return SearchResponse(
         items=[row_to_item(r) for r in rows],
@@ -315,7 +301,6 @@ def hybrid_search(req: HybridRequest) -> SearchResponse:
     emb = list(embed_query(req.query))
     k = 60
     cand = req.limit * 4
-
     vec_params: dict = {"emb": emb, "limit": cand}
     vec_conds: List[str] = []
 
@@ -331,7 +316,6 @@ def hybrid_search(req: HybridRequest) -> SearchResponse:
     vec_req = VecReq(req)
     apply_filters(vec_req, vec_params, vec_conds)
     vec_where = " AND ".join(vec_conds) if vec_conds else "TRUE"
-
     fts_params: dict = {"q": req.query, "limit": cand}
     fts_conds = [
         "title IS NOT NULL",
@@ -339,7 +323,6 @@ def hybrid_search(req: HybridRequest) -> SearchResponse:
     ]
     apply_filters(vec_req, fts_params, fts_conds)
     fts_where = " AND ".join(fts_conds)
-
     with pool.connection() as conn:
         conn.execute(f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}")
         conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {int(MAX_SCAN_TUPLES)}")
@@ -354,7 +337,6 @@ def hybrid_search(req: HybridRequest) -> SearchResponse:
         """,
             vec_params,
         ).fetchall()
-
         fts_rows = conn.execute(
             f"""
             SELECT id, title, details, url, code, episode, release_date, genres,
@@ -367,7 +349,6 @@ def hybrid_search(req: HybridRequest) -> SearchResponse:
         """,
             fts_params,
         ).fetchall()
-
     scores: dict = {}
     by_id: dict = {}
     for rank, r in enumerate(vec_rows):
@@ -376,7 +357,6 @@ def hybrid_search(req: HybridRequest) -> SearchResponse:
     for rank, r in enumerate(fts_rows):
         scores[r["id"]] = scores.get(r["id"], 0) + 1.0 / (k + rank)
         by_id.setdefault(r["id"], r)
-
     ordered = sorted(scores.items(), key=lambda kv: -kv[1])[: req.limit]
     items = [row_to_item(by_id[v_id], similarity=None) for v_id, _ in ordered]
     took = (time.perf_counter() - t0) * 1000
@@ -403,7 +383,6 @@ def browse_videos(
     apply_filters(req_obj, params, conds)
     where_sql = " AND ".join(conds) if conds else "TRUE"
     order_clause, _ = build_order_clause(sort, order)
-
     sql = f"""
         SELECT id, title, details, url, code, episode, release_date, genres,
                thumbnail, preview
@@ -414,7 +393,6 @@ def browse_videos(
     """
     with pool.connection() as conn:
         rows = conn.execute(sql, params).fetchall()
-
     has_more = len(rows) > limit
     rows = rows[:limit]
     took = (time.perf_counter() - t0) * 1000
@@ -428,11 +406,12 @@ def browse_videos(
 
 def get_video(video_id: str) -> VideoItem:
     with pool.connection() as conn:
+        # Changed to lookup by video_id
         r = conn.execute(
             """
             SELECT id, title, details, url, code, episode, release_date, genres,
                    thumbnail, preview
-            FROM public.videos WHERE id = %s
+            FROM public.videos WHERE video_id = %s
         """,
             (video_id,),
         ).fetchone()
@@ -470,11 +449,9 @@ def list_videos(
     req.min_release_date = min_release_date
     req.max_release_date = max_release_date
     req.completion_filter = completion_filter
-
     params: dict = {"limit": eff_limit, "offset": offset}
     conds: List[str] = []
     apply_filters(req, params, conds)
-
     _VLIST_FIELDS = {
         "id": "id",
         "summary": "id, code, episode, title, release_date, complete",
@@ -489,7 +466,6 @@ def list_videos(
             " AND release_date IS NOT NULL "
             " AND genres IS NOT NULL AND cardinality(genres) > 0) AS complete"
         )
-
     extra_select: List[str] = []
     order_sql = "ORDER BY id ASC"
     use_semantic = query is not None and mode in ("semantic", "hybrid")
@@ -498,7 +474,6 @@ def list_videos(
     if use_semantic:
         emb = list(embed_query(query))
         params["emb"] = emb
-
     if query is not None:
         if mode == "fts":
             conds.append(
@@ -530,7 +505,6 @@ def list_videos(
             else:
                 sem_cond = "embedding IS NOT NULL"
             params["emb"] = list(embed_query(query))
-
             sql = f"""
                 WITH vec AS (
                     SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> %(emb)s::vector, id) AS rn
@@ -564,7 +538,6 @@ def list_videos(
             return VideoListResponse(
                 items=[dict(r) for r in rows], count=len(rows), took_ms=took
             )
-
     where_sql = " AND ".join(conds) if conds else "TRUE"
     select_full = ", ".join([select_cols] + extra_select)
     sql = f"""
@@ -575,7 +548,6 @@ def list_videos(
             conn.execute(f"SET LOCAL hnsw.iterative_scan = {ITERATIVE_SCAN_MODE}")
             conn.execute(f"SET LOCAL hnsw.max_scan_tuples = {int(MAX_SCAN_TUPLES)}")
         rows = conn.execute(sql, params).fetchall()
-
     took = (time.perf_counter() - t0) * 1000
     return VideoListResponse(
         items=[dict(r) for r in rows], count=len(rows), took_ms=took
@@ -611,7 +583,6 @@ def discover_videos(req: DiscoverRequest) -> VideoListResponse:
     else:
         order_sql = "ORDER BY random()"
         select_cols = "id, title, details, url, code, episode, release_date, genres, thumbnail, preview, embedding, NULL::float8 AS distance"
-
     sql = f"SELECT {select_cols} FROM public.videos WHERE {where_sql} {order_sql} LIMIT %(limit)s"
     try:
         with pool.connection() as conn:
@@ -619,12 +590,10 @@ def discover_videos(req: DiscoverRequest) -> VideoListResponse:
     except Exception as e:
         logger.error("Discover DB error: %s", e)
         raise HTTPException(500, f"Discovery failed: {e}")
-
     if not rows:
         return VideoListResponse(
             items=[], count=0, took_ms=(time.perf_counter() - t0) * 1000
         )
-
     search_results = []
     embeddings_list = []
     for r in rows:
@@ -634,7 +603,6 @@ def discover_videos(req: DiscoverRequest) -> VideoListResponse:
             {"id": r["id"], "score": score, "document": doc_text or ""}
         )
         embeddings_list.append(to_float_list(r["embedding"]))
-
     embeddings_matrix = np.array(embeddings_list, dtype=np.float32)
     diversified_results = shuffle_and_diversify(
         results=search_results,
@@ -644,7 +612,6 @@ def discover_videos(req: DiscoverRequest) -> VideoListResponse:
         relevance_bias=1.0,
         embeddings=embeddings_matrix,
     )
-
     row_map = {r["id"]: r for r in rows}
     final_items = []
     for res in diversified_results:
@@ -656,7 +623,6 @@ def discover_videos(req: DiscoverRequest) -> VideoListResponse:
                 else None
             )
             final_items.append(row_to_item(original_row, similarity=sim))
-
     took = (time.perf_counter() - t0) * 1000
     return VideoListResponse(
         items=[dict(item) for item in final_items], count=len(final_items), took_ms=took
@@ -667,14 +633,23 @@ def ingest_videos(req: IngestRequest) -> IngestResponse:
     t0 = time.perf_counter()
     inserted = updated = skipped = 0
     unique_items_map = {}
+
+    # Deduplicate input items by video_id first
     for item in req.items:
-        if item.id:
-            unique_items_map[item.id] = item
+        if item.video_id:
+            unique_items_map[item.video_id] = item
+
     unique_items = list(unique_items_map.values())
     duplicate_count = len(req.items) - len(unique_items)
 
     embeddable: List[Tuple[int, VideoIngestItem, str]] = []
     for idx, item in enumerate(unique_items):
+        # Generate a stable ID based on video_id if not provided
+        if not item.id:
+            # Using a simple hash or prefix to keep it readable but unique
+            # Or just use video_id as ID if your app allows text IDs that match video_id
+            item.id = f"jav-{item.video_id.replace('-', '')}"
+
         parts: List[str] = []
         clean_title, clean_details = clean_fields(item.title, item.details, item.code)
         if clean_title:
@@ -760,20 +735,27 @@ def ingest_videos(req: IngestRequest) -> IngestResponse:
         "(" + ", ".join(["%s"] * len(_INGEST_COLS)) + ")" for _ in rows
     )
     flat_params: List = [v for r in rows for v in r]
+
+    # CHANGED: Conflict target is now video_id
     on_conflict = (
-        f"""ON CONFLICT (id) DO UPDATE SET
-            url = EXCLUDED.url, code = EXCLUDED.code, episode = EXCLUDED.episode,
-            video_id = EXCLUDED.video_id, title = COALESCE(EXCLUDED.title, videos.title),
+        f"""ON CONFLICT (video_id) DO UPDATE SET
+            id = EXCLUDED.id,
+            url = EXCLUDED.url, 
+            code = EXCLUDED.code, 
+            episode = EXCLUDED.episode,
+            title = COALESCE(EXCLUDED.title, videos.title),
             thumbnail = COALESCE(EXCLUDED.thumbnail, videos.thumbnail),
             preview = COALESCE(EXCLUDED.preview, videos.preview),
             details = COALESCE(EXCLUDED.details, videos.details),
             release_date = COALESCE(EXCLUDED.release_date, videos.release_date),
             genres = COALESCE(EXCLUDED.genres, videos.genres),
-            embedding = EXCLUDED.embedding, updated_at = now()
+            embedding = EXCLUDED.embedding, 
+            updated_at = now()
         RETURNING (xmax = 0) AS inserted"""
         if req.upsert
-        else "ON CONFLICT (id) DO NOTHING RETURNING false AS inserted"
+        else "ON CONFLICT (video_id) DO NOTHING RETURNING false AS inserted"
     )
+
     sql = f"INSERT INTO public.videos ({', '.join(_INGEST_COLS)}) VALUES {placeholders} {on_conflict}"
 
     try:
@@ -811,12 +793,10 @@ def grouped_search_core(
     diversity = req.diversity
     fetch_k = req.fetch_k
     min_similarity = req.min_similarity
-
     anchor: Optional[Tuple[Optional[float], str, str]] = None
     window_offset = 0
     if cursor:
         anchor, window_offset = decode_grouped_cursor(cursor, fp)
-
     params: dict = {}
     conds: List[str] = [
         "btrim(v.code) <> ''",
@@ -831,14 +811,12 @@ def grouped_search_core(
     if exclude_group is not None:
         params["ex_code"], params["ex_ep"] = exclude_group
         conds.append("NOT (v.code = %(ex_code)s AND v.episode = %(ex_ep)s)")
-
     query_mode = emb is not None
     distance_sql = ""
     if query_mode:
         params["emb"] = emb
         distance_sql = "(v.embedding <=> %(emb)s::vector)"
         conds.append("v.embedding IS NOT NULL")
-
     ep_norm_sql = "CASE WHEN btrim(v.episode) ~ '^[0-9]+$' THEN lpad(btrim(v.episode), 8, '0') ELSE lower(btrim(v.episode)) END"
     having: List[str] = []
     if query_mode:
@@ -861,7 +839,6 @@ def grouped_search_core(
             conds.append(f"(v.code, ({ep_norm_sql})) > (%(cur_code)s, %(cur_ep)s)")
         score_select = "NULL::float8 AS best_distance,"
         order_sql = f"ORDER BY v.code ASC, ({ep_norm_sql}) ASC"
-
     group_having = ("HAVING " + " AND ".join(having)) if having else ""
     where_sql = " AND ".join(conds)
     diversity_on = diversity > 0.0
@@ -869,10 +846,8 @@ def grouped_search_core(
         base_fetch = max(fetch_k if fetch_k else limit * 3, limit + 1)
     else:
         base_fetch = limit
-
     params["limit"] = base_fetch + 1
     embed_select = "AVG(v.embedding) AS group_embedding," if diversity_on else ""
-
     sql = f"""
         SELECT
             v.code, v.episode,
@@ -907,7 +882,6 @@ def grouped_search_core(
     except Exception as e:
         logger.error("%s DB error: %s", tag, e)
         raise HTTPException(500, f"Grouped search failed: {e}")
-
     has_more_from_db = len(rows) > base_fetch
     window = rows[:base_fetch]
     window_end_anchor: Optional[Tuple[Optional[float], str, str]] = None
@@ -919,7 +893,6 @@ def grouped_search_core(
             last["code"],
             normalize_episode(last["episode"]),
         )
-
     diversity_applied = False
     ordered_window = window
     if diversity_on and window:
@@ -951,7 +924,6 @@ def grouped_search_core(
             tail = [i for i in range(len(window)) if doc_vecs[i] is None]
             ordered_window = [window[i] for i in reordered_idx + tail]
             diversity_applied = True
-
     page_rows = ordered_window[window_offset : window_offset + limit]
     consumed = window_offset + len(page_rows)
     window_has_remaining = consumed < len(ordered_window)
@@ -964,7 +936,6 @@ def grouped_search_core(
         has_more = True
     else:
         has_more = False
-
     has_previous = cursor is not None
     items: List[GroupedVideoItem] = []
     for r in page_rows:
@@ -990,7 +961,6 @@ def grouped_search_core(
                 score=(1.0 - float(best_dist)) if best_dist is not None else None,
             )
         )
-
     took = (time.perf_counter() - t0) * 1000
     return GroupedSearchResponse(
         items=items,

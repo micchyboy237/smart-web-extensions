@@ -2,11 +2,6 @@
 function app() {
   const API = "http://localhost:9001";
   const PAGE_SIZE = 20;
-  const CLUSTER_TIER_THRESHOLDS = {
-    green: { consistency: 0.75, centroidSim: 0.7 },
-    amber: { consistency: 0.55, centroidSim: 0.6 },
-    core: { silhouette: 0.4, probability: 0.7 },
-  };
   const DIVERSITY_LEVELS = { off: 0, low: 0.25, medium: 0.5, high: 0.8 };
 
   // Helper to format numbers (1.1k, 11.1k, etc.)
@@ -50,10 +45,10 @@ function app() {
     codeSuggestions: [],
     showCodeDropdown: false,
     genresModalOpen: false,
-    codesModalOpen: false, // New state for codes modal
+    codesModalOpen: false,
     genreSortBy: "count",
     genreSortOrder: "desc",
-    codeSortBy: "count", // New state for code sorting
+    codeSortBy: "count",
     codeSortOrder: "desc",
     facets: { genres: [], years: [], codes: [] },
     allGenres: [],
@@ -68,16 +63,6 @@ function app() {
     _previewPlayer: null,
     // ── generation counters ──
     _gen: 0,
-    _genClustered: 0,
-    // ── clustered-mode state ──
-    clustered: { data: null, loading: false, error: null, _inflight: false },
-    clusterPrefs: {
-      candidateLimit: null,
-      minClusterSize: 2,
-      epsilon: 0.25,
-      candidateSource: "recent",
-    },
-    clusterUi: {},
 
     // ── lifecycle ──
     boot() {
@@ -87,10 +72,9 @@ function app() {
       this.fetchFacets();
       window.addEventListener("popstate", () => {
         this.hydrateFromURL();
-        this.refetchOrCluster();
+        this.refetch();
       });
-      if (this.mode === "clustered") this.fetchClustered();
-      else this.refetch();
+      this.refetch();
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
           if (this.genresModalOpen) this.genresModalOpen = false;
@@ -108,7 +92,6 @@ function app() {
       const io = new IntersectionObserver(
         (entries) => {
           if (
-            this.mode !== "clustered" &&
             entries[0].isIntersecting &&
             !this.exhausted &&
             !this.loading &&
@@ -121,7 +104,6 @@ function app() {
       );
       io.observe(this.$refs.sentinel);
       const checkSentinel = () => {
-        if (this.mode === "clustered") return;
         const el = this.$refs.sentinel;
         if (!el || this.exhausted || this.loading || !this.items.length) return;
         const rect = el.getBoundingClientRect();
@@ -137,9 +119,6 @@ function app() {
       this.$watch("detail.open", () =>
         this.$nextTick(() => this.refreshIcons()),
       );
-      this.$watch("clustered.data", () =>
-        this.$nextTick(() => this.refreshIcons()),
-      );
       this.$watch("showPreview", (key) => {
         this._pauseCurrentPreview();
         if (key) this.$nextTick(() => this._playPreview(key));
@@ -148,11 +127,9 @@ function app() {
         if (!this.showPreview && keys.length === 0) this._pauseCurrentPreview();
       });
     },
-
     refreshIcons() {
       if (window.lucide) lucide.createIcons();
     },
-
     // ── preview playback ──
     _previewKeyOf(item) {
       return item?.id ? `home-0-${item.id}` : null;
@@ -231,7 +208,6 @@ function app() {
       this.showPreview = null;
       this.holdPreviews = [];
     },
-
     // ── URL sync ──
     hydrateFromURL() {
       const p = new URLSearchParams(location.search);
@@ -251,53 +227,10 @@ function app() {
       this.similarOf = p.get("sim") || null;
       const div = p.get("div");
       this.diversity = div && div in DIVERSITY_LEVELS ? div : "off";
-      if (this.mode === "clustered") {
-        const clRaw = p.get("cl");
-        if (clRaw == null || clRaw === "") {
-          this.clusterPrefs.candidateLimit = null;
-        } else {
-          const cl = parseInt(clRaw, 10);
-          this.clusterPrefs.candidateLimit = Number.isFinite(cl) ? cl : null;
-        }
-        const msRaw = p.get("msize");
-        if (msRaw != null && msRaw !== "") {
-          const ms = parseInt(msRaw, 10);
-          if (Number.isFinite(ms)) {
-            this.clusterPrefs.minClusterSize = Math.min(20, Math.max(2, ms));
-          }
-        }
-        const epsRaw = p.get("eps");
-        if (epsRaw != null && epsRaw !== "") {
-          const eps = parseFloat(epsRaw);
-          if (Number.isFinite(eps)) {
-            this.clusterPrefs.epsilon = Math.min(1, Math.max(0, eps));
-          }
-        }
-        const src = p.get("src");
-        if (src === "random" || src === "recent") {
-          this.clusterPrefs.candidateSource = src;
-        }
-      }
     },
     syncURL(push = false) {
       const p = new URLSearchParams();
       if (this.mode === "search" && this.lastQuery) p.set("q", this.lastQuery);
-      if (this.mode === "clustered") {
-        p.set("mode", "clustered");
-        if (this.lastQuery) p.set("q", this.lastQuery);
-        if (Number.isFinite(this.clusterPrefs.candidateLimit)) {
-          p.set("cl", String(this.clusterPrefs.candidateLimit));
-        }
-        if (this.clusterPrefs.minClusterSize !== 2) {
-          p.set("msize", String(this.clusterPrefs.minClusterSize));
-        }
-        if (this.clusterPrefs.epsilon !== 0.25) {
-          p.set("eps", String(this.clusterPrefs.epsilon));
-        }
-        if (this.clusterPrefs.candidateSource !== "recent") {
-          p.set("src", this.clusterPrefs.candidateSource);
-        }
-      }
       if (this.mode === "browse") p.set("mode", "browse");
       if (this.mode === "similar" && this.similarOf) {
         p.set("mode", "similar");
@@ -325,17 +258,10 @@ function app() {
         this.mode === "similar"
       );
     },
-
     // ── actions ──
     onQueryInput() {
       clearTimeout(this._deb);
       this._deb = setTimeout(() => {
-        if (this.mode === "clustered") {
-          this.lastQuery = this.query.trim();
-          this.syncURL();
-          this.fetchClustered();
-          return;
-        }
         if (this.query.trim()) {
           this.doSearch();
         } else if (this.mode === "search" || this.mode === "similar") {
@@ -369,36 +295,6 @@ function app() {
       this.syncURL();
       if (this.isGroupedMode()) this.refetch();
     },
-    toggleClusterMode() {
-      clearTimeout(this._deb);
-      if (this.mode === "clustered") {
-        if (this.lastQuery) this.doSearch();
-        else this.doBrowse();
-        return;
-      }
-      this.previousMode = this.mode;
-      this.mode = "clustered";
-      this.lastQuery = this.query.trim();
-      this.similarOf = null;
-      this.syncURL(true);
-      this.fetchClustered();
-    },
-    applyClusterPrefs() {
-      this.syncURL();
-      if (this.mode === "clustered") this.fetchClustered();
-    },
-    applyClusterPreset(name) {
-      const presets = {
-        tight: { minClusterSize: 4, epsilon: 0.15 },
-        balanced: { minClusterSize: 2, epsilon: 0.25 },
-        loose: { minClusterSize: 2, epsilon: 0.45 },
-      };
-      const p = presets[name];
-      if (!p) return;
-      this.clusterPrefs.minClusterSize = p.minClusterSize;
-      this.clusterPrefs.epsilon = p.epsilon;
-      this.applyClusterPrefs();
-    },
     findSimilar(id) {
       clearTimeout(this._deb);
       this.closeDetail();
@@ -412,7 +308,6 @@ function app() {
     goBack() {
       window.history.back();
     },
-
     // Code autocomplete
     onCodeInputFocus() {
       this.showCodeDropdown = true;
@@ -451,33 +346,33 @@ function app() {
       this.codeInput = "";
       this.showCodeDropdown = false;
       this.syncURL();
-      this.refetchOrCluster();
+      this.refetch();
     },
     removeCodeChip(code) {
       this.filters.code = this._currentCodes()
         .filter((c) => c !== code)
         .join(", ");
       this.syncURL();
-      this.refetchOrCluster();
+      this.refetch();
     },
     toggleGenre(name) {
       const i = this.filters.genres.indexOf(name);
       if (i >= 0) this.filters.genres.splice(i, 1);
       else this.filters.genres.push(name);
       this.syncURL();
-      this.refetchOrCluster();
+      this.refetch();
     },
     setCompletionFilter(val) {
       this.filters.completionFilter = val;
       this.syncURL();
-      this.refetchOrCluster();
+      this.refetch();
       this.fetchFacets();
     },
     pickYear(year) {
       this.filters.from = `${year}-01-01`;
       this.filters.to = `${year}-12-31`;
       this.syncURL();
-      this.refetchOrCluster();
+      this.refetch();
     },
     clearFilters() {
       this.filters = {
@@ -490,7 +385,7 @@ function app() {
       };
       this.codeInput = "";
       this.syncURL();
-      this.refetchOrCluster();
+      this.refetch();
     },
     recentYears() {
       return this.facets.years
@@ -498,7 +393,6 @@ function app() {
         .slice(-10)
         .reverse();
     },
-
     // Genre sorting
     get sortedAllGenres() {
       const genres = [...this.allGenres];
@@ -517,7 +411,6 @@ function app() {
         this.genreSortOrder = by === "count" ? "desc" : "asc";
       }
     },
-
     // Code sorting
     get sortedAllCodes() {
       const codes = [...this.facets.codes];
@@ -536,7 +429,6 @@ function app() {
         this.codeSortOrder = by === "count" ? "desc" : "asc";
       }
     },
-
     // ── fetching (paginated modes) ──
     refetch() {
       this.clearPreviews();
@@ -544,10 +436,6 @@ function app() {
       this.cursor = null;
       this.exhausted = false;
       this.fetchPage({ reset: true });
-    },
-    refetchOrCluster() {
-      if (this.mode === "clustered") this.fetchClustered();
-      else this.refetch();
     },
     loadMore() {
       if (!this.exhausted && !this.loading) this.fetchPage();
@@ -598,51 +486,6 @@ function app() {
         if (gen === this._gen) this.loading = false;
       }
     },
-
-    // ── fetching (clustered mode) ──
-    async fetchClustered() {
-      this.clearPreviews();
-      this.clustered._inflight = true;
-      this.clustered.loading = true;
-      this.clustered.error = null;
-      const gen = ++this._genClustered;
-      const params = this.buildClusteredParams();
-      try {
-        const res = await fetch(`${API}/search_clustered`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(params),
-        });
-        if (gen !== this._genClustered) return;
-        this.online = true;
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(`${res.status}: ${txt}`);
-        }
-        const data = await res.json();
-        if (gen !== this._genClustered) return;
-        this.clustered.data = data;
-        this.lastTook = data.took_ms ?? null;
-        const next = {};
-        for (const c of data.clusters || []) {
-          next[c.cluster_id] = this.clusterUi[c.cluster_id] || {
-            coreOnly: false,
-            hidden: false,
-          };
-        }
-        this.clusterUi = next;
-        this.$nextTick(() => this.refreshIcons());
-      } catch (e) {
-        if (gen !== this._genClustered) return;
-        this.online = false;
-        this.clustered.error = e.message;
-        this.toast("error", e.message);
-      } finally {
-        this.clustered._inflight = false;
-        if (gen === this._genClustered) this.clustered.loading = false;
-      }
-    },
-
     // ── shared filter helpers ──
     _codeList() {
       const raw = (this.filters.code || "").trim();
@@ -665,31 +508,6 @@ function app() {
       return this.filters.to
         ? new Date(this.filters.to + "T23:59:59Z").toISOString()
         : null;
-    },
-    buildClusteredParams() {
-      const codes = this._codeList();
-      const genres = this.filters.genres;
-      const q = this.lastQuery?.trim() || null;
-      const limit =
-        Number.isFinite(this.clusterPrefs.candidateLimit) &&
-        this.clusterPrefs.candidateLimit >= 10
-          ? this.clusterPrefs.candidateLimit
-          : null;
-      return {
-        query: q,
-        min_cluster_size: this.clusterPrefs.minClusterSize,
-        cluster_selection_epsilon: this.clusterPrefs.epsilon,
-        cluster_candidate_limit: limit,
-        candidate_source: this.clusterPrefs.candidateSource,
-        genre:
-          genres.length === 0 ? null : genres.length === 1 ? genres[0] : genres,
-        genres_mode: this.filters.genresMode,
-        code: codes.length === 0 ? null : codes.length === 1 ? codes[0] : codes,
-        min_release_date: this._isoFrom(),
-        max_release_date: this._isoTo(),
-        min_similarity: null,
-        completion_filter: this.filters.completionFilter,
-      };
     },
     buildParams(reset) {
       if (this.mode === "similar") {
@@ -744,21 +562,16 @@ function app() {
         if (this.filters.completionFilter !== "all") {
           qs = `?completion_filter=${this.filters.completionFilter}`;
         }
-
         // We still need /facets for years and the limited sidebar lists
         const r = await fetch(`${API}/facets${qs}`);
         const data = await r.json();
-
         // Use the limited list for the sidebar view to keep it clean
         this.facets.genres = data.genres;
         this.facets.years = data.years;
-
         // 2. Fetch ALL genres from the new endpoint for the Modal
-        // Note: Ensure you have added /facets/genres to serve_missav.py as discussed previously
         const genresRes = await fetch(`${API}/facets/genres${qs}`);
         const genresData = await genresRes.json();
         this.allGenres = genresData.genres || [];
-
         // 3. Fetch ALL codes from /facets/codes WITH completion filter
         const codesRes = await fetch(`${API}/facets/codes${qs}`);
         const codesData = await codesRes.json();
@@ -768,92 +581,6 @@ function app() {
         /* ignore */
       }
     },
-
-    // ── cluster view helpers ──
-    clusterTier(c) {
-      if (!c || c.is_noise) return "grey";
-      const hasQuery = c.centroid_similarity != null;
-      const consistency = c.consistency_score ?? 0;
-      const centroidSim = c.centroid_similarity ?? 0;
-      const t = CLUSTER_TIER_THRESHOLDS;
-      if (hasQuery) {
-        if (
-          consistency >= t.green.consistency &&
-          centroidSim >= t.green.centroidSim
-        )
-          return "green";
-        if (
-          consistency >= t.amber.consistency ||
-          centroidSim >= t.amber.centroidSim
-        )
-          return "amber";
-        return "grey";
-      }
-      if (consistency >= t.green.consistency) return "green";
-      if (consistency >= t.amber.consistency) return "amber";
-      return "grey";
-    },
-    clusterLabel(c) {
-      if (!c || c.is_noise) return "Tangential · mixed";
-      const tier = this.clusterTier(c);
-      const hasQuery = c.centroid_similarity != null;
-      if (hasQuery) {
-        if (tier === "green") return "Very relevant · tightly grouped";
-        if (tier === "amber") return "Related · grouped";
-        return "Tangential · mixed";
-      }
-      if (tier === "green") return "Tightly grouped";
-      if (tier === "amber") return "Loosely grouped";
-      return "Mixed";
-    },
-    clusterTierDotClass(c) {
-      return {
-        green: "bg-emerald-400",
-        amber: "bg-amber-400",
-        grey: "bg-slate-500",
-      }[this.clusterTier(c)];
-    },
-    clusterSegments(c) {
-      return Math.round((c?.consistency_score ?? 0) * 5);
-    },
-    isCoreItem(it) {
-      const t = CLUSTER_TIER_THRESHOLDS.core;
-      return (
-        (it.silhouette ?? 0) >= t.silhouette &&
-        (it.probability ?? 0) >= t.probability
-      );
-    },
-    isFringeItem(it) {
-      return (it.silhouette ?? 0) < 0;
-    },
-    visibleItems(c) {
-      if (!c || !Array.isArray(c.items)) return [];
-      const ui = this.clusterUiFor(c.cluster_id);
-      let list = c.items;
-      if (ui.coreOnly) list = list.filter((it) => this.isCoreItem(it));
-      return list;
-    },
-    findSimilarFromCluster(id) {
-      this.findSimilar(id);
-    },
-    clusterUiFor(id) {
-      return this.clusterUi[id] || { coreOnly: false, hidden: false };
-    },
-    toggleClusterCoreOnly(id) {
-      const cur = this.clusterUiFor(id);
-      this.clusterUi = {
-        ...this.clusterUi,
-        [id]: { ...cur, coreOnly: !cur.coreOnly },
-      };
-    },
-    toggleClusterHidden(id) {
-      const cur = this.clusterUiFor(id);
-      this.clusterUi = {
-        ...this.clusterUi,
-        [id]: { ...cur, hidden: !cur.hidden },
-      };
-    },
-
     // ── detail modal ──
     async openDetail(id) {
       this.detail = { open: true, loading: true, video: null };
@@ -873,7 +600,6 @@ function app() {
     closeDetail() {
       this.detail = { open: false, loading: false, video: null };
     },
-
     // ── toasts ──
     toast(type, msg) {
       const id = Math.random().toString(36).slice(2);
@@ -883,7 +609,6 @@ function app() {
       }, 4000);
       this.$nextTick(() => this.refreshIcons());
     },
-
     // Expose helper to template
     formatCount,
   };

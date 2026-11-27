@@ -31,6 +31,7 @@ class TopicWordTD(TypedDict):
 class RepresentativeDocTD(TypedDict):
     content: str
     membership_score: Optional[float]
+    video_id: Optional[str]  # Added
 
 
 class TopicSummaryTD(TypedDict):
@@ -45,6 +46,7 @@ class TopicSummaryTD(TypedDict):
 
 class DocumentAssignmentTD(TypedDict):
     source_index: int
+    video_id: str  # Added
     topic_id: int
     topic_name: str
     scores: List[float]
@@ -65,9 +67,6 @@ class TopicRunDetailTD(TypedDict):
     run: RunMetadataTD
     topics: List[TopicSummaryTD]
     assignments: List[DocumentAssignmentTD]
-
-
-# --- Database Row TypedDicts ---
 
 
 class VideoRowTD(TypedDict, total=False):
@@ -102,6 +101,7 @@ class AssignmentDataTD(TypedDict):
     """Intermediate structure for assignment insertion."""
 
     source_index: int
+    video_id: str  # Added
     topic_id: int
     topic_name: str
     scores: List[float]

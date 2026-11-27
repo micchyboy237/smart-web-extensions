@@ -202,16 +202,20 @@ def map_results_to_db_format(
 ) -> Tuple[List[TopicDataTD], List[AssignmentDataTD]]:
     topics_data: List[TopicDataTD] = []
     assignments_data: List[AssignmentDataTD] = []
+
     rep_by_topic = {
         item["topic_id"]: item for item in results.get("representative_topics", [])
     }
     topic_names = [str(name) for name in results["model"].topic_names]
 
+    # Get corpus records to map indices back to video_ids
+    corpus_records = results.get("corpus_records", [])
+
     for topic in results.get("topics", []):
         topic_id = topic["topic_id"]
         rep_info = rep_by_topic.get(topic_id, {})
-
         topic_text = f"{topic_names[topic_id] if topic_id < len(topic_names) else ''} {' '.join([w['word'] for w in topic['words'][:5]])}"
+
         try:
             topic_emb = embed(
                 topic_text,
@@ -226,10 +230,23 @@ def map_results_to_db_format(
             {"word": w["word"], "score": w["score"], "rank": i}
             for i, w in enumerate(topic["words"])
         ]
-        rep_docs = [
-            {"content": doc["content"], "membership_score": doc["score"]}
-            for doc in rep_info.get("documents", [])
-        ]
+
+        # Map representative docs to include video_id
+        rep_docs = []
+        for doc in rep_info.get("documents", []):
+            idx = doc.get("index")
+            vid = ""
+            if idx is not None and idx < len(corpus_records):
+                vid = corpus_records[idx].get("video_id", "")
+
+            rep_docs.append(
+                {
+                    "content": doc["content"],
+                    "membership_score": doc["score"],
+                    "video_id": vid,
+                }
+            )
+
         topics_data.append(
             {
                 "topic_id": topic_id,
@@ -240,12 +257,18 @@ def map_results_to_db_format(
                 "embedding": topic_emb,
             }
         )
+
     corpus = results.get("corpus", [])
     for assignment in results.get("document_topics", []):
         idx = assignment["index"]
+        vid = ""
+        if idx < len(corpus_records):
+            vid = corpus_records[idx].get("video_id", "")
+
         assignments_data.append(
             {
                 "source_index": idx,
+                "video_id": vid,
                 "topic_id": assignment["topic_id"],
                 "topic_name": assignment["topic_name"],
                 "scores": assignment["scores"],
@@ -270,6 +293,7 @@ def save_topics(
             representative_top_k=None,
         )
         topics_data, assignments_data = map_results_to_db_format(results)
+
         model_config = {
             "vectorizer": "NounPhraseCountVectorizer",
             "encoder": "LlamaCppEncoder",
@@ -288,6 +312,7 @@ def save_topics(
                     json.dumps(model_config),
                 ),
             )
+
             for topic in topics_data:
                 topic_uuid = str(uuid.uuid4())
                 conn.execute(
@@ -301,6 +326,7 @@ def save_topics(
                         topic["embedding"],
                     ),
                 )
+
                 for word in topic["words"]:
                     conn.execute(
                         "INSERT INTO public.topic_words (id, topic_id, word, score, rank) VALUES (%s, %s, %s, %s, %s)",
@@ -312,31 +338,39 @@ def save_topics(
                             word["rank"],
                         ),
                     )
+
+                # Updated INSERT for representative docs to include video_id
                 for doc in topic["representative_docs"]:
                     conn.execute(
-                        "INSERT INTO public.topic_representative_docs (id, topic_id, content, membership_score) VALUES (%s, %s, %s, %s)",
+                        "INSERT INTO public.topic_representative_docs (id, topic_id, content, membership_score, video_id) VALUES (%s, %s, %s, %s, %s)",
                         (
                             str(uuid.uuid4()),
                             topic_uuid,
                             doc["content"],
                             doc["membership_score"],
+                            doc["video_id"],
                         ),
                     )
+
+            # Updated INSERT for assignments to include video_id
             for assignment in assignments_data:
                 conn.execute(
-                    "INSERT INTO public.document_topic_assignments (id, run_id, source_index, topic_id, topic_name, scores, content) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO public.document_topic_assignments (id, run_id, source_index, video_id, topic_id, topic_name, scores, content) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                     (
                         str(uuid.uuid4()),
                         run_id,
                         assignment["source_index"],
+                        assignment["video_id"],
                         assignment["topic_id"],
                         assignment["topic_name"],
                         assignment["scores"],
                         assignment["content"],
                     ),
                 )
+
             conn.commit()
 
+            # ... [Summary retrieval logic remains unchanged] ...
             summary_row = conn.execute(
                 """
                 WITH latest_run AS (SELECT id, code, n_topics, n_docs, created_at FROM public.topic_runs WHERE id = %s),
@@ -354,7 +388,6 @@ def save_topics(
             if not summary_row:
                 raise Exception("Failed to retrieve summary after save")
 
-            # Parse JSONB words if returned as string
             top_words_raw = summary_row["top_topic_words"]
             if isinstance(top_words_raw, str):
                 top_words = json.loads(top_words_raw)
@@ -363,7 +396,6 @@ def save_topics(
             else:
                 top_words = top_words_raw
 
-            # Return strict Pydantic model
             return CodeDashboardSummary(
                 code=summary_row["code"],
                 run_id=str(summary_row["run_id"]),

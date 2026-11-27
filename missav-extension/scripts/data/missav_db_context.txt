@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-27T12:43:14.390135
+Generated: 2026-11-27T13:03:41.397400
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -12,7 +12,7 @@ Tables: document_topic_assignments, topic_representative_docs, topic_runs, topic
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.document_topic_assignments (400 rows)
+### Table: public.document_topic_assignments (100 rows)
 ```sql
 CREATE TABLE "public"."document_topic_assignments" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -22,6 +22,7 @@ CREATE TABLE "public"."document_topic_assignments" (
     "topic_name" text NULL,
     "scores" double precision[] NULL,
     "content" text NULL,
+    "video_id" text NULL,
     PRIMARY KEY ("id")
 );
 ```
@@ -34,22 +35,26 @@ CREATE TABLE "public"."document_topic_assignments" (
 - `topic_name`: text (nullable)
 - `scores`: double precision[] (nullable)
 - `content`: text (nullable)
+- `video_id`: text (nullable)
 
 **Foreign Keys:**
 - `run_id` → `public.topic_runs.id`
+- `video_id` → `public.videos.video_id`
 
 **Indexes:**
 - `document_topic_assignments_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX document_topic_assignments_pkey ON public.document_topic_assignments USING btree (id)
 - `idx_doc_topic_assignments_run_id`: CREATE INDEX idx_doc_topic_assignments_run_id ON public.document_topic_assignments USING btree (run_id)
 - `idx_doc_topic_assignments_topic_id`: CREATE INDEX idx_doc_topic_assignments_topic_id ON public.document_topic_assignments USING btree (run_id, topic_id)
+- `idx_doc_topic_assignments_video_id`: CREATE INDEX idx_doc_topic_assignments_video_id ON public.document_topic_assignments USING btree (video_id)
 
-### Table: public.topic_representative_docs (935 rows)
+### Table: public.topic_representative_docs (228 rows)
 ```sql
 CREATE TABLE "public"."topic_representative_docs" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
     "topic_id" uuid NOT NULL,
     "content" text NULL,
     "membership_score" double precision NULL,
+    "video_id" text NULL,
     PRIMARY KEY ("id")
 );
 ```
@@ -59,15 +64,18 @@ CREATE TABLE "public"."topic_representative_docs" (
 - `topic_id`: uuid
 - `content`: text (nullable)
 - `membership_score`: double precision (nullable)
+- `video_id`: text (nullable)
 
 **Foreign Keys:**
+- `video_id` → `public.videos.video_id`
 - `topic_id` → `public.topics.id`
 
 **Indexes:**
 - `idx_topic_rep_docs_topic_id`: CREATE INDEX idx_topic_rep_docs_topic_id ON public.topic_representative_docs USING btree (topic_id)
+- `idx_topic_rep_docs_video_id`: CREATE INDEX idx_topic_rep_docs_video_id ON public.topic_representative_docs USING btree (video_id)
 - `topic_representative_docs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_representative_docs_pkey ON public.topic_representative_docs USING btree (id)
 
-### Table: public.topic_runs (4 rows)
+### Table: public.topic_runs (1 rows)
 ```sql
 CREATE TABLE "public"."topic_runs" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -95,7 +103,7 @@ CREATE TABLE "public"."topic_runs" (
 **Indexes:**
 - `topic_runs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_runs_pkey ON public.topic_runs USING btree (id)
 
-### Table: public.topic_words (200 rows)
+### Table: public.topic_words (50 rows)
 ```sql
 CREATE TABLE "public"."topic_words" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -121,7 +129,7 @@ CREATE TABLE "public"."topic_words" (
 - `idx_topic_words_topic_id`: CREATE INDEX idx_topic_words_topic_id ON public.topic_words USING btree (topic_id)
 - `topic_words_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_words_pkey ON public.topic_words USING btree (id)
 
-### Table: public.topics (20 rows)
+### Table: public.topics (5 rows)
 ```sql
 CREATE TABLE "public"."topics" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -203,52 +211,54 @@ CREATE TABLE "public"."videos" (
 ### Table: document_topic_assignments
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 400 | 0.0% |
-| `run_id` | uuid | 4 | 0.0% |
+| `id` | uuid | 100 | 0.0% |
+| `run_id` | uuid | 1 | 0.0% |
 | `source_index` | integer | 100 | 0.0% |
 | `topic_id` | integer | 5 | 0.0% |
-| `topic_name` | text | 20 | 0.0% |
-| `scores` | double precision[] | 400 | 0.0% |
-| `content` | text | 400 | 0.0% |
+| `topic_name` | text | 5 | 0.0% |
+| `scores` | double precision[] | 100 | 0.0% |
+| `content` | text | 100 | 0.0% |
+| `video_id` | text | 100 | 0.0% |
 
 ### Table: topic_representative_docs
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 935 | 0.0% |
-| `topic_id` | uuid | 20 | 0.0% |
-| `content` | text | 400 | 0.0% |
-| `membership_score` | double precision | 935 | 0.0% |
+| `id` | uuid | 228 | 0.0% |
+| `topic_id` | uuid | 5 | 0.0% |
+| `content` | text | 100 | 0.0% |
+| `membership_score` | double precision | 228 | 0.0% |
+| `video_id` | text | 100 | 0.0% |
 
 ### Table: topic_runs
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 4 | 0.0% |
-| `code` | text | 4 | 0.0% |
+| `id` | uuid | 1 | 0.0% |
+| `code` | text | 1 | 0.0% |
 | `n_topics` | integer | 1 | 0.0% |
 | `n_docs` | integer | 1 | 0.0% |
 | `top_k` | integer | 1 | 0.0% |
 | `no_llm` | boolean | 1 | 0.0% |
-| `created_at` | timestamp with time zone | 4 | 0.0% |
+| `created_at` | timestamp with time zone | 1 | 0.0% |
 | `model_params` | jsonb | 1 | 0.0% |
 
 ### Table: topic_words
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 200 | 0.0% |
-| `topic_id` | uuid | 20 | 0.0% |
-| `word` | text | 146 | 0.0% |
-| `score` | double precision | 200 | 0.0% |
+| `id` | uuid | 50 | 0.0% |
+| `topic_id` | uuid | 5 | 0.0% |
+| `word` | text | 47 | 0.0% |
+| `score` | double precision | 50 | 0.0% |
 | `rank` | integer | 10 | 0.0% |
 
 ### Table: topics
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 20 | 0.0% |
-| `run_id` | uuid | 4 | 0.0% |
+| `id` | uuid | 5 | 0.0% |
+| `run_id` | uuid | 1 | 0.0% |
 | `topic_id` | integer | 5 | 0.0% |
-| `name` | text | 20 | 0.0% |
-| `representative_doc_count` | integer | 16 | 0.0% |
-| `embedding` | vector(768) | 20 | 0.0% |
+| `name` | text | 5 | 0.0% |
+| `representative_doc_count` | integer | 5 | 0.0% |
+| `embedding` | vector(768) | 5 | 0.0% |
 | `search_vector` | tsvector | 0 | 100.0% |
 
 ## JSONB COLUMN METADATA
@@ -271,39 +281,38 @@ CREATE TABLE "public"."videos" (
 --------------------------------------------------------------------------------
 
 ### Table: document_topic_assignments (first 3 rows)
-| id | run_id | source_index | topic_id | topic_name | scores | content |
-| --- | --- | --- | --- | --- | --- | --- |
-| bfbba7b7-3841-4bce-a962-8fa3176fbca6 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 0 | 0 | Immoral Apartment Wife | {0.23038132160629918,0,0.000806657809525436,0,0.06… | Mother-in-law's Confession ~Woman Drowning In Her… |
-| 85032b9c-e11f-490e-a551-930cac4d5201 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 1 | 2 | Marriage | {0.12488782216227098,0,0.2884111613014879,0,0} | Married Woman Confinement Breeding A Beautiful Mar… |
-| b0449fb6-5663-4f27-92b1-84036ba206c4 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 2 | 3 | Married Woman Affair Trip | {0,0,0,0.3697186896601199,0} | A Married Woman Gets Fucked Twice Chapter 2 Haruki… |
+| id | run_id | source_index | topic_id | topic_name | scores | content | video_id |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2b264520-b917-4eba-9d11-23b438a7f787 | 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | 0 | 3 | Wife and Mistress | {0,0,0,0.4198223488282685,0} | Beautiful Breasts Married Woman's Dirty Pet Sayaka… | jukd-756 |
+| dcbb8049-23a9-4aba-af37-f2f24fceaedf | 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | 1 | 4 | Beautiful Mature Woman Series | {0,0,0.23426785144448795,0,0.26230155559988755} | Relatives White Paper Mother Disqualification 11 -… | jukd-308 |
+| 5b01bbac-27b9-40f4-8d14-cdf67a071fea | 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | 2 | 0 | Unfaithful Wife | {0.11373192895172289,0.014580290290747503,0,0.0107… | This Madonna Singles Dormitory Is Full Now The Bea… | jukd-940 |
 
 ### Table: topic_representative_docs (first 3 rows)
-| id | topic_id | content | membership_score |
-| --- | --- | --- | --- |
-| 8363020d-4550-48d0-b5d0-b4300f5b6c54 | 3b638ae0-6b87-431c-9927-096903a42257 | Compliant wife Reiko Makihara Reiko who lived a c… | 0.2659031295925389 |
-| 1a613440-0efa-47f2-ad43-02a0754384a2 | 3b638ae0-6b87-431c-9927-096903a42257 | Arisa Seto, a daughter-in-law who was surpassed by… | 0.2602462677305526 |
-| 7bc293f0-a543-4fb4-9005-4776e57a8d23 | 3b638ae0-6b87-431c-9927-096903a42257 | Immoral Apartment Wife Lower Body Circumstances In… | 0.24553699779149016 |
+| id | topic_id | content | membership_score | video_id |
+| --- | --- | --- | --- | --- |
+| 5db9ad58-5c64-4a0a-a795-8531aa5ae144 | cb14597f-98cd-460b-a6f2-c23444073c6b | Married Women Who Live In The Housing Complex Thir… | 0.3605915359913795 | jukd-345 |
+| df61050c-7bc8-4d3e-9541-60f6ac85abcf | cb14597f-98cd-460b-a6f2-c23444073c6b | Beautiful Breasts Married Woman Obscene Pet Yuki S… | 0.33862642015164823 | jukd-631 |
+| c26b5781-414f-4dc8-adfd-8b54ac67817e | cb14597f-98cd-460b-a6f2-c23444073c6b | Busty Married Woman's Dirty Pet Shizuka Wakasa - W… | 0.3154797013365172 | jukd-673 |
 
-### Table: topic_runs (first 3 rows)
+### Table: topic_runs (first 2 rows)
 | id | code | n_topics | n_docs | top_k | no_llm | created_at | model_params |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | juc | 5 | 100 | 10 | false | 2026-11-27 10:40:23.989943+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
-| 94b9a8fc-c098-445f-8dae-781f05162288 | jukd | 5 | 100 | 10 | false | 2026-11-27 11:12:42.70671+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
-| 0253f77b-bc66-458e-950d-c0540d6cfc20 | juq | 5 | 100 | 10 | false | 2026-11-27 11:18:34.121276+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+| 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | jukd | 5 | 100 | 10 | false | 2026-11-27 13:02:40.031302+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+| 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | jukd | 5 | 100 | 10 | false | 2026-11-27 13:02:40.031302+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
 
 ### Table: topic_words (first 3 rows)
 | id | topic_id | word | score | rank |
 | --- | --- | --- | --- | --- |
-| 2cece601-ffba-49f8-9b29-32aa9ab404a8 | 3b638ae0-6b87-431c-9927-096903a42257 | husband | 1.6937127652034432 | 0 |
-| b368c08d-06d6-41a6-b935-00681a122d72 | 3b638ae0-6b87-431c-9927-096903a42257 | woman | 0.2199715479494173 | 1 |
-| f8a0618d-4fb1-49a1-884d-cebac26d527c | 3b638ae0-6b87-431c-9927-096903a42257 | immoral apartment wife | 0.18612810690484652 | 2 |
+| 5ef4ad90-3845-40ac-bfb1-58247d50a746 | cb14597f-98cd-460b-a6f2-c23444073c6b | husband | 1.4633831274698088 | 0 |
+| 12ec0da8-dfa0-406c-a9ce-f4fcdbfce144 | cb14597f-98cd-460b-a6f2-c23444073c6b | married women | 0.4204637216857207 | 1 |
+| 074b69ba-f1fa-468c-ae3c-9f4088887192 | cb14597f-98cd-460b-a6f2-c23444073c6b | obscene pet | 0.3741344382844136 | 2 |
 
 ### Table: topics (first 3 rows)
 | id | run_id | topic_id | name | representative_doc_count | embedding | search_vector |
 | --- | --- | --- | --- | --- | --- | --- |
-| 3b638ae0-6b87-431c-9927-096903a42257 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 0 | Immoral Apartment Wife | 74 | [-0.043384098,0.026101436,0.008648739,0.009108002,… | NULL |
-| 3018aa24-5675-43ad-8e94-05c9c1fc9ccf | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 1 | Motherhood | 45 | [0.06524202,0.036805134,-0.0060111615,-0.006920983… | NULL |
-| 727f5ba9-242c-41cd-88eb-2de59f157d40 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 2 | Marriage | 41 | [-0.023694057,-0.010088523,0.035240926,-0.02360812… | NULL |
+| cb14597f-98cd-460b-a6f2-c23444073c6b | 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | 0 | Unfaithful Wife | 51 | [0.021718355,0.045406524,-0.0037071623,0.02289725,… | NULL |
+| 319c7b1c-3bcf-4a9a-8fd7-022c59208fd9 | 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | 1 | 40s Sex | 54 | [0.015500356,-0.0057245805,-0.013027847,0.01329592… | NULL |
+| 7a90ffc3-49dc-4fb5-8d2f-e88af337a197 | 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | 2 | Mother-Son Love | 47 | [0.016290443,0.044057596,-0.007776737,-0.040829763… | NULL |
 
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
