@@ -175,7 +175,6 @@ async function handleSave(e) {
   const btn = document.getElementById("saveBtn");
   const spinner = document.getElementById("btnSpinner");
   const text = document.getElementById("btnText");
-
   btn.disabled = true;
   spinner.classList.remove("hidden");
   text.innerText = "Processing...";
@@ -184,11 +183,14 @@ async function handleSave(e) {
     code: document.getElementById("inputCode").value.toLowerCase(),
     n_topics: parseInt(document.getElementById("inputNTopics").value),
     n_docs: parseInt(document.getElementById("inputNDocs").value),
+    // ADD THIS LINE:
+    top_k: parseInt(document.getElementById("inputTopK").value) || 10,
     no_llm: document.getElementById("inputNoLlm").checked,
   };
 
   try {
-    const res = await fetch(`${API_BASE}/save_topics`, {
+    // Ensure the URL is correct as per previous fix
+    const res = await fetch(`${API_BASE}/topics/save_topics`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -199,13 +201,13 @@ async function handleSave(e) {
       throw new Error(err.detail || "Save failed");
     }
 
-    // The response is now a CodeDashboardSummaryTD
     const newSummary = await res.json();
-
-    // Refresh grid to include new item
     loadDashboard();
     closeModal();
     document.getElementById("analysisForm").reset();
+
+    // Optional: Reset top_k to default if desired, or let browser remember
+    // document.getElementById("inputTopK").value = 10;
   } catch (err) {
     alert("Error: " + err.message);
   } finally {
