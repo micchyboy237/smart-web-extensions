@@ -1,4 +1,4 @@
-from typing import List, Optional, Union
+from typing import Annotated, List, Optional, Union
 
 from fastapi import APIRouter, Query
 from models.schemas.topic import (
@@ -58,10 +58,18 @@ def get_topics_dashboard_endpoint():
 @router.get("/search", response_model=List[TopicSearchResultItem])
 def search_topics_endpoint(
     query: str = Query(..., min_length=1, description="Search query"),
+    code: Annotated[
+        Optional[List[str]],
+        Query(description="Only search topics from these run codes"),
+    ] = None,
     limit: int = Query(10, ge=1, le=50),
     min_topic_score: float = Query(0.0, ge=0.0, le=1.0),
     min_doc_score: float = Query(0.0, ge=0.0, le=1.0),
-    max_rep_docs: int = Query(5, ge=1, le=20),
+    max_rep_docs: Optional[int] = Query(
+        None,
+        ge=1,
+        description="Max number of representative docs per topic. None means no limit.",
+    ),
     use_ngram_fusion: bool = Query(
         True, description="Enable multi-ngram semantic fusion"
     ),
@@ -73,9 +81,11 @@ def search_topics_endpoint(
     """
     Search topics using Multi-Vector Semantic Fusion.
     Automatically breaks the query into n-grams for better precision and recall.
+    Optionall restrict the search to one or more run codes.
     """
     return search_topics_by_ngrams(
         query=query,
+        code=code,
         limit=limit,
         min_topic_score=min_topic_score,
         min_doc_score=min_doc_score,

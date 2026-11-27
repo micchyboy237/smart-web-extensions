@@ -28,6 +28,7 @@ from models.schemas.topic import (
     SaveTopicsFailure,
     TopicSearchResultItem,
 )
+from models.types.common import GenreCodeInput
 from models.types.topic import (
     AssignmentDataTD,
     DocumentAssignmentTD,
@@ -39,7 +40,7 @@ from models.types.topic import (
     VideoRowTD,
 )
 
-from services.utils import to_float_list
+from services.utils import normalize_list_input, to_float_list
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +203,7 @@ def search_clustered(req):
 
 def map_results_to_db_format(
     results: ClusterTopicsResult,
+    keyword_count_for_embed: int = 15,
 ) -> Tuple[List[TopicDataTD], List[AssignmentDataTD]]:
     topics_data: List[TopicDataTD] = []
     assignments_data: List[AssignmentDataTD] = []
@@ -217,7 +219,7 @@ def map_results_to_db_format(
     for topic in results.get("topics", []):
         topic_id = topic["topic_id"]
         rep_info = rep_by_topic.get(topic_id, {})
-        topic_text = f"{topic_names[topic_id] if topic_id < len(topic_names) else ''} {' '.join([w['word'] for w in topic['words'][:5]])}"
+        topic_text = f"{topic_names[topic_id] if topic_id < len(topic_names) else ''} {' '.join([w['word'] for w in topic['words'][:keyword_count_for_embed]])}"
 
         try:
             topic_emb = embed(
@@ -674,6 +676,7 @@ def _match_topic_words(ngrams: List[str], topic_words: List[dict]) -> List[str]:
 def search_topics_by_ngrams(
     query: str,
     limit: int,
+    code: GenreCodeInput = None,
     min_topic_score: float = 0.0,
     min_doc_score: float = 0.0,
     max_rep_docs: int = 5,
@@ -683,15 +686,15 @@ def search_topics_by_ngrams(
     """
     Multi-vector semantic search using n-gram fusion.
     Uses jet.wordnet.words.get_words for robust tokenization and n-gram generation.
-
     When require_word_match is True, a topic is kept only if at least one of the
     top words RETURNED to the client shares a whole word with a query n-gram.
+    When `code` is given, only topics from runs with those codes are searched.
     """
     t0 = time.perf_counter()
     k = 60
-    returned_words_count = 5  # must match what the client receives
-
-    # ---- 1. Build n-grams ----
+    returned_words_count = 5
+    code_list = normalize_list_input(code)
+    code_sql = "AND tr.code = ANY(%(codes)s)" if code_list else ""
     ngrams_set: Set[str] = set()
     if use_ngram_fusion:
         for n in [1, 2, 3]:
@@ -699,20 +702,17 @@ def search_topics_by_ngrams(
             ngrams_set.update(grams)
     else:
         ngrams_set.add(query.lower())
-
     ngrams = sorted(g for g in ngrams_set if len(g) > 1)
     logger.info(
-        "Searching query=%r with %d n-grams: %s | require_word_match=%s",
+        "Searching query=%r with %d n-grams: %s | require_word_match=%s | code=%s",
         query,
         len(ngrams),
         ngrams[:10],
         require_word_match,
+        code_list or "none",
     )
-
-    # ---- 2. Vector search per n-gram + RRF fusion ----
     global_scores: Dict[str, float] = {}
     contributing_ngrams: Dict[str, Set[str]] = {}
-
     with pool.connection() as conn:
         for ngram in ngrams:
             try:
@@ -725,35 +725,33 @@ def search_topics_by_ngrams(
             except Exception as e:
                 logger.error("Embedding failed for ngram '%s': %s", ngram, e)
                 continue
-
+            params: dict = {"emb": emb, "k": k, "limit": limit * 3}
+            if code_list:
+                params["codes"] = code_list
             rows = conn.execute(
-                """
-                SELECT id as topic_id, 
-                1.0 / (%(k)s + ROW_NUMBER() OVER (ORDER BY embedding <=> %(emb)s::vector)) as rrf_score
-                FROM public.topics
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> %(emb)s::vector
+                f"""
+                SELECT t.id AS topic_id,
+                1.0 / (%(k)s + ROW_NUMBER() OVER (ORDER BY t.embedding <=> %(emb)s::vector)) AS rrf_score
+                FROM public.topics t
+                JOIN public.topic_runs tr ON tr.id = t.run_id
+                WHERE t.embedding IS NOT NULL
+                {code_sql}
+                ORDER BY t.embedding <=> %(emb)s::vector
                 LIMIT %(limit)s
                 """,
-                {"emb": emb, "k": k, "limit": limit * 3},
+                params,
             ).fetchall()
-
             logger.debug("ngram=%r -> %d topic hits", ngram, len(rows))
-
             for r in rows:
                 tid = str(r["topic_id"])
                 global_scores[tid] = global_scores.get(tid, 0) + r["rrf_score"]
                 contributing_ngrams.setdefault(tid, set()).add(ngram)
-
-    # ---- 3. Rank candidates ----
     candidates = [
         (tid, score, sorted(contributing_ngrams[tid]))
         for tid, score in global_scores.items()
         if score >= min_topic_score
     ]
     candidates.sort(key=lambda x: -x[1])
-
-    # Bigger pool when filtering, because the word filter will drop some
     pool_size = limit * 5 if require_word_match else limit
     ordered_candidates = candidates[:pool_size]
     logger.info(
@@ -762,54 +760,54 @@ def search_topics_by_ngrams(
         len(ordered_candidates),
         pool_size,
     )
-
     if not ordered_candidates:
+        logger.info("No candidates found (code filter=%s)", code_list or "none")
         return []
 
-    # ---- 4. Fetch topic details (on a live connection) ----
     ids_to_fetch = [x[0] for x in ordered_candidates]
+
+    # Construct the LIMIT clause conditionally
+    rep_docs_limit_sql = ""
+    if max_rep_docs is not None:
+        rep_docs_limit_sql = f"LIMIT %(max_rep_docs)s"
 
     with pool.connection() as conn:
         final_rows = conn.execute(
             """
-            SELECT 
-                t.id, t.topic_id, t.name, t.representative_doc_count, t.run_id, tr.code, tr.created_at,
-                (SELECT jsonb_agg(jsonb_build_object('word', x.word, 'score', x.score, 'rank', x.rank) ORDER BY x.rank ASC)
-                 FROM (SELECT w.word, w.score, w.rank FROM public.topic_words w WHERE w.topic_id = t.id ORDER BY w.rank ASC LIMIT 10) x) AS top_words_json,
-                (SELECT jsonb_agg(doc_obj ORDER BY (doc_obj->>'membership_score')::float8 DESC)
-                 FROM (
-                     SELECT jsonb_build_object(
-                         'video_id', rd.video_id, 'membership_score', rd.membership_score, 'content_snippet', rd.content,
-                         'title', v.title, 'thumbnail', v.thumbnail, 'preview', v.preview, 'release_date', v.release_date
-                     ) as doc_obj
-                     FROM public.topic_representative_docs rd
-                     LEFT JOIN public.videos v ON rd.video_id = v.video_id
-                     WHERE rd.topic_id = t.id AND rd.membership_score >= %(min_doc_score)s
-                     ORDER BY rd.membership_score DESC LIMIT %(max_rep_docs)s
-                 ) sub) AS rep_docs_with_video
+            SELECT
+            t.id, t.topic_id, t.name, t.representative_doc_count, t.run_id, tr.code, tr.created_at,
+            (SELECT jsonb_agg(jsonb_build_object('word', x.word, 'score', x.score, 'rank', x.rank) ORDER BY x.rank ASC)
+            FROM (SELECT w.word, w.score, w.rank FROM public.topic_words w WHERE w.topic_id = t.id ORDER BY w.rank ASC LIMIT 10) x) AS top_words_json,
+            (SELECT jsonb_agg(doc_obj ORDER BY (doc_obj->>'membership_score')::float8 DESC)
+            FROM (
+                SELECT jsonb_build_object(
+                'video_id', rd.video_id, 'membership_score', rd.membership_score, 'content_snippet', rd.content,
+                'title', v.title, 'thumbnail', v.thumbnail, 'preview', v.preview, 'release_date', v.release_date
+                ) as doc_obj
+                FROM public.topic_representative_docs rd
+                LEFT JOIN public.videos v ON rd.video_id = v.video_id
+                WHERE rd.topic_id = t.id AND rd.membership_score >= %(min_doc_score)s
+                ORDER BY rd.membership_score DESC 
+                {rep_docs_limit_sql}
+            ) sub) AS rep_docs_with_video
             FROM public.topics t
             JOIN public.topic_runs tr ON t.run_id = tr.id
             WHERE t.id = ANY(%(ids)s::uuid[])
-            """,
+            """.format(rep_docs_limit_sql=rep_docs_limit_sql),
             {
                 "ids": ids_to_fetch,
                 "min_doc_score": min_doc_score,
-                "max_rep_docs": max_rep_docs,
+                "max_rep_docs": max_rep_docs,  # Will be ignored by SQL if limit clause is empty
             },
         ).fetchall()
 
     row_map = {str(r["id"]): r for r in final_rows}
-
-    # ---- 5. Build results (filter + format) ----
     result: List[TopicSearchResultItem] = []
     dropped = 0
-
     for tid, score, matched_ngrams_list in ordered_candidates:
         r = row_map.get(tid)
         if not r:
             continue
-
-        # Parse top words
         top_words_raw = r["top_words_json"]
         top_words: List[dict] = []
         if top_words_raw:
@@ -817,10 +815,7 @@ def search_topics_by_ngrams(
                 top_words = json.loads(top_words_raw)
             elif isinstance(top_words_raw, list):
                 top_words = top_words_raw
-
-        # Match against EXACTLY the words returned to the client
         top_words = top_words[:returned_words_count]
-
         if require_word_match:
             matched_words = _match_topic_words(ngrams, top_words)
             if not matched_words:
@@ -839,8 +834,6 @@ def search_topics_by_ngrams(
                 r["code"],
                 matched_words,
             )
-
-        # Parse representative docs
         rep_docs_raw = r["rep_docs_with_video"]
         rep_docs: List[RepresentativeDocWithVideo] = []
         if rep_docs_raw:
@@ -852,7 +845,6 @@ def search_topics_by_ngrams(
             for doc in rep_docs_list:
                 if doc:
                     rep_docs.append(RepresentativeDocWithVideo(**doc))
-
         result.append(
             TopicSearchResultItem(
                 run_id=str(r["run_id"]),
@@ -867,10 +859,8 @@ def search_topics_by_ngrams(
                 representative_docs=rep_docs,
             )
         )
-
         if len(result) >= limit:
             break
-
     logger.info(
         "N-gram fusion search done: %d results (dropped=%d) in %.1fms",
         len(result),

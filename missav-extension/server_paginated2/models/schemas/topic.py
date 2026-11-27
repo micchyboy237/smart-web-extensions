@@ -22,8 +22,10 @@ class TopicSearchRequest(BaseModel):
         le=1.0,
         description="Minimum membership score for representative docs",
     )
-    max_rep_docs: int = Field(
-        5, ge=1, le=20, description="Max number of representative docs per topic"
+    max_rep_docs: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Max number of representative docs per topic. None means no limit.",
     )
     use_ngram_fusion: bool = Field(
         True, description="If true, breaks query into n-grams for fusion search"
