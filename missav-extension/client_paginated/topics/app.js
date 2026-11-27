@@ -68,25 +68,24 @@ function showTopicDetails(topic) {
       data: topic.words.map((w) => w.word),
       axisLabel: { interval: 0, rotate: 30 },
     },
-    yAxis: { type: "value", name: "Score" },
+    yAxis: { type: "value" },
     series: [
       {
         data: topic.words.map((w) => w.score),
         type: "bar",
         itemStyle: { color: "#4f46e5" },
-        showBackground: true,
-        backgroundStyle: { color: "#f3f4f6" },
       },
     ],
   };
   wordChartInstance.setOption(option);
 
-  // Render Docs
+  // Render Docs (UPDATED: Simplified display)
   const docsContainer = document.getElementById("repDocsContainer");
   docsContainer.innerHTML = "";
   topic.representative_docs.forEach((doc) => {
     const div = document.createElement("div");
     div.className = "doc-snippet";
+    // Only show content and membership score now
     div.innerText = `"${doc.content.substring(0, 120)}..." (Confidence: ${doc.membership_score?.toFixed(2)})`;
     docsContainer.appendChild(div);
   });

@@ -554,7 +554,37 @@ class DiscoverRequest(BaseModel):
 # Topics types & models
 # --------------------------------------------------------------------------- #
 
-# --- TypedDicts for GET Responses (Strict Structure) ---
+# --- TypedDicts for GET Responses ---
+
+
+class WordScoreTD(TypedDict):
+    word: str
+    score: float
+
+
+class CodeDashboardSummaryTD(TypedDict):
+    """Lightweight summary for the dashboard grid."""
+
+    code: str
+    run_id: str
+    created_at: datetime
+    n_topics: int
+    n_docs: int
+    top_topic_name: Optional[str]
+    top_topic_words: List[WordScoreTD]  # Now includes scores
+    top_topic_rep_count: Optional[int]  # Count of docs in the primary topic
+
+
+class DashboardResponse(BaseModel):
+    codes: List[CodeDashboardSummaryTD]
+
+
+class TopicRunListItem(BaseModel):
+    id: str
+    code: str
+    n_topics: int
+    n_docs: int
+    created_at: datetime
 
 
 class TopicWordTD(TypedDict):
@@ -566,8 +596,6 @@ class TopicWordTD(TypedDict):
 class RepresentativeDocTD(TypedDict):
     content: str
     membership_score: Optional[float]
-    source_index: Optional[int]
-    video_id: Optional[str]
 
 
 class TopicSummaryTD(TypedDict):
@@ -603,19 +631,7 @@ class TopicRunDetailTD(TypedDict):
     assignments: List[DocumentAssignmentTD]
 
 
-class CodeDashboardSummaryTD(TypedDict):
-    """Lightweight summary for the dashboard grid."""
-
-    code: str
-    run_id: str
-    created_at: datetime
-    n_topics: int
-    n_docs: int
-    top_topic_name: Optional[str]  # The name of the most dominant topic
-    top_topic_words: List[str]  # Top 3 words of that topic
-
-
-# --- Pydantic Models for POST/GET ---
+# --- Pydantic Models for GET ---
 
 
 class SaveTopicsRequest(BaseModel):
@@ -626,22 +642,6 @@ class SaveTopicsRequest(BaseModel):
     n_docs: int = Field(100, ge=1, description="Number of documents to process")
     top_k: int = Field(10, ge=1, description="Number of top words per topic")
     no_llm: bool = Field(False, description="Disable LLM-based topic naming")
-
-
-class SavedTopicSummary(BaseModel):
-    topic_id: int
-    name: Optional[str]
-    word_count: int
-    rep_doc_count: int
-
-
-class SaveTopicsResponse(BaseModel):
-    run_id: str
-    message: str
-    code: str
-    n_topics: int
-    total_documents_processed: int
-    topics_summary: List[SavedTopicSummary]
 
 
 class TopicRunListItem(BaseModel):
@@ -661,26 +661,19 @@ class TopicSearchResultItem(BaseModel):
     score: float
 
 
-class WordScoreTD(TypedDict):
-    word: str
-    score: float
-
-
-class CodeDashboardSummaryTD(TypedDict):
-    """Lightweight summary for the dashboard grid."""
-
-    code: str
-    run_id: str
-    created_at: datetime
-    n_topics: int
-    n_docs: int
-    top_topic_name: Optional[str]
-    top_topic_words: List[WordScoreTD]  # Now includes scores
-    top_topic_rep_count: Optional[int]  # Count of docs in the primary topic
-
-
 class DashboardResponse(BaseModel):
     codes: List[CodeDashboardSummaryTD]
+
+
+# --- Pydantic Models for POST ---
+
+
+class SaveTopicsRequest(BaseModel):
+    code: str = Field("juc", description="MissAV video code prefix")
+    n_topics: int = Field(5, ge=1, description="Number of topics to extract")
+    n_docs: int = Field(100, ge=1, description="Number of documents to process")
+    top_k: int = Field(10, ge=1, description="Number of top words per topic")
+    no_llm: bool = Field(False, description="Disable LLM-based topic naming")
 
 
 # --------------------------------------------------------------------------- #
@@ -2682,13 +2675,9 @@ def _map_results_to_db_format(
             for i, w in enumerate(topic["words"])
         ]
 
+        # Simplified: Only store content and score
         rep_docs = [
-            {
-                "content": doc["content"],
-                "membership_score": doc["score"],
-                "source_index": doc["index"],
-                "video_id": None,
-            }
+            {"content": doc["content"], "membership_score": doc["score"]}
             for doc in rep_info.get("documents", [])
         ]
 
@@ -2718,20 +2707,14 @@ def _map_results_to_db_format(
     return topics_data, assignments_data
 
 
-@app.post("/save_topics", response_model=SaveTopicsResponse)
-def save_topics(req: SaveTopicsRequest) -> SaveTopicsResponse:
-    """Execute topic modeling on the server and save results to the database."""
+@app.post("/save_topics", response_model=CodeDashboardSummaryTD)
+def save_topics(req: SaveTopicsRequest) -> CodeDashboardSummaryTD:
+    """Execute topic modeling, save to DB, and return the dashboard-ready summary."""
     t0 = time.perf_counter()
     run_id = str(uuid.uuid4())
 
     try:
-        logger.info(
-            "Starting cluster_topics for code=%s, n_topics=%d, n_docs=%d",
-            req.code,
-            req.n_topics,
-            req.n_docs,
-        )
-
+        logger.info("Starting cluster_topics for code=%s...", req.code)
         results: ClusterTopicsResult = cluster_topics(
             code=req.code,
             n_topics=req.n_topics,
@@ -2742,18 +2725,30 @@ def save_topics(req: SaveTopicsRequest) -> SaveTopicsResponse:
         )
 
         topics_data, assignments_data = _map_results_to_db_format(results)
+        model_config = {
+            "vectorizer": "NounPhraseCountVectorizer",
+            "encoder": "LlamaCppEncoder",
+        }
 
         with pool.connection() as conn:
-            # Insert Run Metadata
+            # 1. Insert Run
             conn.execute(
                 """
-                INSERT INTO public.topic_runs (id, code, n_topics, n_docs, top_k, no_llm)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO public.topic_runs (id, code, n_topics, n_docs, top_k, no_llm, model_params)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-                (run_id, req.code, req.n_topics, req.n_docs, req.top_k, req.no_llm),
+                (
+                    run_id,
+                    req.code,
+                    req.n_topics,
+                    req.n_docs,
+                    req.top_k,
+                    req.no_llm,
+                    json.dumps(model_config),
+                ),
             )
 
-            # Insert Topics and Related Data
+            # 2. Insert Topics & Words
             for topic in topics_data:
                 topic_uuid = str(uuid.uuid4())
                 conn.execute(
@@ -2788,20 +2783,18 @@ def save_topics(req: SaveTopicsRequest) -> SaveTopicsResponse:
                 for doc in topic["representative_docs"]:
                     conn.execute(
                         """
-                        INSERT INTO public.topic_representative_docs (id, topic_id, content, membership_score, source_index, video_id)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO public.topic_representative_docs (id, topic_id, content, membership_score)
+                        VALUES (%s, %s, %s, %s)
                     """,
                         (
                             str(uuid.uuid4()),
                             topic_uuid,
                             doc["content"],
                             doc["membership_score"],
-                            doc["source_index"],
-                            doc["video_id"],
                         ),
                     )
 
-            # Insert Document Assignments
+            # 3. Insert Assignments
             for assignment in assignments_data:
                 conn.execute(
                     """
@@ -2821,32 +2814,39 @@ def save_topics(req: SaveTopicsRequest) -> SaveTopicsResponse:
 
             conn.commit()
 
-        # Prepare Response Summary
-        topics_summary = [
-            SavedTopicSummary(
-                topic_id=t["topic_id"],
-                name=t["name"],
-                word_count=len(t["words"]),
-                rep_doc_count=t["representative_doc_count"],
-            )
-            for t in topics_data
-        ]
+        # 4. Fetch the newly created Dashboard Summary directly from DB
+        # This ensures the response matches exactly what the grid expects
+        summary_row = conn.execute(
+            """
+            SELECT 
+                lr.code, lr.id as run_id, lr.created_at, lr.n_topics, lr.n_docs,
+                tt.name as top_topic_name, tt.representative_doc_count as top_topic_rep_count,
+                COALESCE(
+                    jsonb_agg(jsonb_build_object('word', rw.word, 'score', rw.score) ORDER BY rw.rn ASC) 
+                    FILTER (WHERE rw.rn <= lr.n_topics), '[]'::jsonb
+                ) as top_topic_words
+            FROM public.topic_runs lr
+            LEFT JOIN public.topics tt ON tt.run_id = lr.id AND tt.topic_id = 0
+            LEFT JOIN public.topic_words rw ON rw.topic_id = tt.id
+            WHERE lr.id = %s
+            GROUP BY lr.id, lr.code, lr.created_at, lr.n_topics, lr.n_docs, tt.name, tt.representative_doc_count
+        """,
+            (run_id,),
+        ).fetchone()
+
+        if not summary_row:
+            raise Exception("Failed to retrieve summary after save")
+
+        item = dict(summary_row)
+        item["run_id"] = str(item["run_id"])
+        if isinstance(item["top_topic_words"], str):
+            item["top_topic_words"] = json.loads(item["top_topic_words"])
+
+        return item
 
     except Exception as e:
         logger.error("Failed to save topics: %s", e)
         raise HTTPException(500, f"Failed to save topics: {e}")
-
-    took = (time.perf_counter() - t0) * 1000
-    logger.info("Saved topics run %s in %.1fms", run_id, took)
-
-    return SaveTopicsResponse(
-        run_id=run_id,
-        message="Topics extracted and saved successfully",
-        code=req.code,
-        n_topics=req.n_topics,
-        total_documents_processed=len(assignments_data),
-        topics_summary=topics_summary,
-    )
 
 
 @app.get("/topics/runs", response_model=List[TopicRunListItem])
@@ -2908,7 +2908,6 @@ def get_topic_run_detail(run_id: str):
             if not run_row:
                 raise HTTPException(404, "Topic run not found")
 
-            # Convert run ID to string
             run_data = dict(run_row)
             if "id" in run_data:
                 run_data["id"] = str(run_data["id"])
@@ -2924,7 +2923,7 @@ def get_topic_run_detail(run_id: str):
 
             topics_list: List[TopicSummaryTD] = []
             for t in topics_rows:
-                topic_uuid = str(t["id"])  # Convert UUID to string
+                topic_uuid = str(t["id"])
 
                 words_rows = conn.execute(
                     """
@@ -2934,9 +2933,10 @@ def get_topic_run_detail(run_id: str):
                     (topic_uuid,),
                 ).fetchall()
 
+                # UPDATED: Removed source_index and video_id from SELECT
                 docs_rows = conn.execute(
                     """
-                    SELECT content, membership_score, source_index, video_id
+                    SELECT content, membership_score
                     FROM public.topic_representative_docs
                     WHERE topic_id = %s ORDER BY membership_score DESC
                 """,
@@ -2954,7 +2954,7 @@ def get_topic_run_detail(run_id: str):
                     }
                 )
 
-            # Get assignments
+            # Get assignments (source_index is kept here as it's vital for the full mapping)
             assignments_rows = conn.execute(
                 """
                 SELECT source_index, topic_id, topic_name, scores, content
@@ -3016,9 +3016,7 @@ def search_topics_by_word(
 
 @app.get("/topics/dashboard", response_model=DashboardResponse)
 def get_topics_dashboard():
-    """
-    Fetches the latest topic run for every unique code with enriched summary data.
-    """
+    """Fetches the latest topic run for every unique code with enriched summary data."""
     sql = """
         WITH latest_runs AS (
             SELECT DISTINCT ON (code) 
@@ -3033,28 +3031,17 @@ def get_topics_dashboard():
             WHERE t.topic_id = 0
         ),
         ranked_words AS (
-            SELECT 
-                tw.topic_id,
-                tw.word,
-                tw.score,
-                ROW_NUMBER() OVER (PARTITION BY tw.topic_id ORDER BY tw.rank ASC) as rn
+            SELECT tw.topic_id, tw.word, tw.score,
+                   ROW_NUMBER() OVER (PARTITION BY tw.topic_id ORDER BY tw.rank ASC) as rn
             FROM public.topic_words tw
             JOIN top_topics tt ON tw.topic_id = tt.topic_uuid
         )
         SELECT 
-            lr.id as run_id, 
-            lr.code, 
-            lr.n_topics, 
-            lr.n_docs, 
-            lr.created_at,
-            tt.name as top_topic_name,
-            tt.representative_doc_count as top_topic_rep_count,
-            -- Aggregate words and scores into a JSONB array for easy client parsing
+            lr.id as run_id, lr.code, lr.n_topics, lr.n_docs, lr.created_at,
+            tt.name as top_topic_name, tt.representative_doc_count as top_topic_rep_count,
             COALESCE(
-                jsonb_agg(
-                    jsonb_build_object('word', rw.word, 'score', rw.score) 
-                    ORDER BY rw.rn ASC
-                ) FILTER (WHERE rw.rn <= lr.n_topics), 
+                jsonb_agg(jsonb_build_object('word', rw.word, 'score', rw.score) ORDER BY rw.rn ASC) 
+                FILTER (WHERE rw.rn <= lr.n_topics), 
                 '[]'::jsonb
             ) as top_topic_words
         FROM latest_runs lr
@@ -3072,18 +3059,13 @@ def get_topics_dashboard():
         for r in rows:
             item = dict(r)
             item["run_id"] = str(item["run_id"])
-            # psycopg returns jsonb as a string or dict depending on config; ensure it's a list
             if isinstance(item["top_topic_words"], str):
-                import json
-
                 item["top_topic_words"] = json.loads(item["top_topic_words"])
             elif item["top_topic_words"] is None:
                 item["top_topic_words"] = []
-
             result.append(item)
 
         return {"codes": result}
-
     except Exception as e:
         logger.error("DB error fetching dashboard: %s", e)
         raise HTTPException(500, f"Failed to load dashboard: {e}")

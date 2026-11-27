@@ -10,17 +10,13 @@ function initChart() {
 async function loadDashboard() {
   const res = await fetch(`${API_BASE}/topics/dashboard`);
   const data = await res.json();
+  renderGrid(data.codes);
+}
 
+function renderGrid(codes) {
   const grid = document.getElementById("dashboardGrid");
   grid.innerHTML = "";
-
-  data.codes.forEach((item) => {
-    const card = document.createElement("div");
-    card.className =
-      "bg-white p-5 rounded-lg shadow-sm border border-gray-100 card-hover cursor-pointer";
-    card.onclick = () => loadRunDetails(item.run_id, item.code);
-
-    // Format words with scores
+  codes.forEach((item) => {
     const wordsHtml = item.top_topic_words
       .map(
         (w) =>
@@ -28,72 +24,138 @@ async function loadDashboard() {
       )
       .join("");
 
+    const card = document.createElement("div");
+    card.className =
+      "bg-white p-6 rounded-xl shadow-sm border border-gray-100 card-hover cursor-pointer flex flex-col h-full";
+    card.onclick = () => loadRunDetails(item.run_id, item.code);
+
     card.innerHTML = `
-          <div class="flex justify-between items-start mb-3">
-              <h3 class="text-xl font-bold text-indigo-600">${item.code.toUpperCase()}</h3>
-              <span class="text-xs text-gray-400">${new Date(item.created_at).toLocaleDateString()}</span>
-          </div>
-          <div class="text-sm text-gray-600 mb-4 space-y-1">
-              <p><strong>${item.n_topics}</strong> Topics • <strong>${item.n_docs}</strong> Docs</p>
-              ${item.top_topic_rep_count ? `<p class="text-xs text-gray-500">${item.top_topic_rep_count} rep. docs in primary topic</p>` : ""}
-              ${item.top_topic_name ? `<p class="mt-1 italic text-gray-500">Primary: "${item.top_topic_name}"</p>` : ""}
-          </div>
-          <div class="border-t pt-3">
-              <p class="text-xs text-gray-400 uppercase font-semibold mb-2">Key Words (Top ${item.n_topics})</p>
-              <div class="flex flex-wrap gap-1">${wordsHtml || '<span class="text-gray-400 text-xs">No data</span>'}</div>
-          </div>
-      `;
+            <div class="flex justify-between items-start mb-4">
+                <div class="bg-indigo-50 text-indigo-700 font-bold px-3 py-1 rounded-md text-sm">${item.code.toUpperCase()}</div>
+                <span class="text-xs text-gray-400">${new Date(item.created_at).toLocaleDateString()}</span>
+            </div>
+            <div class="flex-grow">
+                <div class="text-sm text-gray-600 mb-4 space-y-1">
+                    <div class="flex justify-between"><span>Topics:</span> <strong>${item.n_topics}</strong></div>
+                    <div class="flex justify-between"><span>Docs:</span> <strong>${item.n_docs}</strong></div>
+                    <div class="flex justify-between"><span>Rep. Docs:</span> <strong>${item.top_topic_rep_count || 0}</strong></div>
+                </div>
+                ${item.top_topic_name ? `<p class="text-sm font-medium text-gray-800 mb-2">Primary: "${item.top_topic_name}"</p>` : ""}
+            </div>
+            <div class="border-t pt-3 mt-2">
+                <p class="text-xs text-gray-400 uppercase font-semibold mb-2">Top Keywords</p>
+                <div class="flex flex-wrap">${wordsHtml}</div>
+            </div>
+        `;
     grid.appendChild(card);
   });
 }
 
 async function loadRunDetails(runId, code) {
   document.getElementById("detailView").classList.remove("hidden");
-  document.getElementById("detailTitle").innerText =
-    `Analysis for ${code.toUpperCase()}`;
-
-  // Scroll to details
   document.getElementById("detailView").scrollIntoView({ behavior: "smooth" });
+  document.getElementById("detailTitle").innerText =
+    `Analysis: ${code.toUpperCase()}`;
 
   const res = await fetch(`${API_BASE}/topics/runs/${runId}`);
   const data = await res.json();
+  document.getElementById("detailMeta").innerText =
+    `Run ID: ${runId} • ${data.topics.length} Topics Found`;
 
-  // For simplicity, let's show the first topic in the run as the "main" view
-  // In a real app, you might list all topics in the detail view
   const mainTopic = data.topics[0];
-
   if (mainTopic) {
-    const option = {
+    // Chart
+    wordChartInstance.setOption({
       tooltip: { trigger: "axis" },
       xAxis: {
         type: "category",
         data: mainTopic.words.map((w) => w.word),
-        axisLabel: { interval: 0, rotate: 30 },
+        axisLabel: { rotate: 30 },
       },
       yAxis: { type: "value" },
       series: [
         {
           data: mainTopic.words.map((w) => w.score),
           type: "bar",
-          itemStyle: { color: "#4f46e5" },
+          itemStyle: { color: "#4f46e5", borderRadius: [4, 4, 0, 0] },
         },
       ],
-    };
-    wordChartInstance.setOption(option);
+    });
 
+    // Docs
+    document.getElementById("repCountBadge").innerText =
+      mainTopic.representative_docs.length;
     const docsContainer = document.getElementById("repDocsContainer");
     docsContainer.innerHTML = "";
     mainTopic.representative_docs.forEach((doc) => {
       const div = document.createElement("div");
       div.className = "doc-snippet";
-      div.innerText = `"${doc.content.substring(0, 100)}..."`;
+      div.innerHTML = `"${doc.content}" <br><span class="text-xs text-indigo-500 not-italic mt-1 block">Confidence: ${(doc.membership_score * 100).toFixed(1)}%</span>`;
       docsContainer.appendChild(div);
     });
   }
 }
 
-function closeDetails() {
-  document.getElementById("detailView").classList.add("hidden");
+// Modal Logic
+function openModal() {
+  document.getElementById("analysisModal").classList.remove("hidden");
+  document.getElementById("analysisModal").classList.add("flex");
+}
+function closeModal() {
+  document.getElementById("analysisModal").classList.add("hidden");
+  document.getElementById("analysisModal").classList.remove("flex");
+}
+
+async function handleSave(e) {
+  e.preventDefault();
+  const btn = document.getElementById("saveBtn");
+  const spinner = document.getElementById("btnSpinner");
+  const text = document.getElementById("btnText");
+
+  btn.disabled = true;
+  spinner.classList.remove("hidden");
+  text.innerText = "Processing...";
+
+  const payload = {
+    code: document.getElementById("inputCode").value,
+    n_topics: parseInt(document.getElementById("inputNTopics").value),
+    n_docs: parseInt(document.getElementById("inputNDocs").value),
+    no_llm: document.getElementById("inputNoLlm").checked,
+  };
+
+  try {
+    const res = await fetch(`${API_BASE}/save_topics`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) throw new Error("Save failed");
+
+    const newSummary = await res.json();
+
+    // Prepend new card to grid
+    const grid = document.getElementById("dashboardGrid");
+    const tempDiv = document.createElement("div");
+    // Re-use render logic by creating a temporary array
+    renderGrid([newSummary, ...getCurrentGridData()]);
+
+    closeModal();
+    document.getElementById("analysisForm").reset();
+  } catch (err) {
+    alert("Error: " + err.message);
+  } finally {
+    btn.disabled = false;
+    spinner.classList.add("hidden");
+    text.innerText = "Start Analysis";
+  }
+}
+
+// Helper to keep grid state simple for this example
+function getCurrentGridData() {
+  // In a real app, you'd maintain a state array. For now, we'll just reload.
+  loadDashboard();
+  return [];
 }
 
 document.addEventListener("DOMContentLoaded", () => {

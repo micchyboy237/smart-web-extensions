@@ -1,16 +1,151 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-27T05:56:55.389336
+Generated: 2026-11-27T08:15:57.173584
 ================================================================================
 
 ## DATABASE OVERVIEW
 Available Schemas: public
 Target Schema: public
-Total Tables: 2
-Tables: videos, videos_title_backup
+Total Tables: 6
+Tables: document_topic_assignments, topic_representative_docs, topic_runs, topic_words, topics, videos
 
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
+
+### Table: public.document_topic_assignments (300 rows)
+```sql
+CREATE TABLE "public"."document_topic_assignments" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "run_id" uuid NOT NULL,
+    "source_index" integer NOT NULL,
+    "topic_id" integer NOT NULL,
+    "topic_name" text NULL,
+    "scores" double precision[] NULL,
+    "content" text NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `run_id`: uuid
+- `source_index`: integer
+- `topic_id`: integer
+- `topic_name`: text (nullable)
+- `scores`: double precision[] (nullable)
+- `content`: text (nullable)
+
+**Foreign Keys:**
+- `run_id` → `public.topic_runs.id`
+
+**Indexes:**
+- `document_topic_assignments_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX document_topic_assignments_pkey ON public.document_topic_assignments USING btree (id)
+- `idx_doc_topic_assignments_run_id`: CREATE INDEX idx_doc_topic_assignments_run_id ON public.document_topic_assignments USING btree (run_id)
+- `idx_doc_topic_assignments_topic_id`: CREATE INDEX idx_doc_topic_assignments_topic_id ON public.document_topic_assignments USING btree (run_id, topic_id)
+
+### Table: public.topic_representative_docs (707 rows)
+```sql
+CREATE TABLE "public"."topic_representative_docs" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "topic_id" uuid NOT NULL,
+    "content" text NULL,
+    "membership_score" double precision NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `topic_id`: uuid
+- `content`: text (nullable)
+- `membership_score`: double precision (nullable)
+
+**Foreign Keys:**
+- `topic_id` → `public.topics.id`
+
+**Indexes:**
+- `idx_topic_rep_docs_topic_id`: CREATE INDEX idx_topic_rep_docs_topic_id ON public.topic_representative_docs USING btree (topic_id)
+- `topic_representative_docs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_representative_docs_pkey ON public.topic_representative_docs USING btree (id)
+
+### Table: public.topic_runs (3 rows)
+```sql
+CREATE TABLE "public"."topic_runs" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "code" text NOT NULL,
+    "n_topics" integer NOT NULL,
+    "n_docs" integer NOT NULL,
+    "top_k" integer NOT NULL,
+    "no_llm" boolean NOT NULL DEFAULT false,
+    "created_at" timestamp with time zone NOT NULL DEFAULT now(),
+    "model_params" jsonb NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `code`: text
+- `n_topics`: integer
+- `n_docs`: integer
+- `top_k`: integer
+- `no_llm`: boolean
+- `created_at`: timestamp with time zone
+- `model_params`: jsonb (nullable)
+
+**Indexes:**
+- `topic_runs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_runs_pkey ON public.topic_runs USING btree (id)
+
+### Table: public.topic_words (150 rows)
+```sql
+CREATE TABLE "public"."topic_words" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "topic_id" uuid NOT NULL,
+    "word" text NOT NULL,
+    "score" double precision NOT NULL,
+    "rank" integer NOT NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `topic_id`: uuid
+- `word`: text
+- `score`: double precision
+- `rank`: integer
+
+**Foreign Keys:**
+- `topic_id` → `public.topics.id`
+
+**Indexes:**
+- `idx_topic_words_topic_id`: CREATE INDEX idx_topic_words_topic_id ON public.topic_words USING btree (topic_id)
+- `topic_words_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_words_pkey ON public.topic_words USING btree (id)
+
+### Table: public.topics (15 rows)
+```sql
+CREATE TABLE "public"."topics" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "run_id" uuid NOT NULL,
+    "topic_id" integer NOT NULL,
+    "name" text NULL,
+    "representative_doc_count" integer NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `run_id`: uuid
+- `topic_id`: integer
+- `name`: text (nullable)
+- `representative_doc_count`: integer (nullable)
+
+**Foreign Keys:**
+- `run_id` → `public.topic_runs.id`
+
+**Indexes:**
+- `topics_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topics_pkey ON public.topics USING btree (id)
+- `topics_run_id_topic_id_key` [UNIQUE]: CREATE UNIQUE INDEX topics_run_id_topic_id_key ON public.topics USING btree (run_id, topic_id)
 
 ### Table: public.videos (111955 rows)
 ```sql
@@ -55,70 +190,119 @@ CREATE TABLE "public"."videos" (
 - `videos_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX videos_pkey ON public.videos USING btree (id)
 - `videos_title_fts_idx`: CREATE INDEX videos_title_fts_idx ON public.videos USING gin (to_tsvector('english'::regconfig, title))
 
-### Table: public.videos_title_backup (13787 rows)
-```sql
-CREATE TABLE "public"."videos_title_backup" (
-    "id" text NULL,
-    "code" text NULL,
-    "episode" text NULL,
-    "title" text NULL,
-    "backed_up_at" timestamp with time zone NULL
-);
-```
-
-**Columns:**
-- `id`: text (nullable)
-- `code`: text (nullable)
-- `episode`: text (nullable)
-- `title`: text (nullable)
-- `backed_up_at`: timestamp with time zone (nullable)
-
 ## COLUMN STATISTICS SUMMARY
 --------------------------------------------------------------------------------
 
-### Table: videos
+### Table: document_topic_assignments
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | text | 111955 | 0.0% |
-| `embedding` | vector(768) | 108162 | 0.0% |
-| `url` | text | 101937 | 0.0% |
-| `code` | text | 3225 | 0.0% |
-| `episode` | text | 4700 | 0.0% |
-| `video_id` | text | 98089 | 0.0% |
-| `title` | text | 82235 | 0.35% |
-| `thumbnail` | text | 108708 | 0.0% |
-| `preview` | text | 102519 | 0.0% |
-| `details` | text | 46794 | 42.15% |
-| `release_date` | timestamp with time zone | 31729 | 40.91% |
-| `created_at` | timestamp with time zone | 5878 | 0.0% |
-| `updated_at` | timestamp with time zone | 990 | 0.0% |
-| `genres` | text[] | 46450 | 32.4% |
+| `id` | uuid | 300 | 0.0% |
+| `run_id` | uuid | 3 | 0.0% |
+| `source_index` | integer | 100 | 0.0% |
+| `topic_id` | integer | 5 | 0.0% |
+| `topic_name` | text | 15 | 0.0% |
+| `scores` | double precision[] | 300 | 0.0% |
+| `content` | text | 300 | 0.0% |
 
-### Table: videos_title_backup
+### Table: topic_representative_docs
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | text | 13787 | 0.0% |
-| `code` | text | 27 | 0.0% |
-| `episode` | text | 1975 | 0.0% |
-| `title` | text | 10147 | 0.0% |
-| `backed_up_at` | timestamp with time zone | 1 | 0.0% |
+| `id` | uuid | 707 | 0.0% |
+| `topic_id` | uuid | 15 | 0.0% |
+| `content` | text | 300 | 0.0% |
+| `membership_score` | double precision | 707 | 0.0% |
+
+### Table: topic_runs
+| Column | Type | Distinct Values | Null % |
+|--------|------|-----------------|--------|
+| `id` | uuid | 3 | 0.0% |
+| `code` | text | 3 | 0.0% |
+| `n_topics` | integer | 1 | 0.0% |
+| `n_docs` | integer | 1 | 0.0% |
+| `top_k` | integer | 1 | 0.0% |
+| `no_llm` | boolean | 1 | 0.0% |
+| `created_at` | timestamp with time zone | 3 | 0.0% |
+| `model_params` | jsonb | 1 | 0.0% |
+
+### Table: topic_words
+| Column | Type | Distinct Values | Null % |
+|--------|------|-----------------|--------|
+| `id` | uuid | 150 | 0.0% |
+| `topic_id` | uuid | 15 | 0.0% |
+| `word` | text | 109 | 0.0% |
+| `score` | double precision | 150 | 0.0% |
+| `rank` | integer | 10 | 0.0% |
+
+### Table: topics
+| Column | Type | Distinct Values | Null % |
+|--------|------|-----------------|--------|
+| `id` | uuid | 15 | 0.0% |
+| `run_id` | uuid | 3 | 0.0% |
+| `topic_id` | integer | 5 | 0.0% |
+| `name` | text | 15 | 0.0% |
+| `representative_doc_count` | integer | 14 | 0.0% |
+
+## JSONB COLUMN METADATA
+--------------------------------------------------------------------------------
+
+### JSONB Columns in public.topic_runs
+
+**`model_params`**:
+- Type: Object
+- Keys & Types: embedding_model (text), encoder (text), vectorizer (text)
+- Sample Structure:
+```json
+{
+  "encoder": "LlamaCppEncoder",
+  "vectorizer": "NounPhraseCountVectorizer",
+  "embedding_model": "nomic-embed:2-moe"
+}
+```
 
 ## SAMPLE DATA
 --------------------------------------------------------------------------------
 
+### Table: document_topic_assignments (first 3 rows)
+| id | run_id | source_index | topic_id | topic_name | scores | content |
+| --- | --- | --- | --- | --- | --- | --- |
+| 5d7a8913-3cf0-47e9-92c8-f9f06aaa4db7 | fe520b99-7814-459e-91f0-68a02521f7d0 | 0 | 0 | Immoral Apartment Wife | {0.2341592341837766,0,0.00016420485644352988,0,0.0… | Mother-in-law's Confession ~Woman Drowning In Her… |
+| f3a005bd-bad9-41a0-abcf-59ee71071c77 | fe520b99-7814-459e-91f0-68a02521f7d0 | 1 | 2 | Sexless Marriage | {0.1310157976960247,0,0.28325276081945905,0,0} | Married Woman Confinement Breeding A Beautiful Mar… |
+| 42659cf8-7673-46dd-ad94-a016f65a2dbe | fe520b99-7814-459e-91f0-68a02521f7d0 | 2 | 3 | Married Woman Affair Trip | {0,0,0,0.36992937130887565,0.04675616672887991} | A Married Woman Gets Fucked Twice Chapter 2 Haruki… |
+
+### Table: topic_representative_docs (first 3 rows)
+| id | topic_id | content | membership_score |
+| --- | --- | --- | --- |
+| 19245575-b221-47db-9305-2c8275a4ac7b | dc09e9f8-fe96-44ef-b315-37be29d7edc1 | Compliant wife Reiko Makihara Reiko who lived a c… | 0.2678384628555635 |
+| 39804348-6c14-4676-8cdb-cfb4b37d3814 | dc09e9f8-fe96-44ef-b315-37be29d7edc1 | Arisa Seto, a daughter-in-law who was surpassed by… | 0.25848978133686384 |
+| 04cc4351-18fb-4587-8880-139c79f5301e | dc09e9f8-fe96-44ef-b315-37be29d7edc1 | Immoral Apartment Wife Lower Body Circumstances In… | 0.2444778785110503 |
+
+### Table: topic_runs (first 3 rows)
+| id | code | n_topics | n_docs | top_k | no_llm | created_at | model_params |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| fe520b99-7814-459e-91f0-68a02521f7d0 | juc | 5 | 100 | 10 | false | 2026-11-27 07:54:22.774757+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+| 07c46d60-f3b7-4c74-8dd0-4bc75308ad98 | jukd | 5 | 100 | 10 | false | 2026-11-27 07:59:28.682976+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+| 60d95ece-4e83-4fc1-9105-71f7e52d36bd | juq | 5 | 100 | 10 | false | 2026-11-27 08:01:52.479743+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+
+### Table: topic_words (first 3 rows)
+| id | topic_id | word | score | rank |
+| --- | --- | --- | --- | --- |
+| 38d88cb8-e599-42c3-8325-0604def9b8cb | dc09e9f8-fe96-44ef-b315-37be29d7edc1 | husband | 1.695594105016593 | 0 |
+| 30687100-7298-4fdb-8579-de8bb349e9b1 | dc09e9f8-fe96-44ef-b315-37be29d7edc1 | woman | 0.22045046802149473 | 1 |
+| da6b87c7-78f8-4056-858d-b0e7e6ed49f6 | dc09e9f8-fe96-44ef-b315-37be29d7edc1 | immoral apartment wife | 0.18411083866974318 | 2 |
+
+### Table: topics (first 3 rows)
+| id | run_id | topic_id | name | representative_doc_count |
+| --- | --- | --- | --- | --- |
+| dc09e9f8-fe96-44ef-b315-37be29d7edc1 | fe520b99-7814-459e-91f0-68a02521f7d0 | 0 | Immoral Apartment Wife | 74 |
+| 2261a5f5-032c-459f-a4e5-62303b634bd2 | fe520b99-7814-459e-91f0-68a02521f7d0 | 1 | Motherhood | 45 |
+| 8086a63c-3b14-44b9-9a28-47a3cb322408 | fe520b99-7814-459e-91f0-68a02521f7d0 | 2 | Sexless Marriage | 41 |
+
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-1ufew13 | [0.027087871,0.043751717,-0.03404353,0.044001475,0… | https://missav.ws/dm68/en/jusd-165 | jusd | 165 | jusd-165 | In Front Of My Beloved Husband... Omnibus 4 Hours… | https://fourhoi.com/jusd-165/cover-n.jpg | https://fourhoi.com/jusd-165/preview.mp4 | The best compilation of "Beloved Husband's Eyes...… | 2008-11-07 11:00:00+08 | 2026-11-21 21:29:00.924688+08 | 2026-11-21 21:31:12.51596+08 | {Humiliation,"Mature Woman",Wife,Collection,"Slim… |
-| jav-1tvfon5 | [0.033511966,0.050498962,-0.0077666417,0.044945106… | https://missav.ws/dm68/en/jusd-163 | jusd | 163 | jusd-163 | Slutty Wife In The Early Afternoon 18 People 4 Hou… | https://fourhoi.com/jusd-163/cover-n.jpg | https://fourhoi.com/jusd-163/preview.mp4 | The crotch of frustrated married women opens at no… | 2008-10-24 12:00:04+08 | 2026-11-21 21:29:00.924688+08 | 2026-11-21 21:31:12.51596+08 | {"Mature Woman",Wife,"Big Breasts",Ride,"Slim Pixe… |
-| jav-rztdaz | [0.006603393,0.054553166,0.002542359,0.058219478,0… | https://missav.ws/dm67/en/jusd-162 | jusd | 162 | jusd-162 | Horny Punishment Bride Teasing Omnibus 4 Hours - M… | https://fourhoi.com/jusd-162/cover-n.jpg | https://fourhoi.com/jusd-162/preview.mp4 | A selection of masterpieces from the popular drama… | 2008-10-24 12:00:03+08 | 2026-11-21 21:29:00.924688+08 | 2026-11-21 21:31:12.51596+08 | {Shame,"Mature Woman",Wife,Collection,"Slim Pixela… |
-
-### Table: videos_title_backup (first 3 rows)
-| id | code | episode | title | backed_up_at |
-| --- | --- | --- | --- | --- |
-| jav-1k067am | fc2-ppv | 3725436 | FC2-PPV-3725436 【Pajamas Monashi】Pajamas de Ojama♥… | 2026-11-16 20:32:06.000851+08 |
-| jav-1fp67co | venu | 028 | VENU-028 play A Perverted Family's New Form Of Lov… | 2026-11-16 20:32:06.000851+08 |
-| jav-1u1ocek | nwf | 254 | NWF-254 play Mother's Beautiful Ass Misa Arisawa -… | 2026-11-16 20:32:06.000851+08 |
+| jav-ihugvw | [0.03430644,-0.034830637,-0.02822563,0.0126915015,… | https://missav.ws/dm1/en/jux-409-english-subtitle | jux | 409 | jux-409 | Shaved Married Woman Fisting ~ Beautiful Mature Wo… | https://fourhoi.com/jux-409-english-subtitle/cover… | https://fourhoi.com/jux-409-english-subtitle/previ… | Misa, a married woman who has been working as a he… | 2014-09-04 12:00:00+08 | 2026-11-16 02:07:04.870385+08 | 2026-11-16 21:12:37.409468+08 | {"English subtitle",Fist,"Mature Woman","Various O… |
+| jav-ii3hp8 | [0.017559264,0.047708876,0.015361577,0.057878297,0… | https://missav.ws/en/fera-199-uncensored-leak | fera | 199 | fera-199 | A secret affair with a part-time wife who has grea… | https://fourhoi.com/fera-199-uncensored-leak/cover… | https://fourhoi.com/fera-199-uncensored-leak/previ… | An affair with a student working part-time at her… | 2025-06-19 00:00:00+08 | 2026-11-16 07:51:04.78164+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak","Mature Woman","Various Occupat… |
+| jav-ii9xps | [-0.009084665,-0.020098837,0.0028230117,0.06201925… | https://missav.ws/dm57/en/jux-031 | jux | 031 | jux-031 | Mother of private school ~ Obscene sex education d… | https://fourhoi.com/jux-031/cover-n.jpg | https://fourhoi.com/jux-031/preview.mp4 | Chihiro, who runs a prep school at home, taught se… | 2013-02-17 11:00:22+08 | 2026-11-16 02:10:43.918556+08 | 2026-11-16 21:12:37.409468+08 | {"Mature Woman","Various Occupations",Mother,Wife,… |
 
 ## QUERY GUIDANCE FOR DYNAMIC POSTGRESQL QUERIES
 --------------------------------------------------------------------------------
@@ -127,7 +311,7 @@ When constructing PostgreSQL queries based on user questions:
 
 1. **Identify Tables**: Use table names above to determine which tables to query
 2. **Available Columns**: See column lists for each table above
-3. **Common Column Names Found**: id, embedding, url, code, episode, video_id, title, thumbnail, preview, details, release_date, created_at, updated_at, genres, backed_up_at
+3. **Common Column Names Found**: id, run_id, source_index, topic_id, topic_name, scores, content, membership_score, code, n_topics, n_docs, top_k, no_llm, created_at, model_params, word, score, rank, name, representative_doc_count...
 4. **Relationships**: Check foreign keys section for table relationships
 5. **Data Types**: Note column types for proper filtering and casting
 6. **Truncated values**: Sample values ending with … are cut for display only
@@ -155,4 +339,19 @@ results = cursor.fetchall()
 - Leverage indexes shown above for better performance
 - Consider NULL handling in filters (IS NULL / IS NOT NULL)
 - Use LIMIT for large tables to avoid memory issues
+
+**JSONB Query Patterns (GIN index supported):**
+```sql
+-- Check if jsonb array contains a value
+SELECT * FROM public.jobs WHERE tags @> '["remote"]'::jsonb;
+
+-- Check if jsonb object has a key
+SELECT * FROM public.job_entities WHERE entities ? 'work_mode';
+
+-- Check if jsonb object has key-value pair
+SELECT * FROM public.job_entities WHERE entities @> '{"work_mode": "remote"}'::jsonb;
+
+-- Extract specific value from jsonb
+SELECT entities->>'work_mode' AS work_mode FROM public.job_entities;
+```
 ================================================================================
