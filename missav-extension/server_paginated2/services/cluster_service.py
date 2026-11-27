@@ -21,9 +21,11 @@ from jet.adapters.llama_cpp.embed_utils import embed
 from jet.adapters.turftopic.missav import ClusterTopicsResult, cluster_topics
 from jet.wordnet.words import get_words
 from models.schemas.topic import (
+    BatchSaveTopicsResponse,
     CodeDashboardSummary,
     DashboardResponse,
     RepresentativeDocWithVideo,
+    SaveTopicsFailure,
     TopicSearchResultItem,
 )
 from models.types.topic import (
@@ -411,6 +413,33 @@ def save_topics(
     except Exception as e:
         logger.error("Failed to save topics: %s", e)
         raise HTTPException(500, f"Failed to save topics: {e}")
+
+
+def save_topics_batch(
+    codes: List[str], n_topics: int, n_docs: int, top_k: int, no_llm: bool
+) -> BatchSaveTopicsResponse:
+    t0 = time.perf_counter()
+    results: List[CodeDashboardSummary] = []
+    failed: List[SaveTopicsFailure] = []
+    logger.info("Batch save_topics started: %d codes=%s", len(codes), codes)
+
+    for i, code in enumerate(codes, start=1):
+        logger.info("[%d/%d] Saving topics for code=%r", i, len(codes), code)
+        try:
+            results.append(save_topics(code, n_topics, n_docs, top_k, no_llm))
+            logger.info("[%d/%d] code=%r saved", i, len(codes), code)
+        except HTTPException as e:  # save_topics wraps all errors in HTTPException
+            logger.error("[%d/%d] code=%r failed: %s", i, len(codes), code, e.detail)
+            failed.append(SaveTopicsFailure(code=code, error=str(e.detail)))
+
+    took = (time.perf_counter() - t0) * 1000
+    logger.info(
+        "Batch save_topics done: ok=%d failed=%d in %.1fms",
+        len(results),
+        len(failed),
+        took,
+    )
+    return BatchSaveTopicsResponse(results=results, failed=failed, took_ms=took)
 
 
 def list_topic_runs(code: Optional[str], limit: int, offset: int) -> List[RunDB]:

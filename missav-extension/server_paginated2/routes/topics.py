@@ -1,7 +1,8 @@
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from fastapi import APIRouter, Query
 from models.schemas.topic import (
+    BatchSaveTopicsResponse,
     CodeDashboardSummary,
     DashboardResponse,
     SaveTopicsRequest,
@@ -16,16 +17,23 @@ from services.cluster_service import (
     get_topics_dashboard,
     list_topic_runs,
     save_topics,
+    save_topics_batch,
     search_topics_by_ngrams,
 )
 
 router = APIRouter()
 
 
-@router.post("/save_topics", response_model=CodeDashboardSummary)
-def save_topics_endpoint(req: SaveTopicsRequest) -> CodeDashboardSummary:
-    summary = save_topics(req.code, req.n_topics, req.n_docs, req.top_k, req.no_llm)
-    return summary
+@router.post(
+    "/save_topics",
+    response_model=Union[CodeDashboardSummary, BatchSaveTopicsResponse],
+)
+def save_topics_endpoint(req: SaveTopicsRequest):
+    if not req.is_batch:
+        return save_topics(
+            req.codes[0], req.n_topics, req.n_docs, req.top_k, req.no_llm
+        )
+    return save_topics_batch(req.codes, req.n_topics, req.n_docs, req.top_k, req.no_llm)
 
 
 @router.get("/runs", response_model=List[TopicRunListItem])

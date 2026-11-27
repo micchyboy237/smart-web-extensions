@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from models.types.topic import WordScoreTD
 
@@ -31,11 +31,49 @@ class TopicSearchRequest(BaseModel):
 
 
 class SaveTopicsRequest(BaseModel):
-    code: str = Field("juc")
+    code: Union[str, List[str]] = Field(
+        "juc", description="One code or a list of codes"
+    )
     n_topics: int = Field(5, ge=1)
     n_docs: int = Field(100, ge=1)
     top_k: int = Field(10, ge=1)
     no_llm: bool = Field(False)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def _normalize_code(cls, v):
+        items = [v] if isinstance(v, str) else list(v or [])
+        out: List[str] = []
+        for item in items:
+            for part in str(item).split(","):
+                part = part.strip()
+                if part and part not in out:  # dedupe, keep order
+                    out.append(part)
+        if not out:
+            raise ValueError("code must contain at least one non-empty value")
+        if len(out) > 20:
+            raise ValueError("At most 20 codes per request")
+        # keep a plain str when only one was given (backward compatible)
+        return out[0] if isinstance(v, str) and len(out) == 1 else out
+
+    @property
+    def codes(self) -> List[str]:
+        return [self.code] if isinstance(self.code, str) else self.code
+
+    @property
+    def is_batch(self) -> bool:
+        return isinstance(self.code, list)
+
+
+class SaveTopicsFailure(BaseModel):
+    code: str
+    error: str
+
+
+class BatchSaveTopicsResponse(BaseModel):
+    results: List["CodeDashboardSummary"]
+    failed: List[SaveTopicsFailure]
+    took_ms: float
 
 
 class TopicRunListItem(BaseModel):
