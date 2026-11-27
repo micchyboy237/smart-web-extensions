@@ -1,17 +1,157 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-27T08:56:50.419185
+Generated: 2026-11-27T11:14:32.128824
 ================================================================================
 
 ## DATABASE OVERVIEW
 Available Schemas: public
 Target Schema: public
-Total Tables: 1
-Tables: videos
-Filter Applied: videos
+Total Tables: 6
+Tables: document_topic_assignments, topic_representative_docs, topic_runs, topic_words, topics, videos
 
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
+
+### Table: public.document_topic_assignments (200 rows)
+```sql
+CREATE TABLE "public"."document_topic_assignments" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "run_id" uuid NOT NULL,
+    "source_index" integer NOT NULL,
+    "topic_id" integer NOT NULL,
+    "topic_name" text NULL,
+    "scores" double precision[] NULL,
+    "content" text NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `run_id`: uuid
+- `source_index`: integer
+- `topic_id`: integer
+- `topic_name`: text (nullable)
+- `scores`: double precision[] (nullable)
+- `content`: text (nullable)
+
+**Foreign Keys:**
+- `run_id` → `public.topic_runs.id`
+
+**Indexes:**
+- `document_topic_assignments_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX document_topic_assignments_pkey ON public.document_topic_assignments USING btree (id)
+- `idx_doc_topic_assignments_run_id`: CREATE INDEX idx_doc_topic_assignments_run_id ON public.document_topic_assignments USING btree (run_id)
+- `idx_doc_topic_assignments_topic_id`: CREATE INDEX idx_doc_topic_assignments_topic_id ON public.document_topic_assignments USING btree (run_id, topic_id)
+
+### Table: public.topic_representative_docs (458 rows)
+```sql
+CREATE TABLE "public"."topic_representative_docs" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "topic_id" uuid NOT NULL,
+    "content" text NULL,
+    "membership_score" double precision NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `topic_id`: uuid
+- `content`: text (nullable)
+- `membership_score`: double precision (nullable)
+
+**Foreign Keys:**
+- `topic_id` → `public.topics.id`
+
+**Indexes:**
+- `idx_topic_rep_docs_topic_id`: CREATE INDEX idx_topic_rep_docs_topic_id ON public.topic_representative_docs USING btree (topic_id)
+- `topic_representative_docs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_representative_docs_pkey ON public.topic_representative_docs USING btree (id)
+
+### Table: public.topic_runs (2 rows)
+```sql
+CREATE TABLE "public"."topic_runs" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "code" text NOT NULL,
+    "n_topics" integer NOT NULL,
+    "n_docs" integer NOT NULL,
+    "top_k" integer NOT NULL,
+    "no_llm" boolean NOT NULL DEFAULT false,
+    "created_at" timestamp with time zone NOT NULL DEFAULT now(),
+    "model_params" jsonb NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `code`: text
+- `n_topics`: integer
+- `n_docs`: integer
+- `top_k`: integer
+- `no_llm`: boolean
+- `created_at`: timestamp with time zone
+- `model_params`: jsonb (nullable)
+
+**Indexes:**
+- `topic_runs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_runs_pkey ON public.topic_runs USING btree (id)
+
+### Table: public.topic_words (100 rows)
+```sql
+CREATE TABLE "public"."topic_words" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "topic_id" uuid NOT NULL,
+    "word" text NOT NULL,
+    "score" double precision NOT NULL,
+    "rank" integer NOT NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `topic_id`: uuid
+- `word`: text
+- `score`: double precision
+- `rank`: integer
+
+**Foreign Keys:**
+- `topic_id` → `public.topics.id`
+
+**Indexes:**
+- `idx_topic_words_topic_id`: CREATE INDEX idx_topic_words_topic_id ON public.topic_words USING btree (topic_id)
+- `topic_words_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_words_pkey ON public.topic_words USING btree (id)
+
+### Table: public.topics (10 rows)
+```sql
+CREATE TABLE "public"."topics" (
+    "id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "run_id" uuid NOT NULL,
+    "topic_id" integer NOT NULL,
+    "name" text NULL,
+    "representative_doc_count" integer NULL,
+    "embedding" vector(768) NULL,
+    "search_vector" tsvector NULL,
+    PRIMARY KEY ("id")
+);
+```
+
+**Columns:**
+- `id`: uuid [PK]
+- `run_id`: uuid
+- `topic_id`: integer
+- `name`: text (nullable)
+- `representative_doc_count`: integer (nullable)
+- `embedding`: vector(768) (nullable)
+- `search_vector`: tsvector (nullable)
+
+**Foreign Keys:**
+- `run_id` → `public.topic_runs.id`
+
+**Indexes:**
+- `idx_topics_embedding`: CREATE INDEX idx_topics_embedding ON public.topics USING hnsw (embedding vector_cosine_ops)
+- `idx_topics_search`: CREATE INDEX idx_topics_search ON public.topics USING gin (search_vector)
+- `topics_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topics_pkey ON public.topics USING btree (id)
+- `topics_run_id_topic_id_key` [UNIQUE]: CREATE UNIQUE INDEX topics_run_id_topic_id_key ON public.topics USING btree (run_id, topic_id)
 
 ### Table: public.videos (111955 rows)
 ```sql
@@ -59,26 +199,110 @@ CREATE TABLE "public"."videos" (
 ## COLUMN STATISTICS SUMMARY
 --------------------------------------------------------------------------------
 
-### Table: videos
+### Table: document_topic_assignments
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | text | 111955 | 0.0% |
-| `embedding` | vector(768) | 108162 | 0.0% |
-| `url` | text | 101937 | 0.0% |
-| `code` | text | 3225 | 0.0% |
-| `episode` | text | 4700 | 0.0% |
-| `video_id` | text | 98089 | 0.0% |
-| `title` | text | 82235 | 0.35% |
-| `thumbnail` | text | 108708 | 0.0% |
-| `preview` | text | 102519 | 0.0% |
-| `details` | text | 46794 | 42.15% |
-| `release_date` | timestamp with time zone | 31729 | 40.91% |
-| `created_at` | timestamp with time zone | 5878 | 0.0% |
-| `updated_at` | timestamp with time zone | 990 | 0.0% |
-| `genres` | text[] | 46450 | 32.4% |
+| `id` | uuid | 200 | 0.0% |
+| `run_id` | uuid | 2 | 0.0% |
+| `source_index` | integer | 100 | 0.0% |
+| `topic_id` | integer | 5 | 0.0% |
+| `topic_name` | text | 10 | 0.0% |
+| `scores` | double precision[] | 200 | 0.0% |
+| `content` | text | 200 | 0.0% |
+
+### Table: topic_representative_docs
+| Column | Type | Distinct Values | Null % |
+|--------|------|-----------------|--------|
+| `id` | uuid | 458 | 0.0% |
+| `topic_id` | uuid | 10 | 0.0% |
+| `content` | text | 200 | 0.0% |
+| `membership_score` | double precision | 458 | 0.0% |
+
+### Table: topic_runs
+| Column | Type | Distinct Values | Null % |
+|--------|------|-----------------|--------|
+| `id` | uuid | 2 | 0.0% |
+| `code` | text | 2 | 0.0% |
+| `n_topics` | integer | 1 | 0.0% |
+| `n_docs` | integer | 1 | 0.0% |
+| `top_k` | integer | 1 | 0.0% |
+| `no_llm` | boolean | 1 | 0.0% |
+| `created_at` | timestamp with time zone | 2 | 0.0% |
+| `model_params` | jsonb | 1 | 0.0% |
+
+### Table: topic_words
+| Column | Type | Distinct Values | Null % |
+|--------|------|-----------------|--------|
+| `id` | uuid | 100 | 0.0% |
+| `topic_id` | uuid | 10 | 0.0% |
+| `word` | text | 74 | 0.0% |
+| `score` | double precision | 100 | 0.0% |
+| `rank` | integer | 10 | 0.0% |
+
+### Table: topics
+| Column | Type | Distinct Values | Null % |
+|--------|------|-----------------|--------|
+| `id` | uuid | 10 | 0.0% |
+| `run_id` | uuid | 2 | 0.0% |
+| `topic_id` | integer | 5 | 0.0% |
+| `name` | text | 10 | 0.0% |
+| `representative_doc_count` | integer | 10 | 0.0% |
+| `embedding` | vector(768) | 10 | 0.0% |
+| `search_vector` | tsvector | 0 | 100.0% |
+
+## JSONB COLUMN METADATA
+--------------------------------------------------------------------------------
+
+### JSONB Columns in public.topic_runs
+
+**`model_params`**:
+- Type: Object
+- Keys & Types: encoder (text), vectorizer (text)
+- Sample Structure:
+```json
+{
+  "encoder": "LlamaCppEncoder",
+  "vectorizer": "NounPhraseCountVectorizer"
+}
+```
 
 ## SAMPLE DATA
 --------------------------------------------------------------------------------
+
+### Table: document_topic_assignments (first 3 rows)
+| id | run_id | source_index | topic_id | topic_name | scores | content |
+| --- | --- | --- | --- | --- | --- | --- |
+| bfbba7b7-3841-4bce-a962-8fa3176fbca6 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 0 | 0 | Immoral Apartment Wife | {0.23038132160629918,0,0.000806657809525436,0,0.06… | Mother-in-law's Confession ~Woman Drowning In Her… |
+| 85032b9c-e11f-490e-a551-930cac4d5201 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 1 | 2 | Marriage | {0.12488782216227098,0,0.2884111613014879,0,0} | Married Woman Confinement Breeding A Beautiful Mar… |
+| b0449fb6-5663-4f27-92b1-84036ba206c4 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 2 | 3 | Married Woman Affair Trip | {0,0,0,0.3697186896601199,0} | A Married Woman Gets Fucked Twice Chapter 2 Haruki… |
+
+### Table: topic_representative_docs (first 3 rows)
+| id | topic_id | content | membership_score |
+| --- | --- | --- | --- |
+| 8363020d-4550-48d0-b5d0-b4300f5b6c54 | 3b638ae0-6b87-431c-9927-096903a42257 | Compliant wife Reiko Makihara Reiko who lived a c… | 0.2659031295925389 |
+| 1a613440-0efa-47f2-ad43-02a0754384a2 | 3b638ae0-6b87-431c-9927-096903a42257 | Arisa Seto, a daughter-in-law who was surpassed by… | 0.2602462677305526 |
+| 7bc293f0-a543-4fb4-9005-4776e57a8d23 | 3b638ae0-6b87-431c-9927-096903a42257 | Immoral Apartment Wife Lower Body Circumstances In… | 0.24553699779149016 |
+
+### Table: topic_runs (first 3 rows)
+| id | code | n_topics | n_docs | top_k | no_llm | created_at | model_params |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | juc | 5 | 100 | 10 | false | 2026-11-27 10:40:23.989943+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+| 94b9a8fc-c098-445f-8dae-781f05162288 | jukd | 5 | 100 | 10 | false | 2026-11-27 11:12:42.70671+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+| 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | juc | 5 | 100 | 10 | false | 2026-11-27 10:40:23.989943+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+
+### Table: topic_words (first 3 rows)
+| id | topic_id | word | score | rank |
+| --- | --- | --- | --- | --- |
+| 2cece601-ffba-49f8-9b29-32aa9ab404a8 | 3b638ae0-6b87-431c-9927-096903a42257 | husband | 1.6937127652034432 | 0 |
+| b368c08d-06d6-41a6-b935-00681a122d72 | 3b638ae0-6b87-431c-9927-096903a42257 | woman | 0.2199715479494173 | 1 |
+| f8a0618d-4fb1-49a1-884d-cebac26d527c | 3b638ae0-6b87-431c-9927-096903a42257 | immoral apartment wife | 0.18612810690484652 | 2 |
+
+### Table: topics (first 3 rows)
+| id | run_id | topic_id | name | representative_doc_count | embedding | search_vector |
+| --- | --- | --- | --- | --- | --- | --- |
+| 3b638ae0-6b87-431c-9927-096903a42257 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 0 | Immoral Apartment Wife | 74 | [-0.043384098,0.026101436,0.008648739,0.009108002,… | NULL |
+| 3018aa24-5675-43ad-8e94-05c9c1fc9ccf | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 1 | Motherhood | 45 | [0.06524202,0.036805134,-0.0060111615,-0.006920983… | NULL |
+| 727f5ba9-242c-41cd-88eb-2de59f157d40 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | 2 | Marriage | 41 | [-0.023694057,-0.010088523,0.035240926,-0.02360812… | NULL |
 
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
