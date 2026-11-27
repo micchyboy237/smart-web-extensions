@@ -1,3 +1,4 @@
+# Jet_Apps/web-extensions/smart-web-extensions/missav-extension/server_paginated2/services/utils.py
 import base64
 import hashlib
 import json
@@ -8,13 +9,15 @@ from typing import List, Optional, Tuple, Union
 from fastapi import HTTPException
 from jet.adapters.llama_cpp.config import EMBED_MODEL, EMBED_QUERY_PREFIX
 from jet.adapters.llama_cpp.embed_utils import embed
-from models.schemas import (
-    GenreCodeInput,
+from models.schemas.video import (
     GroupedSearchRequest,
     HybridRequest,
     SearchRequest,
     SimilarRequest,
 )
+
+# Fixed imports: GenreCodeInput comes from types.common
+from models.types.common import GenreCodeInput
 
 _PREFIX_RE = re.compile(r"^\s*([A-Za-z0-9]+)-\d+\s*[:\-\u2013\u2014]?\s*")
 

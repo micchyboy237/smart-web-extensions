@@ -9,7 +9,6 @@ def parse_args():
     parser.add_argument("--host", type=str, default=HOST, help="Host to bind to")
     parser.add_argument("--port", type=int, default=PORT, help="Port to bind to")
     parser.add_argument("--log-level", type=str, default=LOG_LEVEL, help="Log level")
-    parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
     return parser.parse_args()
 
 
@@ -21,5 +20,5 @@ if __name__ == "__main__":
         host=args.host,
         port=args.port,
         log_level=args.log_level.lower(),
-        reload=args.reload,
+        reload=False,
     )

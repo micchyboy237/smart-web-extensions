@@ -2,8 +2,7 @@ from datetime import datetime
 from typing import Annotated, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from models.schemas import (
-    CompletionFilter,
+from models.schemas.video import (
     DiscoverRequest,
     GroupedSearchRequest,
     GroupedSearchResponse,
@@ -15,8 +14,8 @@ from models.schemas import (
     SimilarRequest,
     VideoItem,
     VideoListResponse,
-    VideoSearchMode,
 )
+from models.types.common import CompletionFilter, VideoSearchMode
 from services.utils import embed_query
 from services.video_service import (
     browse_videos,

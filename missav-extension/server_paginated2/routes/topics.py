@@ -1,13 +1,15 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Query
-from models.schemas import (
-    CodeDashboardSummaryTD,
+from models.schemas.topic import (
     DashboardResponse,
     SaveTopicsRequest,
-    TopicRunDetailTD,
     TopicRunListItem,
     TopicSearchResultItem,
+)
+from models.types.topics import (
+    CodeDashboardSummaryTD,
+    TopicRunDetailTD,
 )
 from services.cluster_service import (
     get_topic_run_detail,
