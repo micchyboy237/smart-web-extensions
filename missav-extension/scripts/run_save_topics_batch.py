@@ -1,3 +1,21 @@
+"""
+Save Topics Batch Processor
+
+Usage Examples:
+    # Process two codes with default batch size (2)
+    python save_topics.py -c juk jukd
+
+    # Process multiple codes with custom batch size
+    python save_topics.py -c code1 code2 code3 code4 code5 -b 3
+
+    # Process a large list of codes
+    python save_topics.py -c abc def ghi jkl mno pqr stu vwx -b 2
+
+    # View help message
+    python save_topics.py --help
+"""
+
+import argparse
 import json
 import urllib.error
 import urllib.request
@@ -15,140 +33,29 @@ from rich.progress import (
 from rich.table import Table
 
 URL = "http://localhost:9001/topics/save_topics"
-BATCH_SIZE = 2
-
-CODES = [
-    "juy",
-    "ssni",
-    "dasd",
-    "hnd",
-    "ssis",
-    "wanz",
-    "gvg",
-    "jufd",
-    "snis",
-    "nhdtb",
-    "sprd",
-    "meyd",
-    "adn",
-    "roe",
-    "aldn",
-    "gvh",
-    "jur",
-    "venu",
-    "scop",
-    "vec",
-    "sone",
-    "juq",
-    "vnds",
-    "nhdta",
-    "juc",
-    "nacr",
-    "dldss",
-    "jux",
-    "jul",
-    "jrzd",
-    "nsps",
-    "mdyd",
-    "ksbj",
-    "cemd",
-    "lulu",
-    "hbad",
-    "dht",
-    "mxgs",
-    "doks",
-    "nash",
-    "jukd",
-    "sma",
-    "san",
-    "iesp",
-    "mcsr",
-    "kbkd",
-    "dse",
-    "sdms",
-    "nkkd",
-    "okax",
-    "jusd",
-    "umso",
-    "nxg",
-    "jrze",
-    "nhdtc",
-    "mond",
-    "cead",
-    "venx",
-    "oba",
-    "ngod",
-    "natr",
-    "oksn",
-    "cadv",
-    "bokd",
-    "wnz",
-    "jura",
-    "mard",
-    "emaf",
-    "mama",
-    "emaz",
-    "juta",
-    "ofku",
-    "nass",
-    "hone",
-    "mot",
-    "erdm",
-    "anb",
-    "nwf",
-    "aed",
-    "mlw",
-    "momj",
-    "kmds",
-    "dmat",
-    "ylw",
-    "nask",
-    "newm",
-    "scd",
-    "havd",
-    "xmom",
-    "snos",
-    "fera",
-    "dgcemd",
-    "sqis",
-    "hhh",
-    "voss",
-    "bnsps",
-    "tos",
-    "zeaa",
-    "oomn",
-    "ntsu",
-    "embw",
-    "nuka",
-    "emav",
-    "tod",
-    "nem",
-    "mkdv",
-    "mom",
-    "emas",
-    "jgaho",
-    "embm",
-    "ugug",
-    "ymlw",
-    "nsfs",
-    "okas",
-    "dgkd",
-    "gifd",
-    "sbns",
-    "tpd",
-    "wnxg",
-    "emot",
-    "thnd",
-    "nxgs",
-    "okae",
-    "obd",
-    "arwa",
-    "yume",
-    "nade",
-    "johs",
-]
 
 console = Console()
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Save topics in batches to the API endpoint."
+    )
+    parser.add_argument(
+        "-c",
+        "--codes",
+        nargs="+",
+        required=True,
+        help="List of topic codes to process.",
+    )
+    parser.add_argument(
+        "-b",
+        "--batch-size",
+        type=int,
+        default=2,
+        help="Number of codes per batch (default: 2).",
+    )
+    return parser.parse_args()
 
 
 def send_batch(batch: list[str]) -> tuple[str, str, str]:
@@ -188,11 +95,15 @@ def build_progress() -> Progress:
 
 
 def main() -> None:
-    batches = [CODES[i : i + BATCH_SIZE] for i in range(0, len(CODES), BATCH_SIZE)]
+    args = parse_args()
+    codes = args.codes
+    batch_size = args.batch_size
+
+    batches = [codes[i : i + batch_size] for i in range(0, len(codes), batch_size)]
     total = len(batches)
 
     console.rule(
-        f"[bold cyan]Save Topics ({len(CODES)} codes across {total} batches)[/bold cyan]"
+        f"[bold cyan]Save Topics ({len(codes)} codes across {total} batches)[/bold cyan]"
     )
 
     summary = Table(show_header=True, header_style="bold magenta")
@@ -217,7 +128,7 @@ def main() -> None:
 
             progress.update(
                 task_id,
-                description=f"Batch {index}/{total} [{preview_str}] | [green]OK: {ok_count}[/green] [red]Err: {err_count}[/red]",
+                description=f"Processing Batch {index}/{total}: [{preview_str}] | [green]OK: {ok_count}[/green] [red]Err: {err_count}[/red]",
             )
 
             status, detail, body = send_batch(batch)
