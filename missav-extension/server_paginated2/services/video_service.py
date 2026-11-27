@@ -14,7 +14,7 @@ from jet.adapters.llama_cpp.diversity_utils.semhash import (
     shuffle_and_diversify,
 )
 from jet.adapters.llama_cpp.embed_utils import embed
-from models.schemas import (
+from models.schemas.video import (
     DiscoverRequest,
     GroupedSearchRequest,
     GroupedSearchResponse,

@@ -5,9 +5,10 @@ from models.schemas.topic import (
     DashboardResponse,
     SaveTopicsRequest,
     TopicRunListItem,
+    TopicSearchRequest,
     TopicSearchResultItem,
 )
-from models.types.topics import (
+from models.types.topic import (
     CodeDashboardSummaryTD,
     TopicRunDetailTD,
 )
@@ -42,11 +43,14 @@ def get_topic_run_detail_endpoint(run_id: str):
 
 
 @router.get("/search", response_model=List[TopicSearchResultItem])
-def search_topics_by_word_endpoint(
-    word: str = Query(..., min_length=1),
-    limit: int = Query(10, ge=1, le=50),
-):
-    return search_topics_by_word(word, limit)
+def search_topics_by_word_endpoint(req: TopicSearchRequest = Query()):
+    """
+    Search topics by word using Hybrid Search.
+    Use match_type to filter by 'semantic', 'keyword', or 'hybrid'.
+    """
+    return search_topics_by_word(
+        word=req.word, limit=req.limit, match_type=req.match_type
+    )
 
 
 @router.get("/dashboard", response_model=DashboardResponse)

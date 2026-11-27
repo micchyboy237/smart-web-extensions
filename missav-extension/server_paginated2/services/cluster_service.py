@@ -8,27 +8,40 @@ import numpy as np
 from config import (
     CLUSTER_CANDIDATE_CAP_BROWSE,
     CLUSTER_CANDIDATE_CAP_QUERY,
+    EMBED_DOC_PREFIX,
+    EMBED_MODEL,
+    EMBED_QUERY_PREFIX,
     ITERATIVE_SCAN_MODE,
     MAX_SCAN_TUPLES,
 )
 from db import pool
 from fastapi import HTTPException
 from jet.adapters.llama_cpp.cluster_utils.clusterer import TextsClusterer
+from jet.adapters.llama_cpp.embed_utils import embed
 from jet.adapters.turftopic.missav import ClusterTopicsResult, cluster_topics
-from models.schemas import (
-    ClusteredSearchRequest,
-    ClusteredSearchResponse,
-    ClusterItem,
-    VideoItem,
+from models.schemas.topic import (
+    CodeDashboardSummary,
+    DashboardResponse,
+    TopicSearchResultItem,
+)
+from models.types.topic import (
+    AssignmentDataTD,
+    DocumentAssignmentTD,
+    MatchType,
+    RunDB,
+    RunMetadataTD,
+    TopicDataTD,
+    TopicRunDetailTD,
+    TopicSummaryTD,
+    VideoRowTD,
 )
 
-from services.utils import embed_query, to_float_list
-from services.video_service import apply_filters, row_to_item
+from services.utils import to_float_list
 
 logger = logging.getLogger(__name__)
 
 
-def resolve_cluster_candidate_limit(req: ClusteredSearchRequest) -> int:
+def resolve_cluster_candidate_limit(req) -> int:
     cap = (
         CLUSTER_CANDIDATE_CAP_QUERY
         if req.query is not None
@@ -39,13 +52,22 @@ def resolve_cluster_candidate_limit(req: ClusteredSearchRequest) -> int:
     return max(10, min(req.cluster_candidate_limit, cap))
 
 
-def fetch_clustered_candidates(req: ClusteredSearchRequest, limit: int) -> List[dict]:
+def fetch_clustered_candidates(req, limit: int) -> List[VideoRowTD]:
     params: dict = {"limit": limit}
     conds: List[str] = ["embedding IS NOT NULL"]
+    from services.video_service import apply_filters
+
     apply_filters(req, params, conds)
 
     if req.query is not None:
-        emb = to_float_list(embed_query(req.query))
+        emb = to_float_list(
+            embed(
+                req.query,
+                model=EMBED_MODEL,
+                return_format="list",
+                prefix=EMBED_QUERY_PREFIX,
+            )
+        )
         params["emb"] = emb
         distance_sql = "(embedding <=> %(emb)s::vector)"
         if req.min_similarity is not None:
@@ -81,7 +103,12 @@ def fetch_clustered_candidates(req: ClusteredSearchRequest, limit: int) -> List[
         return conn.execute(sql, params).fetchall()
 
 
-def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
+def search_clustered(req):
+    # Returns ClusteredSearchResponse (Pydantic)
+    from models.schemas.cluster import ClusteredSearchResponse, ClusterItem
+
+    from services.video_service import row_to_item
+
     t0 = time.perf_counter()
     limit = resolve_cluster_candidate_limit(req)
     try:
@@ -114,7 +141,7 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
     analysis = clusterer.get_detailed_analysis()
     summary = clusterer.get_summary(analysis)
 
-    by_id: Dict[str, dict] = {r["id"]: r for r in rows}
+    by_id: Dict[str, VideoRowTD] = {r["id"]: r for r in rows}
     clusters: List[ClusterItem] = []
     for cluster_name, info in analysis.items():
         is_noise = cluster_name == "Noise/Outliers"
@@ -123,7 +150,7 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
         probs = info["probabilities"]
         dists = info["distances_to_centroid"]
         sils = info["silhouette_scores"]
-        items: List[VideoItem] = []
+        items = []
         for row_id, prob, dist, sil in zip(texts_in_cluster, probs, dists, sils):
             row = by_id.get(row_id)
             if row is None:
@@ -172,16 +199,29 @@ def search_clustered(req: ClusteredSearchRequest) -> ClusteredSearchResponse:
 
 def map_results_to_db_format(
     results: ClusterTopicsResult,
-) -> Tuple[List[dict], List[dict]]:
-    topics_data = []
-    assignments_data = []
+) -> Tuple[List[TopicDataTD], List[AssignmentDataTD]]:
+    topics_data: List[TopicDataTD] = []
+    assignments_data: List[AssignmentDataTD] = []
     rep_by_topic = {
         item["topic_id"]: item for item in results.get("representative_topics", [])
     }
     topic_names = [str(name) for name in results["model"].topic_names]
+
     for topic in results.get("topics", []):
         topic_id = topic["topic_id"]
         rep_info = rep_by_topic.get(topic_id, {})
+
+        topic_text = f"{topic_names[topic_id] if topic_id < len(topic_names) else ''} {' '.join([w['word'] for w in topic['words'][:5]])}"
+        try:
+            topic_emb = embed(
+                topic_text,
+                model=EMBED_MODEL,
+                return_format="list",
+                prefix=EMBED_DOC_PREFIX,
+            )
+        except Exception:
+            topic_emb = None
+
         words = [
             {"word": w["word"], "score": w["score"], "rank": i}
             for i, w in enumerate(topic["words"])
@@ -197,6 +237,7 @@ def map_results_to_db_format(
                 "representative_doc_count": topic["representative_document_count"],
                 "words": words,
                 "representative_docs": rep_docs,
+                "embedding": topic_emb,
             }
         )
     corpus = results.get("corpus", [])
@@ -216,7 +257,7 @@ def map_results_to_db_format(
 
 def save_topics(
     code: str, n_topics: int, n_docs: int, top_k: int, no_llm: bool
-) -> dict:
+) -> CodeDashboardSummary:
     t0 = time.perf_counter()
     run_id = str(uuid.uuid4())
     try:
@@ -250,13 +291,14 @@ def save_topics(
             for topic in topics_data:
                 topic_uuid = str(uuid.uuid4())
                 conn.execute(
-                    "INSERT INTO public.topics (id, run_id, topic_id, name, representative_doc_count) VALUES (%s, %s, %s, %s, %s)",
+                    "INSERT INTO public.topics (id, run_id, topic_id, name, representative_doc_count, embedding) VALUES (%s, %s, %s, %s, %s, %s)",
                     (
                         topic_uuid,
                         run_id,
                         topic["topic_id"],
                         topic["name"],
                         topic["representative_doc_count"],
+                        topic["embedding"],
                     ),
                 )
                 for word in topic["words"]:
@@ -311,17 +353,34 @@ def save_topics(
 
             if not summary_row:
                 raise Exception("Failed to retrieve summary after save")
-            item = dict(summary_row)
-            item["run_id"] = str(item["run_id"])
-            if isinstance(item["top_topic_words"], str):
-                item["top_topic_words"] = json.loads(item["top_topic_words"])
-            return item
+
+            # Parse JSONB words if returned as string
+            top_words_raw = summary_row["top_topic_words"]
+            if isinstance(top_words_raw, str):
+                top_words = json.loads(top_words_raw)
+            elif top_words_raw is None:
+                top_words = []
+            else:
+                top_words = top_words_raw
+
+            # Return strict Pydantic model
+            return CodeDashboardSummary(
+                code=summary_row["code"],
+                run_id=str(summary_row["run_id"]),
+                created_at=summary_row["created_at"],
+                n_topics=summary_row["n_topics"],
+                n_docs=summary_row["n_docs"],
+                top_topic_name=summary_row["top_topic_name"],
+                top_topic_rep_count=summary_row["top_topic_rep_count"],
+                top_topic_words=top_words,
+            )
+
     except Exception as e:
         logger.error("Failed to save topics: %s", e)
         raise HTTPException(500, f"Failed to save topics: {e}")
 
 
-def list_topic_runs(code: Optional[str], limit: int, offset: int) -> List[dict]:
+def list_topic_runs(code: Optional[str], limit: int, offset: int) -> List[RunDB]:
     params: dict = {"limit": limit, "offset": offset}
     conds: List[str] = []
     if code:
@@ -332,11 +391,18 @@ def list_topic_runs(code: Optional[str], limit: int, offset: int) -> List[dict]:
     try:
         with pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
-        result = []
+        result: List[RunDB] = []
         for r in rows:
-            item = dict(r)
-            if "id" in item and item["id"] is not None:
-                item["id"] = str(item["id"])
+            item: RunDB = {
+                "id": str(r["id"]),
+                "code": r["code"],
+                "n_topics": r["n_topics"],
+                "n_docs": r["n_docs"],
+                "created_at": r["created_at"],
+                "top_k": 0,
+                "no_llm": False,
+                "model_params": None,
+            }
             result.append(item)
         return result
     except Exception as e:
@@ -344,7 +410,7 @@ def list_topic_runs(code: Optional[str], limit: int, offset: int) -> List[dict]:
         raise HTTPException(500, f"Failed to list topic runs: {e}")
 
 
-def get_topic_run_detail(run_id: str) -> dict:
+def get_topic_run_detail(run_id: str) -> TopicRunDetailTD:
     try:
         with pool.connection() as conn:
             run_row = conn.execute(
@@ -353,15 +419,23 @@ def get_topic_run_detail(run_id: str) -> dict:
             ).fetchone()
             if not run_row:
                 raise HTTPException(404, "Topic run not found")
-            run_data = dict(run_row)
-            if "id" in run_data:
-                run_data["id"] = str(run_data["id"])
+
+            run_data: RunMetadataTD = {
+                "id": str(run_row["id"]),
+                "code": run_row["code"],
+                "n_topics": run_row["n_topics"],
+                "n_docs": run_row["n_docs"],
+                "top_k": run_row["top_k"],
+                "no_llm": run_row["no_llm"],
+                "created_at": run_row["created_at"],
+            }
 
             topics_rows = conn.execute(
                 "SELECT id, topic_id, name, representative_doc_count FROM public.topics WHERE run_id = %s ORDER BY topic_id ASC",
                 (run_id,),
             ).fetchall()
-            topics_list = []
+
+            topics_list: List[TopicSummaryTD] = []
             for t in topics_rows:
                 topic_uuid = str(t["id"])
                 words_rows = conn.execute(
@@ -372,6 +446,7 @@ def get_topic_run_detail(run_id: str) -> dict:
                     "SELECT content, membership_score FROM public.topic_representative_docs WHERE topic_id = %s ORDER BY membership_score DESC",
                     (topic_uuid,),
                 ).fetchall()
+
                 topics_list.append(
                     {
                         "id": topic_uuid,
@@ -380,6 +455,7 @@ def get_topic_run_detail(run_id: str) -> dict:
                         "representative_doc_count": t["representative_doc_count"],
                         "words": [dict(w) for w in words_rows],
                         "representative_docs": [dict(d) for d in docs_rows],
+                        "embedding": None,
                     }
                 )
 
@@ -387,6 +463,11 @@ def get_topic_run_detail(run_id: str) -> dict:
                 "SELECT source_index, topic_id, topic_name, scores, content FROM public.document_topic_assignments WHERE run_id = %s ORDER BY source_index ASC",
                 (run_id,),
             ).fetchall()
+
+            assignments: List[DocumentAssignmentTD] = [
+                dict(a) for a in assignments_rows
+            ]
+
     except HTTPException:
         raise
     except Exception as e:
@@ -396,35 +477,150 @@ def get_topic_run_detail(run_id: str) -> dict:
     return {
         "run": run_data,
         "topics": topics_list,
-        "assignments": [dict(a) for a in assignments_rows],
+        "assignments": assignments,
     }
 
 
-def search_topics_by_word(word: str, limit: int) -> List[dict]:
-    sql = """
-        SELECT DISTINCT tr.id as run_id, tr.code, t.topic_id, t.name as topic_name, tw.word, tw.score
-        FROM public.topic_words tw
-        JOIN public.topics t ON tw.topic_id = t.id
-        JOIN public.topic_runs tr ON t.run_id = tr.id
-        WHERE LOWER(tw.word) = LOWER(%(word)s)
-        ORDER BY tw.score DESC LIMIT %(limit)s
+def search_topics_by_word(
+    word: str, limit: int, match_type: MatchType = "all"
+) -> List[TopicSearchResultItem]:
     """
+    Hybrid search combining Vector Semantic Search and Full-Text Search (FTS).
+    Uses Reciprocal Rank Fusion (RRF) to merge results.
+
+    Args:
+        word: The search term.
+        limit: Max number of results.
+        match_type: 'all', 'semantic', 'keyword', or 'hybrid'.
+    """
+    t0 = time.perf_counter()
+    k = 60  # RRF constant
+
+    # 1. Generate Query Embedding
     try:
-        with pool.connection() as conn:
-            rows = conn.execute(sql, {"word": word, "limit": limit}).fetchall()
-        result = []
-        for r in rows:
-            item = dict(r)
-            if "run_id" in item and item["run_id"] is not None:
-                item["run_id"] = str(item["run_id"])
-            result.append(item)
-        return result
+        query_emb = embed(
+            word, model=EMBED_MODEL, return_format="list", prefix=EMBED_QUERY_PREFIX
+        )
     except Exception as e:
-        logger.error("DB error searching topics: %s", e)
-        raise HTTPException(500, f"Failed to search topics: {e}")
+        logger.error("Embedding generation failed: %s", e)
+        raise HTTPException(500, "Failed to generate query embedding")
+
+    with pool.connection() as conn:
+        # 2. Vector Search (Semantic)
+        vec_rows = conn.execute(
+            """
+            SELECT id as topic_id, run_id, 
+                   1.0 / (%(k)s + ROW_NUMBER() OVER (ORDER BY embedding <=> %(emb)s::vector)) as rrf_score
+            FROM public.topics
+            WHERE embedding IS NOT NULL
+            ORDER BY embedding <=> %(emb)s::vector
+            LIMIT %(limit)s
+        """,
+            {"emb": query_emb, "k": k, "limit": limit * 2},
+        ).fetchall()
+
+        # 3. FTS Search (Keyword/Name match)
+        fts_rows = conn.execute(
+            """
+            SELECT t.id as topic_id, t.run_id,
+                   1.0 / (%(k)s + ROW_NUMBER() OVER (ORDER BY ts_rank_cd(t.search_vector, plainto_tsquery('english', %(q)s)) DESC)) as rrf_score
+            FROM public.topics t
+            WHERE t.search_vector @@ plainto_tsquery('english', %(q)s)
+            ORDER BY ts_rank_cd(t.search_vector, plainto_tsquery('english', %(q)s)) DESC
+            LIMIT %(limit)s
+        """,
+            {"q": word, "k": k, "limit": limit * 2},
+        ).fetchall()
+
+        # 4. Fuse Results (RRF) and Track Sources
+        scores: Dict[str, float] = {}
+        sources: Dict[str, set] = {}
+
+        for r in vec_rows:
+            tid = str(r["topic_id"])
+            scores[tid] = scores.get(tid, 0) + r["rrf_score"]
+            sources.setdefault(tid, set()).add("vec")
+
+        for r in fts_rows:
+            tid = str(r["topic_id"])
+            scores[tid] = scores.get(tid, 0) + r["rrf_score"]
+            sources.setdefault(tid, set()).add("fts")
+
+        # 5. Determine Match Type for Each Candidate
+        candidates = []
+        for tid, score in scores.items():
+            source_set = sources.get(tid, set())
+            has_vec = "vec" in source_set
+            has_fts = "fts" in source_set
+
+            if has_vec and has_fts:
+                m_type = "hybrid"
+            elif has_vec:
+                m_type = "semantic"
+            else:
+                m_type = "keyword"
+
+            # Apply Filter
+            if match_type != "all" and m_type != match_type:
+                continue
+
+            candidates.append((tid, score, m_type))
+
+        # Sort by score descending
+        candidates.sort(key=lambda x: -x[1])
+        ordered_candidates = candidates[:limit]
+
+        if not ordered_candidates:
+            return []
+
+        # 6. Fetch full details for the winning topics
+        ids_to_fetch = [int(x[0]) for x in ordered_candidates]
+
+        final_rows = conn.execute(
+            """
+            SELECT 
+                t.id, 
+                t.name, 
+                t.representative_doc_count, 
+                t.run_id, 
+                tr.code, 
+                tr.created_at,
+                ARRAY_AGG(CASE WHEN tw.word ILIKE %(word_like)s THEN tw.word END) AS matched_kws
+            FROM public.topics t
+            JOIN public.topic_runs tr ON t.run_id = tr.id
+            LEFT JOIN public.topic_words tw ON t.id = tw.topic_id
+            WHERE t.id = ANY(%(ids)s)
+            GROUP BY t.id, t.run_id, tr.code, tr.created_at
+        """,
+            {"ids": ids_to_fetch, "word_like": f"%{word}%"},
+        ).fetchall()
+
+        row_map = {r["id"]: r for r in final_rows}
+        result = []
+
+        for tid, score, m_type in ordered_candidates:
+            r = row_map.get(int(tid))
+            if r:
+                matched_kws = [kw for kw in (r["matched_kws"] or []) if kw is not None]
+
+                item = TopicSearchResultItem(
+                    run_id=str(r["run_id"]),
+                    code=r["code"],
+                    topic_id=r["id"],
+                    topic_name=r["name"],
+                    representative_doc_count=r["representative_doc_count"],
+                    created_at=r["created_at"],
+                    relevance_score=score,
+                    matched_keywords=matched_kws,
+                    match_type=m_type,
+                )
+                result.append(item)
+
+    logger.info("Hybrid topic search took %.1fms", (time.perf_counter() - t0) * 1000)
+    return result
 
 
-def get_topics_dashboard() -> dict:
+def get_topics_dashboard() -> DashboardResponse:
     sql = """
         WITH latest_runs AS (SELECT DISTINCT ON (code) id, code, n_topics, n_docs, created_at FROM public.topic_runs ORDER BY code, created_at DESC),
         top_topics AS (SELECT t.id as topic_uuid, t.run_id, t.name, t.representative_doc_count FROM public.topics t JOIN latest_runs lr ON t.run_id = lr.id WHERE t.topic_id = 0),
@@ -441,16 +637,32 @@ def get_topics_dashboard() -> dict:
     try:
         with pool.connection() as conn:
             rows = conn.execute(sql).fetchall()
-        result = []
+
+        summaries: List[CodeDashboardSummary] = []
         for r in rows:
-            item = dict(r)
-            item["run_id"] = str(item["run_id"])
-            if isinstance(item["top_topic_words"], str):
-                item["top_topic_words"] = json.loads(item["top_topic_words"])
-            elif item["top_topic_words"] is None:
-                item["top_topic_words"] = []
-            result.append(item)
-        return {"codes": result}
+            top_words_raw = r["top_topic_words"]
+            if isinstance(top_words_raw, str):
+                top_words = json.loads(top_words_raw)
+            elif top_words_raw is None:
+                top_words = []
+            else:
+                top_words = top_words_raw
+
+            summaries.append(
+                CodeDashboardSummary(
+                    code=r["code"],
+                    run_id=str(r["run_id"]),
+                    created_at=r["created_at"],
+                    n_topics=r["n_topics"],
+                    n_docs=r["n_docs"],
+                    top_topic_name=r["top_topic_name"],
+                    top_topic_rep_count=r["top_topic_rep_count"],
+                    top_topic_words=top_words,
+                )
+            )
+
+        return DashboardResponse(codes=summaries)
+
     except Exception as e:
         logger.error("DB error fetching dashboard: %s", e)
         raise HTTPException(500, f"Failed to load dashboard: {e}")

@@ -1,14 +1,32 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from models.types.topics import (
-    CodeDashboardSummaryTD,  # Note: We might need a Pydantic version if strict validation is needed, but for read-only APIs TypedDict often suffices if returned directly. However, FastAPI prefers Pydantic. Let's create Pydantic wrappers.
-)
+from models.types.topic import MatchType, WordScoreTD
+
+# --- Request Models ---
 
 
-# Re-defining specific Pydantic models for Topic API responses to ensure proper serialization
+class TopicSearchRequest(BaseModel):
+    word: str = Field(..., min_length=1)
+    limit: int = Field(10, ge=1, le=50)
+    match_type: MatchType = Field(
+        "all", description="Filter by match strategy: all, semantic, keyword, or hybrid"
+    )
+
+
+class SaveTopicsRequest(BaseModel):
+    code: str = Field("juc")
+    n_topics: int = Field(5, ge=1)
+    n_docs: int = Field(100, ge=1)
+    top_k: int = Field(10, ge=1)
+    no_llm: bool = Field(False)
+
+
+# --- Response Models ---
+
+
 class TopicRunListItem(BaseModel):
     id: str
     code: str
@@ -22,17 +40,28 @@ class TopicSearchResultItem(BaseModel):
     code: str
     topic_id: int
     topic_name: Optional[str]
-    word: str
-    score: float
+    doc_count: int = Field(alias="representative_doc_count")
+    created_at: datetime
+    relevance_score: float
+    matched_keywords: List[str] = Field(default_factory=list)
+    match_type: Literal["semantic", "keyword", "hybrid"]
+
+    class Config:
+        populate_by_name = True
+
+
+class CodeDashboardSummary(BaseModel):
+    """Pydantic version of CodeDashboardSummaryTD for API responses"""
+
+    code: str
+    run_id: str
+    created_at: datetime
+    n_topics: int
+    n_docs: int
+    top_topic_name: Optional[str]
+    top_topic_words: List[WordScoreTD]
+    top_topic_rep_count: Optional[int]
 
 
 class DashboardResponse(BaseModel):
-    codes: List[CodeDashboardSummaryTD]
-
-
-class SaveTopicsRequest(BaseModel):
-    code: str = Field("juc")
-    n_topics: int = Field(5, ge=1)
-    n_docs: int = Field(100, ge=1)
-    top_k: int = Field(10, ge=1)
-    no_llm: bool = Field(False)
+    codes: List[CodeDashboardSummary]
