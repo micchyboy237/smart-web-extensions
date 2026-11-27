@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-27T11:14:32.128824
+Generated: 2026-11-27T11:19:17.412175
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -12,7 +12,7 @@ Tables: document_topic_assignments, topic_representative_docs, topic_runs, topic
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.document_topic_assignments (200 rows)
+### Table: public.document_topic_assignments (400 rows)
 ```sql
 CREATE TABLE "public"."document_topic_assignments" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -43,7 +43,7 @@ CREATE TABLE "public"."document_topic_assignments" (
 - `idx_doc_topic_assignments_run_id`: CREATE INDEX idx_doc_topic_assignments_run_id ON public.document_topic_assignments USING btree (run_id)
 - `idx_doc_topic_assignments_topic_id`: CREATE INDEX idx_doc_topic_assignments_topic_id ON public.document_topic_assignments USING btree (run_id, topic_id)
 
-### Table: public.topic_representative_docs (458 rows)
+### Table: public.topic_representative_docs (935 rows)
 ```sql
 CREATE TABLE "public"."topic_representative_docs" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -67,7 +67,7 @@ CREATE TABLE "public"."topic_representative_docs" (
 - `idx_topic_rep_docs_topic_id`: CREATE INDEX idx_topic_rep_docs_topic_id ON public.topic_representative_docs USING btree (topic_id)
 - `topic_representative_docs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_representative_docs_pkey ON public.topic_representative_docs USING btree (id)
 
-### Table: public.topic_runs (2 rows)
+### Table: public.topic_runs (4 rows)
 ```sql
 CREATE TABLE "public"."topic_runs" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -95,7 +95,7 @@ CREATE TABLE "public"."topic_runs" (
 **Indexes:**
 - `topic_runs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_runs_pkey ON public.topic_runs USING btree (id)
 
-### Table: public.topic_words (100 rows)
+### Table: public.topic_words (200 rows)
 ```sql
 CREATE TABLE "public"."topic_words" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -121,7 +121,7 @@ CREATE TABLE "public"."topic_words" (
 - `idx_topic_words_topic_id`: CREATE INDEX idx_topic_words_topic_id ON public.topic_words USING btree (topic_id)
 - `topic_words_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_words_pkey ON public.topic_words USING btree (id)
 
-### Table: public.topics (10 rows)
+### Table: public.topics (20 rows)
 ```sql
 CREATE TABLE "public"."topics" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -202,52 +202,52 @@ CREATE TABLE "public"."videos" (
 ### Table: document_topic_assignments
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 200 | 0.0% |
-| `run_id` | uuid | 2 | 0.0% |
+| `id` | uuid | 400 | 0.0% |
+| `run_id` | uuid | 4 | 0.0% |
 | `source_index` | integer | 100 | 0.0% |
 | `topic_id` | integer | 5 | 0.0% |
-| `topic_name` | text | 10 | 0.0% |
-| `scores` | double precision[] | 200 | 0.0% |
-| `content` | text | 200 | 0.0% |
+| `topic_name` | text | 20 | 0.0% |
+| `scores` | double precision[] | 400 | 0.0% |
+| `content` | text | 400 | 0.0% |
 
 ### Table: topic_representative_docs
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 458 | 0.0% |
-| `topic_id` | uuid | 10 | 0.0% |
-| `content` | text | 200 | 0.0% |
-| `membership_score` | double precision | 458 | 0.0% |
+| `id` | uuid | 935 | 0.0% |
+| `topic_id` | uuid | 20 | 0.0% |
+| `content` | text | 400 | 0.0% |
+| `membership_score` | double precision | 935 | 0.0% |
 
 ### Table: topic_runs
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 2 | 0.0% |
-| `code` | text | 2 | 0.0% |
+| `id` | uuid | 4 | 0.0% |
+| `code` | text | 4 | 0.0% |
 | `n_topics` | integer | 1 | 0.0% |
 | `n_docs` | integer | 1 | 0.0% |
 | `top_k` | integer | 1 | 0.0% |
 | `no_llm` | boolean | 1 | 0.0% |
-| `created_at` | timestamp with time zone | 2 | 0.0% |
+| `created_at` | timestamp with time zone | 4 | 0.0% |
 | `model_params` | jsonb | 1 | 0.0% |
 
 ### Table: topic_words
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 100 | 0.0% |
-| `topic_id` | uuid | 10 | 0.0% |
-| `word` | text | 74 | 0.0% |
-| `score` | double precision | 100 | 0.0% |
+| `id` | uuid | 200 | 0.0% |
+| `topic_id` | uuid | 20 | 0.0% |
+| `word` | text | 146 | 0.0% |
+| `score` | double precision | 200 | 0.0% |
 | `rank` | integer | 10 | 0.0% |
 
 ### Table: topics
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 10 | 0.0% |
-| `run_id` | uuid | 2 | 0.0% |
+| `id` | uuid | 20 | 0.0% |
+| `run_id` | uuid | 4 | 0.0% |
 | `topic_id` | integer | 5 | 0.0% |
-| `name` | text | 10 | 0.0% |
-| `representative_doc_count` | integer | 10 | 0.0% |
-| `embedding` | vector(768) | 10 | 0.0% |
+| `name` | text | 20 | 0.0% |
+| `representative_doc_count` | integer | 16 | 0.0% |
+| `embedding` | vector(768) | 20 | 0.0% |
 | `search_vector` | tsvector | 0 | 100.0% |
 
 ## JSONB COLUMN METADATA
@@ -288,7 +288,7 @@ CREATE TABLE "public"."videos" (
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | juc | 5 | 100 | 10 | false | 2026-11-27 10:40:23.989943+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
 | 94b9a8fc-c098-445f-8dae-781f05162288 | jukd | 5 | 100 | 10 | false | 2026-11-27 11:12:42.70671+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
-| 656f9d7a-d6e9-4beb-b835-eb30e76dbe46 | juc | 5 | 100 | 10 | false | 2026-11-27 10:40:23.989943+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+| 0253f77b-bc66-458e-950d-c0540d6cfc20 | juq | 5 | 100 | 10 | false | 2026-11-27 11:18:34.121276+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
 
 ### Table: topic_words (first 3 rows)
 | id | topic_id | word | score | rank |
