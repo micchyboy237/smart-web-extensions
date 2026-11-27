@@ -67,11 +67,14 @@
             MissAV<span class="text-accent-400">.</span>Explorer
           </span>
         </a>
+
+        <!-- Dynamic Search Bar -->
         <form
           @submit.prevent="doSearch()"
           class="flex flex-1 items-center gap-2"
         >
-          <div class="relative flex-1 max-w-2xl">
+          <!-- Standard Search Input -->
+          <div x-show="mode !== 'topics'" class="relative flex-1 max-w-2xl">
             <i
               data-lucide="search"
               class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500"
@@ -81,7 +84,7 @@
               x-model="query"
               @input.debounce.400ms="onQueryInput()"
               type="search"
-              placeholder="Describe what you want — try “lonely wife, rainy night”…"
+              placeholder="Describe what you want..."
               class="w-full rounded-xl border border-white/10 bg-ink-800/70 py-2.5 pl-10 pr-24 text-sm text-slate-100 placeholder:text-slate-500 transition focus:border-accent-500/60 focus:bg-ink-800 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
             />
             <kbd
@@ -89,20 +92,31 @@
               >/</kbd
             >
           </div>
+
+          <!-- Topic Search Input -->
+          <div x-show="mode === 'topics'" class="relative flex-1 max-w-2xl">
+            <i
+              data-lucide="layers"
+              class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-violet-500"
+            ></i>
+            <input
+              x-ref="topicSearchInput"
+              x-model="topics.searchQuery"
+              type="search"
+              placeholder="Search topics by keyword (e.g. 'wife', 'office')..."
+              class="w-full rounded-xl border border-white/10 bg-ink-800/70 py-2.5 pl-10 pr-4 text-sm text-slate-100 placeholder:text-slate-500 transition focus:border-violet-500/60 focus:bg-ink-800 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+            />
+          </div>
+
           <button
             type="submit"
+            x-show="mode !== 'topics'"
             class="hidden items-center gap-1.5 rounded-xl bg-accent-500 px-4 py-2.5 text-sm font-semibold text-ink-950 shadow-glow transition hover:bg-accent-400 active:scale-[.98] sm:flex"
           >
             <i data-lucide="sparkles" class="h-4 w-4"></i> Search
           </button>
-          <button
-            type="button"
-            @click="doBrowse()"
-            class="hidden items-center gap-1.5 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:bg-white/5 md:flex"
-          >
-            <i data-lucide="layout-grid" class="h-4 w-4"></i> Browse
-          </button>
         </form>
+
         <!-- Back Button for Similar Mode -->
         <button
           x-show="mode === 'similar'"
@@ -113,6 +127,27 @@
           <i data-lucide="arrow-left" class="h-4 w-4"></i>
           <span class="hidden sm:inline">Back</span>
         </button>
+
+        <!-- Topic Mode Toggle -->
+        <button
+          @click="toggleTopicMode()"
+          :class="mode === 'topics' ? 'bg-violet-500 text-ink-950 shadow-glow' : 'border border-white/10 text-slate-300 hover:border-white/20 hover:bg-white/5'"
+          class="hidden items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition md:flex"
+        >
+          <i data-lucide="layers" class="h-4 w-4"></i>
+          <span>Topics</span>
+        </button>
+
+        <!-- Add Code Button -->
+        <button
+          @click="codesModalOpen = true"
+          class="hidden items-center gap-1.5 rounded-xl border border-white/10 px-3 py-2.5 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:bg-white/5 md:flex"
+          title="Add Series Code"
+        >
+          <i data-lucide="plus" class="h-4 w-4"></i>
+          <span class="hidden lg:inline">Code</span>
+        </button>
+
         <div class="hidden items-center gap-2 md:flex">
           <span
             class="flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/60 px-2.5 py-1 text-[11px] font-medium text-slate-400"
@@ -133,6 +168,7 @@
         </button>
       </div>
     </header>
+
     <!-- ═══════════════════ MAIN LAYOUT ═══════════════════ -->
     <div
       class="relative z-10 mx-auto flex max-w-[1600px] gap-6 px-4 py-6 md:px-6"
@@ -158,6 +194,7 @@
               <i data-lucide="x" class="h-5 w-5"></i>
             </button>
           </div>
+
           <!-- Series Code Autocomplete -->
           <label class="mb-4 block relative">
             <span class="mb-1.5 block text-xs font-medium text-slate-500"
@@ -176,7 +213,6 @@
                 placeholder="Type to search..."
                 class="w-full rounded-lg border border-white/10 bg-ink-800 py-2 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-accent-500/60 focus:outline-none"
               />
-              <!-- Autocomplete Dropdown -->
               <div
                 x-show="showCodeDropdown && codeSuggestions.length > 0"
                 class="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-lg border border-white/10 bg-ink-800 shadow-xl"
@@ -202,7 +238,6 @@
                 </template>
               </div>
             </div>
-            <!-- Chips Container -->
             <div class="flex flex-wrap gap-2 mt-2 mb-2">
               <template x-if="filters.code">
                 <template
@@ -223,7 +258,6 @@
                 </template>
               </template>
             </div>
-            <!-- Show All Codes Button -->
             <button
               @click="codesModalOpen = true"
               class="w-full text-xs text-accent-400 hover:text-accent-300 font-medium flex items-center justify-center gap-1 py-1 mb-4"
@@ -231,12 +265,14 @@
               <i data-lucide="list" class="h-3 w-3"></i> Show All Codes
             </button>
           </label>
+
+          <!-- Data Status -->
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+              ><i data-lucide="check-square" class="h-3.5 w-3.5"></i> Data
+              status</span
             >
-              <i data-lucide="check-square" class="h-3.5 w-3.5"></i> Data status
-            </span>
             <div
               class="flex rounded-lg border border-white/10 bg-ink-800 p-1 text-xs"
             >
@@ -263,46 +299,49 @@
               </button>
             </div>
           </div>
+
+          <!-- Date Range -->
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+              ><i data-lucide="calendar-range" class="h-3.5 w-3.5"></i> Released
+              between</span
             >
-              <i data-lucide="calendar-range" class="h-3.5 w-3.5"></i> Released
-              between
-            </span>
             <div class="grid grid-cols-2 gap-2">
               <input
                 type="date"
                 x-model="filters.from"
-                @change="refetch()"
+                @change="mode !== 'topics' && refetch()"
                 class="rounded-lg border border-white/10 bg-ink-800 px-2.5 py-2 text-xs text-slate-100 focus:border-accent-500/60 focus:outline-none [color-scheme:dark]"
               />
               <input
                 type="date"
                 x-model="filters.to"
-                @change="refetch()"
+                @change="mode !== 'topics' && refetch()"
                 class="rounded-lg border border-white/10 bg-ink-800 px-2.5 py-2 text-xs text-slate-100 focus:border-accent-500/60 focus:outline-none [color-scheme:dark]"
               />
             </div>
           </div>
+
+          <!-- Genre Match -->
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+              ><i data-lucide="git-merge" class="h-3.5 w-3.5"></i> Genre
+              match</span
             >
-              <i data-lucide="git-merge" class="h-3.5 w-3.5"></i> Genre match
-            </span>
             <div
               class="flex rounded-lg border border-white/10 bg-ink-800 p-1 text-xs"
             >
               <button
-                @click="filters.genresMode = 'any'; refetch()"
+                @click="filters.genresMode = 'any'; mode !== 'topics' && refetch()"
                 :class="filters.genresMode === 'any' ? 'bg-accent-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
                 class="flex-1 rounded-md py-1.5 font-semibold transition"
               >
                 Any of
               </button>
               <button
-                @click="filters.genresMode = 'all'; refetch()"
+                @click="filters.genresMode = 'all'; mode !== 'topics' && refetch()"
                 :class="filters.genresMode === 'all' ? 'bg-accent-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
                 class="flex-1 rounded-md py-1.5 font-semibold transition"
               >
@@ -310,29 +349,27 @@
               </button>
             </div>
           </div>
-          <!-- Genres Section with Modal -->
+
+          <!-- Genres -->
           <div class="mb-4">
             <span
               class="mb-2 flex items-center justify-between text-xs font-medium text-slate-500"
             >
-              <span class="flex items-center gap-1.5">
-                <i data-lucide="drama" class="h-3.5 w-3.5"></i> Genres
-              </span>
+              <span class="flex items-center gap-1.5"
+                ><i data-lucide="drama" class="h-3.5 w-3.5"></i> Genres</span
+              >
               <span
                 class="text-[10px] text-slate-600"
                 x-text="`${filters.genres.length} selected`"
               ></span>
             </span>
-            <!-- Visible Chips (Limited Height) - MOVED ABOVE BUTTON -->
             <div
               class="max-h-32 overflow-y-auto flex flex-wrap gap-1.5 mb-2 pr-1 custom-scrollbar"
             >
               <template x-for="g in facets.genres" :key="g.name">
                 <button
                   @click="toggleGenre(g.name)"
-                  :class="filters.genres.includes(g.name)
-                    ? 'border-accent-500 bg-accent-500/15 text-accent-300'
-                    : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                  :class="filters.genres.includes(g.name) ? 'border-accent-500 bg-accent-500/15 text-accent-300' : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
                   class="rounded-full border px-2.5 py-1 text-[11px] font-medium transition whitespace-nowrap"
                   :title="`${formatCount(g.count)} videos`"
                 >
@@ -351,19 +388,19 @@
               <i data-lucide="list" class="h-3 w-3"></i> Show All Genres
             </button>
           </div>
+
+          <!-- Quick Year -->
           <div class="mb-4">
             <span
               class="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+              ><i data-lucide="calendar" class="h-3.5 w-3.5"></i> Quick
+              year</span
             >
-              <i data-lucide="calendar" class="h-3.5 w-3.5"></i> Quick year
-            </span>
             <div class="flex flex-wrap gap-1">
               <template x-for="y in recentYears()" :key="y.year">
                 <button
                   @click="pickYear(y.year)"
-                  :class="filters.from === y.year+'-01-01' && filters.to === y.year+'-12-31'
-                    ? 'border-violet-500 bg-violet-500/20 text-violet-300'
-                    : 'border-white/10 bg-ink-800 text-slate-400 hover:text-slate-200'"
+                  :class="filters.from === y.year+'-01-01' && filters.to === y.year+'-12-31' ? 'border-violet-500 bg-violet-500/20 text-violet-300' : 'border-white/10 bg-ink-800 text-slate-400 hover:text-slate-200'"
                   class="rounded-md border px-2 py-1 text-[11px] font-medium transition"
                   :title="`${formatCount(y.count)} videos`"
                   x-text="y.year"
@@ -371,6 +408,7 @@
               </template>
             </div>
           </div>
+
           <button
             @click="clearFilters()"
             class="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-white/10 py-2 text-xs font-semibold text-slate-400 transition hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-300"
@@ -380,311 +418,491 @@
           </button>
         </div>
       </aside>
+
       <!-- ─── Results ─── -->
       <section class="min-w-0 flex-1">
-        <!-- result header -->
-        <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 class="text-2xl font-extrabold tracking-tight text-slate-100">
-              <template x-if="mode === 'search'">
-                <span
-                  >Results for
-                  <span class="text-accent-400" x-text="`“${lastQuery}”`"></span
-                ></span>
-              </template>
-              <template x-if="mode === 'similar'">
-                <span class="flex items-center gap-2"
-                  ><i data-lucide="orbit" class="h-6 w-6 text-violet-400"></i>
-                  Similar videos</span
-                >
-              </template>
-              <template x-if="mode === 'browse'">
-                <span class="flex items-center gap-2"
-                  ><i
-                    data-lucide="layout-grid"
-                    class="h-6 w-6 text-accent-400"
-                  ></i>
-                  Browse</span
-                >
-              </template>
-            </h1>
-            <p class="mt-1 text-sm text-slate-500">
-              <span>
-                <span x-text="items.length"></span> loaded
-                <span x-show="exhausted && items.length" class="text-slate-600">
-                  · end of results</span
-                >
-                <span
-                  x-show="lastTook != null"
-                  class="text-slate-600"
-                  x-text="` · ${lastTook?.toFixed(0)} ms`"
-                ></span>
-              </span>
-            </p>
-          </div>
-          <!-- active filter pills -->
-          <div class="flex flex-wrap items-center gap-1.5">
-            <!-- Diversity selector -->
-            <div
-              x-show="mode === 'browse' || mode === 'search' || mode === 'similar'"
-              class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/80 px-2.5 py-1 text-[11px] font-medium text-slate-400"
-              title="Diversify results (MMR)"
-            >
-              <i data-lucide="shuffle" class="h-3 w-3"></i>
-              <select
-                :value="diversity"
-                @change="setDiversity($event.target.value)"
-                class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
+        <!-- ═══════════════════ TOPIC MODE ═══════════════════ -->
+        <div x-show="mode === 'topics'" x-cloak>
+          <div class="mb-5 flex items-center justify-between gap-3">
+            <!-- Fixed Alignment for Breadcrumb -->
+            <div class="flex items-center gap-2 text-sm">
+              <button
+                @click="closeTopicDetail()"
+                class="flex items-center gap-1 text-slate-400 hover:text-white transition"
               >
-                <option value="off">Diversity: off</option>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
+                <i data-lucide="arrow-left" class="h-4 w-4"></i>
+                <span>Back to Dashboard</span>
+              </button>
+              <template x-if="topics.currentRun">
+                <div class="flex items-center gap-2">
+                  <span class="text-slate-600">/</span>
+                  <span
+                    class="font-bold text-slate-200"
+                    x-text="topics.currentRun.run.code"
+                  ></span>
+                </div>
+              </template>
             </div>
-            <!-- genre pills -->
-            <template x-for="g in filters.genres" :key="g">
-              <span
-                class="inline-flex items-center gap-1 rounded-full bg-accent-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-accent-300"
-              >
-                <span x-text="g"></span>
-                <button
-                  @click="toggleGenre(g)"
-                  class="rounded-full p-0.5 hover:bg-white/10"
-                >
-                  <i data-lucide="x" class="h-3 w-3"></i>
-                </button>
-              </span>
-            </template>
-            <!-- date pill -->
-            <template x-if="filters.from || filters.to">
-              <span
-                class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
-              >
-                <span
-                  x-text="`${filters.from || '…'} → ${filters.to || '…'}`"
-                ></span>
-                <button
-                  @click="filters.from=''; filters.to=''; refetch()"
-                  class="rounded-full p-0.5 hover:bg-white/10"
-                >
-                  <i data-lucide="x" class="h-3 w-3"></i>
-                </button>
-              </span>
-            </template>
-            <!-- completion filter pill -->
-            <template x-if="filters.completionFilter !== 'all'">
-              <span
-                class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
-              >
-                <i
-                  :data-lucide="filters.completionFilter === 'complete' ? 'check-circle-2' : 'alert-circle'"
-                  class="h-3 w-3"
-                ></i>
-                <span x-text="filters.completionFilter"></span>
-                <button
-                  @click="setCompletionFilter('all')"
-                  class="rounded-full p-0.5 hover:bg-white/10"
-                >
-                  <i data-lucide="x" class="h-3 w-3"></i>
-                </button>
-              </span>
-            </template>
           </div>
-        </div>
-        <!-- ═══════════════════ PAGINATED RESULTS ═══════════════════ -->
-        <div>
-          <div
-            x-show="items.length === 0 && loading"
-            class="grid gap-4"
-            style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))"
-          >
-            <template x-for="i in 10" :key="i">
-              <div
-                class="overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
-              >
-                <div class="aspect-[300/170] skeleton"></div>
-                <div class="space-y-2 p-3">
-                  <div class="h-3 w-4/5 skeleton rounded"></div>
-                  <div class="h-2.5 w-2/5 skeleton rounded"></div>
-                  <div class="flex gap-1 pt-1">
-                    <div class="h-4 w-12 skeleton rounded"></div>
-                    <div class="h-4 w-14 skeleton rounded"></div>
+
+          <!-- Topic Dashboard Grid -->
+          <div x-show="!topics.currentRun">
+            <div
+              x-show="topics.loading"
+              class="grid gap-4"
+              style="
+                grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+              "
+            >
+              <template x-for="i in 6" :key="i"
+                ><div class="h-48 skeleton rounded-2xl"></div
+              ></template>
+            </div>
+
+            <div
+              x-show="!topics.loading && topics.error"
+              class="text-center py-12 text-rose-400"
+            >
+              <p x-text="topics.error"></p>
+            </div>
+
+            <div
+              x-show="!topics.loading && !topics.error"
+              class="grid gap-4"
+              style="
+                grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+              "
+            >
+              <template x-for="topic in topics.dashboard" :key="topic.run_id">
+                <div
+                  @click="openTopicDetail(topic.run_id)"
+                  class="group cursor-pointer overflow-hidden rounded-2xl border border-white/10 bg-ink-900 transition hover:border-violet-500/50 hover:shadow-glow"
+                >
+                  <div class="p-4">
+                    <div class="flex items-start justify-between">
+                      <div>
+                        <h3
+                          class="font-bold text-slate-100"
+                          x-text="topic.code.toUpperCase()"
+                        ></h3>
+                        <p
+                          class="text-xs text-slate-500"
+                          x-text="topic.created_at.slice(0, 10)"
+                        ></p>
+                      </div>
+                      <span
+                        class="rounded-full bg-violet-500/20 px-2 py-0.5 text-[10px] font-bold text-violet-300"
+                      >
+                        <span x-text="topic.n_topics"></span> Topics
+                      </span>
+                    </div>
+                    <div class="mt-3">
+                      <p
+                        class="text-sm font-medium text-accent-300"
+                        x-text="topic.top_topic_name || 'Unnamed Topic'"
+                      ></p>
+                      <div class="mt-2 flex flex-wrap gap-1">
+                        <template
+                          x-for="w in topic.top_topic_words.slice(0, 3)"
+                          :key="w.word"
+                        >
+                          <span
+                            class="rounded bg-ink-800 px-1.5 py-0.5 text-[10px] text-slate-400"
+                            x-text="w.word"
+                          ></span>
+                        </template>
+                      </div>
+                    </div>
                   </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- Topic Detail View -->
+          <div x-show="topics.currentRun" x-cloak class="space-y-6">
+            <template x-for="topic in topics.currentRun.topics" :key="topic.id">
+              <div class="rounded-2xl border border-white/10 bg-ink-900 p-5">
+                <div class="mb-4 flex items-center justify-between">
+                  <h2
+                    class="text-lg font-bold text-violet-300"
+                    x-text="topic.name"
+                  ></h2>
+                  <span class="text-xs text-slate-500"
+                    ><span x-text="topic.representative_doc_count"></span>
+                    videos</span
+                  >
+                </div>
+
+                <!-- Representative Videos -->
+                <div
+                  class="mb-4 grid gap-4"
+                  style="
+                    grid-template-columns: repeat(
+                      auto-fill,
+                      minmax(200px, 1fr)
+                    );
+                  "
+                >
+                  <template
+                    x-for="doc in topic.representative_docs.slice(0, 4)"
+                    :key="doc.video_id"
+                  >
+                    <div
+                      class="group relative overflow-hidden rounded-xl border border-white/5 bg-ink-800"
+                    >
+                      <div class="aspect-video relative">
+                        <img
+                          :src="doc.thumbnail"
+                          class="h-full w-full object-cover opacity-80 transition group-hover:opacity-100"
+                        />
+                        <div
+                          class="absolute inset-0 flex items-center justify-center opacity-0 transition group-hover:opacity-100"
+                        >
+                          <button
+                            @click="openDetail(doc.video_id)"
+                            class="rounded-full bg-accent-500 p-2 text-ink-950"
+                          >
+                            <i data-lucide="play" class="h-4 w-4"></i>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="p-2">
+                        <p
+                          class="line-clamp-1 text-xs text-slate-300"
+                          x-text="doc.title"
+                        ></p>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
+                <!-- Keywords -->
+                <div class="flex flex-wrap gap-1">
+                  <template x-for="w in topic.words" :key="w.word">
+                    <span
+                      class="rounded-full border border-white/10 bg-ink-800 px-2 py-0.5 text-[10px] text-slate-400"
+                    >
+                      <span x-text="w.word"></span>
+                      <span
+                        class="ml-1 text-slate-600"
+                        x-text="(w.score * 100).toFixed(0)"
+                      ></span>
+                    </span>
+                  </template>
                 </div>
               </div>
             </template>
           </div>
-          <div
-            x-show="items.length > 0"
-            class="grid gap-4"
-            style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))"
-          >
-            <template x-for="(v, idx) in items" :key="v.id + '-' + idx">
-              <article
-                class="card-enter group relative overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
-                :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
+        </div>
+
+        <!-- ═══════════════════ STANDARD RESULTS ═══════════════════ -->
+        <div x-show="mode !== 'topics'">
+          <!-- result header -->
+          <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h1 class="text-2xl font-extrabold tracking-tight text-slate-100">
+                <template x-if="mode === 'search'">
+                  <span
+                    >Results for
+                    <span
+                      class="text-accent-400"
+                      x-text="`“${lastQuery}”`"
+                    ></span
+                  ></span>
+                </template>
+                <template x-if="mode === 'similar'">
+                  <span class="flex items-center gap-2"
+                    ><i data-lucide="orbit" class="h-6 w-6 text-violet-400"></i>
+                    Similar videos</span
+                  >
+                </template>
+              </h1>
+              <p class="mt-1 text-sm text-slate-500">
+                <span>
+                  <span x-text="items.length"></span> loaded
+                  <span
+                    x-show="exhausted && items.length"
+                    class="text-slate-600"
+                  >
+                    · end of results</span
+                  >
+                  <span
+                    x-show="lastTook != null"
+                    class="text-slate-600"
+                    x-text="` · ${lastTook?.toFixed(0)} ms`"
+                  ></span>
+                </span>
+              </p>
+            </div>
+            <!-- active filter pills -->
+            <div class="flex flex-wrap items-center gap-1.5">
+              <div
+                x-show="mode === 'search' || mode === 'similar'"
+                class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/80 px-2.5 py-1 text-[11px] font-medium text-slate-400"
+                title="Diversify results (MMR)"
               >
-                <div
-                  class="relative aspect-[300/170] overflow-hidden bg-ink-800"
-                  @mouseenter="setPreview(v.id ? `home-0-${v.id}` : null)"
-                  @mouseleave="setPreview()"
-                  @click="v.id ? clickPreview(`home-0-${v.id}`) : null"
+                <i data-lucide="shuffle" class="h-3 w-3"></i>
+                <select
+                  :value="diversity"
+                  @change="setDiversity($event.target.value)"
+                  class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
                 >
-                  <!-- Video Preview -->
-                  <video
-                    :src="v.preview"
-                    :id="`preview-home-0-${v.id}`"
-                    :class="{ hidden: !isPreviewActive(`home-0-${v.id}`) }"
-                    class="preview absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
-                    loop
-                    muted
-                    playsinline
-                    preload="none"
-                    @error="previewError(`home-0-${v.id}`)"
-                    @loadeddata="isPreviewActive(`home-0-${v.id}`) && playPreview(`home-0-${v.id}`)"
-                  ></video>
-                  <!-- Fallback Image -->
-                  <img
-                    :src="v.thumbnail"
-                    :alt="v.title"
-                    :class="{ hidden: isPreviewActive(`home-0-${v.id}`) }"
-                    loading="lazy"
-                    decoding="async"
-                    class="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
-                    @error="$el.style.opacity = .2"
-                  />
-                  <div
-                    class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
-                  ></div>
-                  <div
-                    x-show="v.similarity != null"
-                    class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-accent-300 backdrop-blur"
+                  <option value="off">Diversity: off</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+              <template x-for="g in filters.genres" :key="g">
+                <span
+                  class="inline-flex items-center gap-1 rounded-full bg-accent-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-accent-300"
+                >
+                  <span x-text="g"></span>
+                  <button
+                    @click="toggleGenre(g)"
+                    class="rounded-full p-0.5 hover:bg-white/10"
                   >
-                    <i data-lucide="target" class="h-3 w-3"></i>
-                    <span x-text="(v.similarity * 100).toFixed(0) + '%'"></span>
-                  </div>
-                  <div
-                    x-show="v.release_date"
-                    class="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-slate-300 backdrop-blur"
-                    x-text="v.release_date?.slice(0,4)"
-                  ></div>
-                  <!-- Hover Actions -->
-                  <div
-                    class="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100"
+                    <i data-lucide="x" class="h-3 w-3"></i>
+                  </button>
+                </span>
+              </template>
+              <template x-if="filters.from || filters.to">
+                <span
+                  class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
+                >
+                  <span
+                    x-text="`${filters.from || '…'} → ${filters.to || '…'}`"
+                  ></span>
+                  <button
+                    @click="filters.from=''; filters.to=''; refetch()"
+                    class="rounded-full p-0.5 hover:bg-white/10"
                   >
-                    <div
-                      class="pointer-events-auto absolute inset-x-0 bottom-0 flex items-center justify-end gap-1.5 bg-gradient-to-t from-ink-950/90 via-ink-950/40 to-transparent p-2"
-                    >
-                      <button
-                        @click.stop="openDetail(v.id)"
-                        class="flex items-center gap-1 rounded-full bg-accent-500/90 px-2.5 py-1 text-[11px] font-bold text-ink-950 shadow transition hover:bg-accent-400"
-                      >
-                        <i data-lucide="play" class="h-3 w-3"></i> Preview
-                      </button>
-                      <button
-                        @click.stop="findSimilar(v.id)"
-                        class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
-                        title="Find Similar"
-                      >
-                        <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
-                      </button>
-                      <a
-                        :href="v.url"
-                        target="_blank"
-                        rel="noopener"
-                        @click.stop
-                        class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
-                        title="Open Source"
-                      >
-                        <i data-lucide="external-link" class="h-3.5 w-3.5"></i>
-                      </a>
+                    <i data-lucide="x" class="h-3 w-3"></i>
+                  </button>
+                </span>
+              </template>
+              <template x-if="filters.completionFilter !== 'all'">
+                <span
+                  class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
+                >
+                  <i
+                    :data-lucide="filters.completionFilter === 'complete' ? 'check-circle-2' : 'alert-circle'"
+                    class="h-3 w-3"
+                  ></i>
+                  <span x-text="filters.completionFilter"></span>
+                  <button
+                    @click="setCompletionFilter('all')"
+                    class="rounded-full p-0.5 hover:bg-white/10"
+                  >
+                    <i data-lucide="x" class="h-3 w-3"></i>
+                  </button>
+                </span>
+              </template>
+            </div>
+          </div>
+
+          <!-- Paginated Results -->
+          <div>
+            <div
+              x-show="items.length === 0 && loading"
+              class="grid gap-4"
+              style="
+                grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+              "
+            >
+              <template x-for="i in 10" :key="i">
+                <div
+                  class="overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
+                >
+                  <div class="aspect-[300/170] skeleton"></div>
+                  <div class="space-y-2 p-3">
+                    <div class="h-3 w-4/5 skeleton rounded"></div>
+                    <div class="h-2.5 w-2/5 skeleton rounded"></div>
+                    <div class="flex gap-1 pt-1">
+                      <div class="h-4 w-12 skeleton rounded"></div>
+                      <div class="h-4 w-14 skeleton rounded"></div>
                     </div>
                   </div>
                 </div>
-                <div class="p-3">
-                  <h3
-                    @click="openDetail(v.id)"
-                    class="line-clamp-2 min-h-[2.4em] cursor-pointer text-[13px] font-semibold leading-snug text-slate-100 transition group-hover:text-accent-300"
-                    x-text="v.title || '(untitled)'"
-                  ></h3>
+              </template>
+            </div>
+            <div
+              x-show="items.length > 0"
+              class="grid gap-4"
+              style="
+                grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+              "
+            >
+              <template x-for="(v, idx) in items" :key="v.id + '-' + idx">
+                <article
+                  class="card-enter group relative overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
+                  :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
+                >
                   <div
-                    class="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500"
+                    class="relative aspect-[300/170] overflow-hidden bg-ink-800"
+                    @mouseenter="setPreview(v.id ? `home-0-${v.id}` : null)"
+                    @mouseleave="setPreview()"
+                    @click="v.id ? clickPreview(`home-0-${v.id}`) : null"
                   >
-                    <span
-                      class="rounded bg-ink-700 px-1.5 py-0.5 font-mono text-[10px] text-accent-300"
-                      x-text="v.code"
-                    ></span>
-                    <span x-text="v.episode"></span>
+                    <video
+                      :src="v.preview"
+                      :id="`preview-home-0-${v.id}`"
+                      :class="{ hidden: !isPreviewActive(`home-0-${v.id}`) }"
+                      class="preview absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
+                      loop
+                      muted
+                      playsinline
+                      preload="none"
+                      @error="previewError(`home-0-${v.id}`)"
+                      @loadeddata="isPreviewActive(`home-0-${v.id}`) && playPreview(`home-0-${v.id}`)"
+                    ></video>
+                    <img
+                      :src="v.thumbnail"
+                      :alt="v.title"
+                      :class="{ hidden: isPreviewActive(`home-0-${v.id}`) }"
+                      loading="lazy"
+                      decoding="async"
+                      class="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
+                      @error="$el.style.opacity = .2"
+                    />
+                    <div
+                      class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
+                    ></div>
+                    <div
+                      x-show="v.similarity != null"
+                      class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-accent-300 backdrop-blur"
+                    >
+                      <i data-lucide="target" class="h-3 w-3"></i>
+                      <span
+                        x-text="(v.similarity * 100).toFixed(0) + '%'"
+                      ></span>
+                    </div>
+                    <div
+                      x-show="v.release_date"
+                      class="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-slate-300 backdrop-blur"
+                      x-text="v.release_date?.slice(0,4)"
+                    ></div>
+                    <div
+                      class="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100"
+                    >
+                      <div
+                        class="pointer-events-auto absolute inset-x-0 bottom-0 flex items-center justify-end gap-1.5 bg-gradient-to-t from-ink-950/90 via-ink-950/40 to-transparent p-2"
+                      >
+                        <button
+                          @click.stop="openDetail(v.id)"
+                          class="flex items-center gap-1 rounded-full bg-accent-500/90 px-2.5 py-1 text-[11px] font-bold text-ink-950 shadow transition hover:bg-accent-400"
+                        >
+                          <i data-lucide="play" class="h-3 w-3"></i> Preview
+                        </button>
+                        <button
+                          @click.stop="findSimilar(v.id)"
+                          class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                          title="Find Similar"
+                        >
+                          <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
+                        </button>
+                        <a
+                          :href="v.url"
+                          target="_blank"
+                          rel="noopener"
+                          @click.stop
+                          class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                          title="Open Source"
+                        >
+                          <i
+                            data-lucide="external-link"
+                            class="h-3.5 w-3.5"
+                          ></i>
+                        </a>
+                      </div>
+                    </div>
                   </div>
-                  <div class="mt-2 flex flex-wrap gap-1">
-                    <template
-                      x-for="g in (v.genres ?? []).slice(0, 2)"
-                      :key="g"
+                  <div class="p-3">
+                    <h3
+                      @click="openDetail(v.id)"
+                      class="line-clamp-2 min-h-[2.4em] cursor-pointer text-[13px] font-semibold leading-snug text-slate-100 transition group-hover:text-accent-300"
+                      x-text="v.title || '(untitled)'"
+                    ></h3>
+                    <div
+                      class="mt-1 flex items-center gap-1.5 text-[11px] text-slate-500"
                     >
                       <span
-                        class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
-                        x-text="g"
+                        class="rounded bg-ink-700 px-1.5 py-0.5 font-mono text-[10px] text-accent-300"
+                        x-text="v.code"
                       ></span>
-                    </template>
-                    <span
-                      x-show="(v.genres?.length ?? 0) > 2"
-                      class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
-                      x-text="`+${(v.genres?.length ?? 0) - 2}`"
-                    ></span>
+                      <span x-text="v.episode"></span>
+                    </div>
+                    <div class="mt-2 flex flex-wrap gap-1">
+                      <template
+                        x-for="g in (v.genres ?? []).slice(0, 2)"
+                        :key="g"
+                      >
+                        <span
+                          class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
+                          x-text="g"
+                        ></span>
+                      </template>
+                      <span
+                        x-show="(v.genres?.length ?? 0) > 2"
+                        class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
+                        x-text="`+${(v.genres?.length ?? 0) - 2}`"
+                      ></span>
+                    </div>
                   </div>
-                </div>
-              </article>
-            </template>
-          </div>
-          <div
-            x-show="!loading && items.length === 0"
-            class="flex flex-col items-center justify-center py-24 text-center"
-          >
-            <div
-              class="grid h-16 w-16 place-items-center rounded-2xl bg-ink-800 text-slate-500"
-            >
-              <i data-lucide="ghost" class="h-8 w-8"></i>
+                </article>
+              </template>
             </div>
-            <h3 class="mt-4 text-lg font-semibold text-slate-300">
-              No results
-            </h3>
-            <p class="mt-1 max-w-sm text-sm text-slate-500">
-              Try removing some filters, or rephrase your query.
-            </p>
-            <button
-              @click="clearFilters()"
-              class="mt-4 rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/5"
+            <div
+              x-show="!loading && items.length === 0"
+              class="flex flex-col items-center justify-center py-24 text-center"
             >
-              Clear filters
-            </button>
-          </div>
-          <div
-            x-show="items.length > 0"
-            class="mt-8 flex flex-col items-center gap-4"
-          >
-            <button
-              x-show="!exhausted"
-              @click="loadMore()"
-              :disabled="loading"
-              class="flex items-center gap-2 rounded-xl border border-white/10 bg-ink-800 px-5 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-accent-500/40 hover:bg-ink-700 disabled:opacity-50"
+              <div
+                class="grid h-16 w-16 place-items-center rounded-2xl bg-ink-800 text-slate-500"
+              >
+                <i data-lucide="ghost" class="h-8 w-8"></i>
+              </div>
+              <h3 class="mt-4 text-lg font-semibold text-slate-300">
+                No results
+              </h3>
+              <p class="mt-1 max-w-sm text-sm text-slate-500">
+                Try removing some filters, or rephrase your query.
+              </p>
+              <button
+                @click="clearFilters()"
+                class="mt-4 rounded-lg border border-white/10 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/5"
+              >
+                Clear filters
+              </button>
+            </div>
+            <div
+              x-show="items.length > 0"
+              class="mt-8 flex flex-col items-center gap-4"
             >
-              <template x-if="loading"
-                ><i data-lucide="loader-2" class="h-4 w-4 animate-spin"></i
-              ></template>
-              <template x-if="!loading"
-                ><i data-lucide="chevron-down" class="h-4 w-4"></i
-              ></template>
-              <span x-text="loading ? 'Loading…' : 'Load more'"></span>
-            </button>
-            <p x-show="exhausted" class="text-xs text-slate-600">
-              — you've reached the end —
-            </p>
+              <button
+                x-show="!exhausted"
+                @click="loadMore()"
+                :disabled="loading"
+                class="flex items-center gap-2 rounded-xl border border-white/10 bg-ink-800 px-5 py-2.5 text-sm font-semibold text-slate-200 transition hover:border-accent-500/40 hover:bg-ink-700 disabled:opacity-50"
+              >
+                <template x-if="loading"
+                  ><i data-lucide="loader-2" class="h-4 w-4 animate-spin"></i
+                ></template>
+                <template x-if="!loading"
+                  ><i data-lucide="chevron-down" class="h-4 w-4"></i
+                ></template>
+                <span x-text="loading ? 'Loading…' : 'Load more'"></span>
+              </button>
+              <p x-show="exhausted" class="text-xs text-slate-600">
+                — you've reached the end —
+              </p>
+            </div>
           </div>
+          <div x-ref="sentinel" class="h-1"></div>
         </div>
-        <div x-ref="sentinel" class="h-1"></div>
       </section>
     </div>
+
     <!-- ═══════════════════ GENRES MODAL ═══════════════════ -->
     <div
       x-show="genresModalOpen"
@@ -709,7 +927,6 @@
           </button>
         </div>
         <div class="p-4">
-          <!-- Sort Controls -->
           <div class="mb-4 flex items-center gap-2">
             <span class="text-xs text-slate-500">Sort by:</span>
             <button
@@ -737,16 +954,12 @@
               ></i>
             </button>
           </div>
-          <!-- Grid -->
           <div class="max-h-[60vh] overflow-y-auto custom-scrollbar">
             <div class="flex flex-wrap gap-2">
-              <!-- Changed facets.genres to allGenres -->
               <template x-for="g in sortedAllGenres" :key="g.name">
                 <button
                   @click="toggleGenre(g.name)"
-                  :class="filters.genres.includes(g.name)
-                    ? 'border-accent-500 bg-accent-500/15 text-accent-300'
-                    : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                  :class="filters.genres.includes(g.name) ? 'border-accent-500 bg-accent-500/15 text-accent-300' : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
                   class="rounded-full border px-3 py-1.5 text-sm font-medium transition flex items-center gap-2"
                 >
                   <span x-text="g.name"></span>
@@ -761,6 +974,7 @@
         </div>
       </div>
     </div>
+
     <!-- ═══════════════════ CODES MODAL ═══════════════════ -->
     <div
       x-show="codesModalOpen"
@@ -785,7 +999,6 @@
           </button>
         </div>
         <div class="p-4">
-          <!-- Sort Controls -->
           <div class="mb-4 flex items-center gap-2">
             <span class="text-xs text-slate-500">Sort by:</span>
             <button
@@ -813,15 +1026,12 @@
               ></i>
             </button>
           </div>
-          <!-- Grid -->
           <div class="max-h-[60vh] overflow-y-auto custom-scrollbar">
             <div class="flex flex-wrap gap-2">
               <template x-for="c in sortedAllCodes" :key="c.code">
                 <button
                   @click="addCodeChip(c)"
-                  :class="_currentCodes().includes(c.code)
-                    ? 'border-violet-500 bg-violet-500/15 text-violet-300'
-                    : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                  :class="_currentCodes().includes(c.code) ? 'border-violet-500 bg-violet-500/15 text-violet-300' : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
                   class="rounded-full border px-3 py-1.5 text-sm font-medium transition flex items-center gap-2"
                 >
                   <span class="font-mono" x-text="c.code"></span>
@@ -836,6 +1046,7 @@
         </div>
       </div>
     </div>
+
     <!-- ═══════════════════ DETAIL MODAL ═══════════════════ -->
     <div
       x-show="detail.open"
@@ -854,9 +1065,9 @@
         >
           <i data-lucide="x" class="h-5 w-5"></i>
         </button>
-        <template x-if="detail.loading">
-          <div class="aspect-video skeleton"></div>
-        </template>
+        <template x-if="detail.loading"
+          ><div class="aspect-video skeleton"></div
+        ></template>
         <template x-if="detail.video">
           <div>
             <div class="aspect-video bg-black">
@@ -897,7 +1108,7 @@
               <div class="mt-3 flex flex-wrap gap-1.5">
                 <template x-for="g in (detail.video.genres || [])" :key="g">
                   <span
-                    @click="closeDetail(); filters.genres=[g]; refetch()"
+                    @click="closeDetail(); filters.genres=[g]; mode !== 'topics' && refetch()"
                     class="cursor-pointer rounded-full border border-white/10 bg-ink-800 px-2.5 py-0.5 text-[11px] text-slate-400 transition hover:border-accent-500/40 hover:text-accent-300"
                     x-text="g"
                   ></span>
@@ -930,6 +1141,7 @@
         </template>
       </div>
     </div>
+
     <!-- ═══════════════════ TOASTS ═══════════════════ -->
     <div
       class="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2"
@@ -938,10 +1150,10 @@
         <div
           class="pointer-events-auto flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm shadow-lg backdrop-blur-md"
           :class="{
-            'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
-            'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
-            'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
-          }"
+          'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
+          'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
+          'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
+        }"
           x-transition
         >
           <i

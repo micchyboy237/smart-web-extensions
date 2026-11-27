@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-27T13:03:41.397400
+Generated: 2026-11-27T14:36:46.210116
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -12,7 +12,7 @@ Tables: document_topic_assignments, topic_representative_docs, topic_runs, topic
 ## TABLE SCHEMAS
 --------------------------------------------------------------------------------
 
-### Table: public.document_topic_assignments (100 rows)
+### Table: public.document_topic_assignments (300 rows)
 ```sql
 CREATE TABLE "public"."document_topic_assignments" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -47,7 +47,7 @@ CREATE TABLE "public"."document_topic_assignments" (
 - `idx_doc_topic_assignments_topic_id`: CREATE INDEX idx_doc_topic_assignments_topic_id ON public.document_topic_assignments USING btree (run_id, topic_id)
 - `idx_doc_topic_assignments_video_id`: CREATE INDEX idx_doc_topic_assignments_video_id ON public.document_topic_assignments USING btree (video_id)
 
-### Table: public.topic_representative_docs (228 rows)
+### Table: public.topic_representative_docs (686 rows)
 ```sql
 CREATE TABLE "public"."topic_representative_docs" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -75,7 +75,7 @@ CREATE TABLE "public"."topic_representative_docs" (
 - `idx_topic_rep_docs_video_id`: CREATE INDEX idx_topic_rep_docs_video_id ON public.topic_representative_docs USING btree (video_id)
 - `topic_representative_docs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_representative_docs_pkey ON public.topic_representative_docs USING btree (id)
 
-### Table: public.topic_runs (1 rows)
+### Table: public.topic_runs (3 rows)
 ```sql
 CREATE TABLE "public"."topic_runs" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -103,7 +103,7 @@ CREATE TABLE "public"."topic_runs" (
 **Indexes:**
 - `topic_runs_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_runs_pkey ON public.topic_runs USING btree (id)
 
-### Table: public.topic_words (50 rows)
+### Table: public.topic_words (150 rows)
 ```sql
 CREATE TABLE "public"."topic_words" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -129,7 +129,7 @@ CREATE TABLE "public"."topic_words" (
 - `idx_topic_words_topic_id`: CREATE INDEX idx_topic_words_topic_id ON public.topic_words USING btree (topic_id)
 - `topic_words_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topic_words_pkey ON public.topic_words USING btree (id)
 
-### Table: public.topics (5 rows)
+### Table: public.topics (15 rows)
 ```sql
 CREATE TABLE "public"."topics" (
     "id" uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -161,7 +161,7 @@ CREATE TABLE "public"."topics" (
 - `topics_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topics_pkey ON public.topics USING btree (id)
 - `topics_run_id_topic_id_key` [UNIQUE]: CREATE UNIQUE INDEX topics_run_id_topic_id_key ON public.topics USING btree (run_id, topic_id)
 
-### Table: public.videos (98089 rows)
+### Table: public.videos (100105 rows)
 ```sql
 CREATE TABLE "public"."videos" (
     "id" text NOT NULL,
@@ -211,54 +211,54 @@ CREATE TABLE "public"."videos" (
 ### Table: document_topic_assignments
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 100 | 0.0% |
-| `run_id` | uuid | 1 | 0.0% |
+| `id` | uuid | 300 | 0.0% |
+| `run_id` | uuid | 3 | 0.0% |
 | `source_index` | integer | 100 | 0.0% |
 | `topic_id` | integer | 5 | 0.0% |
-| `topic_name` | text | 5 | 0.0% |
-| `scores` | double precision[] | 100 | 0.0% |
-| `content` | text | 100 | 0.0% |
-| `video_id` | text | 100 | 0.0% |
+| `topic_name` | text | 15 | 0.0% |
+| `scores` | double precision[] | 300 | 0.0% |
+| `content` | text | 300 | 0.0% |
+| `video_id` | text | 300 | 0.0% |
 
 ### Table: topic_representative_docs
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 228 | 0.0% |
-| `topic_id` | uuid | 5 | 0.0% |
-| `content` | text | 100 | 0.0% |
-| `membership_score` | double precision | 228 | 0.0% |
-| `video_id` | text | 100 | 0.0% |
+| `id` | uuid | 686 | 0.0% |
+| `topic_id` | uuid | 15 | 0.0% |
+| `content` | text | 300 | 0.0% |
+| `membership_score` | double precision | 686 | 0.0% |
+| `video_id` | text | 300 | 0.0% |
 
 ### Table: topic_runs
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 1 | 0.0% |
-| `code` | text | 1 | 0.0% |
+| `id` | uuid | 3 | 0.0% |
+| `code` | text | 3 | 0.0% |
 | `n_topics` | integer | 1 | 0.0% |
 | `n_docs` | integer | 1 | 0.0% |
 | `top_k` | integer | 1 | 0.0% |
 | `no_llm` | boolean | 1 | 0.0% |
-| `created_at` | timestamp with time zone | 1 | 0.0% |
+| `created_at` | timestamp with time zone | 3 | 0.0% |
 | `model_params` | jsonb | 1 | 0.0% |
 
 ### Table: topic_words
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 50 | 0.0% |
-| `topic_id` | uuid | 5 | 0.0% |
-| `word` | text | 47 | 0.0% |
-| `score` | double precision | 50 | 0.0% |
+| `id` | uuid | 150 | 0.0% |
+| `topic_id` | uuid | 15 | 0.0% |
+| `word` | text | 113 | 0.0% |
+| `score` | double precision | 150 | 0.0% |
 | `rank` | integer | 10 | 0.0% |
 
 ### Table: topics
 | Column | Type | Distinct Values | Null % |
 |--------|------|-----------------|--------|
-| `id` | uuid | 5 | 0.0% |
-| `run_id` | uuid | 1 | 0.0% |
+| `id` | uuid | 15 | 0.0% |
+| `run_id` | uuid | 3 | 0.0% |
 | `topic_id` | integer | 5 | 0.0% |
-| `name` | text | 5 | 0.0% |
-| `representative_doc_count` | integer | 5 | 0.0% |
-| `embedding` | vector(768) | 5 | 0.0% |
+| `name` | text | 15 | 0.0% |
+| `representative_doc_count` | integer | 12 | 0.0% |
+| `embedding` | vector(768) | 15 | 0.0% |
 | `search_vector` | tsvector | 0 | 100.0% |
 
 ## JSONB COLUMN METADATA
@@ -294,11 +294,12 @@ CREATE TABLE "public"."videos" (
 | df61050c-7bc8-4d3e-9541-60f6ac85abcf | cb14597f-98cd-460b-a6f2-c23444073c6b | Beautiful Breasts Married Woman Obscene Pet Yuki S… | 0.33862642015164823 | jukd-631 |
 | c26b5781-414f-4dc8-adfd-8b54ac67817e | cb14597f-98cd-460b-a6f2-c23444073c6b | Busty Married Woman's Dirty Pet Shizuka Wakasa - W… | 0.3154797013365172 | jukd-673 |
 
-### Table: topic_runs (first 2 rows)
+### Table: topic_runs (first 3 rows)
 | id | code | n_topics | n_docs | top_k | no_llm | created_at | model_params |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | jukd | 5 | 100 | 10 | false | 2026-11-27 13:02:40.031302+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
-| 715f26eb-8b1b-4f08-bb5c-5322cce9c7d3 | jukd | 5 | 100 | 10 | false | 2026-11-27 13:02:40.031302+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+| c296bc6d-2b7b-49c1-8f90-cc8f4db8d46a | juc | 5 | 100 | 10 | false | 2026-11-27 13:04:14.778496+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
+| 464c1e74-a65f-4543-9a94-30fc3b5b084f | jur | 5 | 100 | 10 | false | 2026-11-27 14:27:21.900483+08 | {"encoder": "LlamaCppEncoder", "vectorizer": "Noun… |
 
 ### Table: topic_words (first 3 rows)
 | id | topic_id | word | score | rank |
@@ -317,7 +318,7 @@ CREATE TABLE "public"."videos" (
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-y8qeoj | [-0.009271053,0.0062114066,0.0070300144,0.04212784… | https://missav.ws/dm69/en/jux-455 | jux | 455 | jux-455 | Father's Woman Kurea Hasumi - Hasumi Claire | https://fourhoi.com/jux-455/cover-n.jpg | https://fourhoi.com/jux-455/preview.mp4 | I have always hated my father. It happened when I… | 2014-11-01 11:00:17+08 | 2026-11-16 02:06:50.944086+08 | 2026-11-16 21:12:37.409468+08 | {"Mature Woman",Slut,"Big Breasts","Butt Fetish",I… |
-| jav-tmlzvx | [0.021368481,0.090894856,-0.005272269,0.0072020646… | https://missav.ws/en/wnxg-035 | wnxg | 035 | wnxg-035 | I can't stand my mother's blowjob anymore! ! 8 Hou… | https://d.surrit.com/wnxg-035/cover-n.jpg | https://d.surrit.com/wnxg-035/preview.mp4 | Mothers Who Love Pacifiers Love Their Son's Erecti… | 2014-07-20 12:00:00+08 | 2026-11-23 06:52:50.708378+08 | 2026-11-26 17:21:18.252582+08 | {Mother,Incest,"Oral Sex","4 Hours Or More",Hd} |
-| jav-11rxb40 | [0.023667065,0.03545914,-0.023778375,0.01586697,0.… | https://missav.ws/dm51/en/jul-402 | jul | 402 | jul-402 | Whether I Fight With My Friends, Or My Girlfriend… | https://fourhoi.com/jul-402/cover-n.jpg | https://fourhoi.com/jul-402/preview.mp4 | When I was depressed and came back from school, my… | 2020-12-05 11:00:24+08 | 2026-11-12 13:17:09.926363+08 | 2026-11-16 21:12:37.409468+08 | {Stepmother,"Mature Woman",Wife,"Fat Girl","Big Br… |
+| jav-y0rc2l | [-0.010765085,-0.0190089,-0.026374446,-0.03577045,… | https://missav.ws/dm2/en/juy-613-english-subtitle | juy | 613 | juy-613-english-subtitle | The second Madonna 15th Anniversary blockbuster! !… | https://fourhoi.com/juy-613-english-subtitle/cover… | https://fourhoi.com/juy-613-english-subtitle/previ… | The second Madonna 15th Anniversary blockbuster! !… | 2018-09-22 12:00:37+08 | 2026-11-21 20:57:32.643039+08 | 2026-11-22 07:58:19.370239+08 | {"English subtitle","Mature Woman",Wife,"Big Breas… |
+| jav-1rs3ewc | [0.016308395,0.010440801,-0.027916398,-0.028947825… | https://missav.ws/en/juy-794-uncensored-leak | juy | 794 | juy-794-uncensored-leak | I Unexpectedly Ended Up Sharing A Room In A Busine… | https://fourhoi.com/juy-794-uncensored-leak/cover-… | https://fourhoi.com/juy-794-uncensored-leak/previe… | I came on a day trip to get a contract with my bos… | 2019-03-22 11:00:49+08 | 2026-11-21 20:56:55.050656+08 | 2026-11-22 07:58:19.370239+08 | {"Uncensored leak","Mature Woman","Various Occupat… |
+| jav-xaskr5 | [0.017317552,0.0093119545,-0.012490331,0.007112350… | https://missav.ws/dm1/en/juy-833-uncensored-leak | juy | 833 | juy-833-uncensored-leak | Nozomi, the mother of a serious and hard friend, w… | https://fourhoi.com/juy-833-uncensored-leak/cover-… | https://fourhoi.com/juy-833-uncensored-leak/previe… | Nozomi, a mother who has been rigorously raised wi… | 2019-04-20 12:00:19+08 | 2026-11-21 20:56:55.050656+08 | 2026-11-22 07:58:19.370239+08 | {"Uncensored leak","Beautiful Breasts","Mature Wom… |
 ================================================================================

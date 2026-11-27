@@ -22,6 +22,7 @@ from jet.adapters.turftopic.missav import ClusterTopicsResult, cluster_topics
 from models.schemas.topic import (
     CodeDashboardSummary,
     DashboardResponse,
+    RepresentativeDocWithVideo,
     TopicSearchResultItem,
 )
 from models.types.topic import (
@@ -470,12 +471,28 @@ def get_topic_run_detail(run_id: str) -> TopicRunDetailTD:
             topics_list: List[TopicSummaryTD] = []
             for t in topics_rows:
                 topic_uuid = str(t["id"])
+
+                # Fetch words
                 words_rows = conn.execute(
                     "SELECT word, score, rank FROM public.topic_words WHERE topic_id = %s ORDER BY rank ASC",
                     (topic_uuid,),
                 ).fetchall()
+
+                # Fetch representative docs WITH video details
                 docs_rows = conn.execute(
-                    "SELECT content, membership_score FROM public.topic_representative_docs WHERE topic_id = %s ORDER BY membership_score DESC",
+                    """
+                    SELECT 
+                        rd.content, 
+                        rd.membership_score, 
+                        rd.video_id,
+                        v.thumbnail,
+                        v.preview,
+                        v.title
+                    FROM public.topic_representative_docs rd
+                    LEFT JOIN public.videos v ON rd.video_id = v.video_id
+                    WHERE rd.topic_id = %s 
+                    ORDER BY rd.membership_score DESC
+                    """,
                     (topic_uuid,),
                 ).fetchall()
 
@@ -486,18 +503,55 @@ def get_topic_run_detail(run_id: str) -> TopicRunDetailTD:
                         "name": t["name"],
                         "representative_doc_count": t["representative_doc_count"],
                         "words": [dict(w) for w in words_rows],
-                        "representative_docs": [dict(d) for d in docs_rows],
+                        "representative_docs": [
+                            {
+                                "content": d["content"],
+                                "membership_score": d["membership_score"],
+                                "video_id": d["video_id"],
+                                "thumbnail": d["thumbnail"],
+                                "preview": d["preview"],
+                                "title": d["title"],
+                            }
+                            for d in docs_rows
+                        ],
                         "embedding": None,
                     }
                 )
 
+            # Fetch assignments WITH video details
             assignments_rows = conn.execute(
-                "SELECT source_index, topic_id, topic_name, scores, content FROM public.document_topic_assignments WHERE run_id = %s ORDER BY source_index ASC",
+                """
+                SELECT 
+                    da.source_index, 
+                    da.video_id, 
+                    da.topic_id, 
+                    da.topic_name, 
+                    da.scores, 
+                    da.content,
+                    v.thumbnail,
+                    v.preview,
+                    v.title
+                FROM public.document_topic_assignments da
+                LEFT JOIN public.videos v ON da.video_id = v.video_id
+                WHERE da.run_id = %s 
+                ORDER BY da.source_index ASC
+                """,
                 (run_id,),
             ).fetchall()
 
             assignments: List[DocumentAssignmentTD] = [
-                dict(a) for a in assignments_rows
+                {
+                    "source_index": a["source_index"],
+                    "video_id": a["video_id"],
+                    "topic_id": a["topic_id"],
+                    "topic_name": a["topic_name"],
+                    "scores": a["scores"],
+                    "content": a["content"],
+                    "thumbnail": a["thumbnail"],
+                    "preview": a["preview"],
+                    "title": a["title"],
+                }
+                for a in assignments_rows
             ]
 
     except HTTPException:
@@ -514,20 +568,29 @@ def get_topic_run_detail(run_id: str) -> TopicRunDetailTD:
 
 
 def search_topics_by_word(
-    word: str, limit: int, match_type: MatchType = "all"
+    word: str,
+    limit: int,
+    match_type: MatchType = "all",
+    min_topic_score: float = 0.0,
+    min_doc_score: float = 0.0,
+    max_rep_docs: int = 5,
 ) -> List[TopicSearchResultItem]:
     """
     Hybrid search combining Vector Semantic Search and Full-Text Search (FTS).
     Uses Reciprocal Rank Fusion (RRF) to merge results.
+    Returns topics with their top representative videos joined from the videos table.
     """
     t0 = time.perf_counter()
     k = 60
     logger.info(
-        "search_topics_by_word start: word=%r limit=%d match_type=%s",
+        "search_topics_by_word start: word=%r limit=%d match_type=%s min_topic_score=%.2f min_doc_score=%.2f",
         word,
         limit,
         match_type,
+        min_topic_score,
+        min_doc_score,
     )
+
     try:
         query_emb = embed(
             word, model=EMBED_MODEL, return_format="list", prefix=EMBED_QUERY_PREFIX
@@ -537,37 +600,43 @@ def search_topics_by_word(
         raise HTTPException(500, "Failed to generate query embedding")
 
     with pool.connection() as conn:
+        # 1. Get Vector Candidates
         vec_rows = conn.execute(
             """
             SELECT id as topic_id, run_id,
-                   1.0 / (%(k)s + ROW_NUMBER() OVER (ORDER BY embedding <=> %(emb)s::vector)) as rrf_score
+            1.0 / (%(k)s + ROW_NUMBER() OVER (ORDER BY embedding <=> %(emb)s::vector)) as rrf_score
             FROM public.topics
             WHERE embedding IS NOT NULL
             ORDER BY embedding <=> %(emb)s::vector
             LIMIT %(limit)s
-        """,
+            """,
             {"emb": query_emb, "k": k, "limit": limit * 2},
         ).fetchall()
 
+        # 2. Get FTS Candidates
         fts_rows = conn.execute(
             """
             SELECT t.id as topic_id, t.run_id,
-                   1.0 / (%(k)s + ROW_NUMBER() OVER (ORDER BY ts_rank_cd(t.search_vector, plainto_tsquery('english', %(q)s)) DESC)) as rrf_score
+            1.0 / (%(k)s + ROW_NUMBER() OVER (ORDER BY ts_rank_cd(t.search_vector, plainto_tsquery('english', %(q)s)) DESC)) as rrf_score
             FROM public.topics t
             WHERE t.search_vector @@ plainto_tsquery('english', %(q)s)
             ORDER BY ts_rank_cd(t.search_vector, plainto_tsquery('english', %(q)s)) DESC
             LIMIT %(limit)s
-        """,
+            """,
             {"q": word, "k": k, "limit": limit * 2},
         ).fetchall()
+
         logger.info("Candidates fetched: vec=%d fts=%d", len(vec_rows), len(fts_rows))
 
+        # 3. Fuse Scores
         scores: Dict[str, float] = {}
         sources: Dict[str, set] = {}
+
         for r in vec_rows:
             tid = str(r["topic_id"])
             scores[tid] = scores.get(tid, 0) + r["rrf_score"]
             sources.setdefault(tid, set()).add("vec")
+
         for r in fts_rows:
             tid = str(r["topic_id"])
             scores[tid] = scores.get(tid, 0) + r["rrf_score"]
@@ -578,32 +647,36 @@ def search_topics_by_word(
             source_set = sources.get(tid, set())
             has_vec = "vec" in source_set
             has_fts = "fts" in source_set
+
             if has_vec and has_fts:
                 m_type = "hybrid"
             elif has_vec:
                 m_type = "semantic"
             else:
                 m_type = "keyword"
+
             if match_type != "all" and m_type != match_type:
                 continue
+
+            # Apply Topic Score Threshold
+            if score < min_topic_score:
+                continue
+
             candidates.append((tid, score, m_type))
 
         candidates.sort(key=lambda x: -x[1])
         ordered_candidates = candidates[:limit]
-        logger.info(
-            "After fusion/filter: %d candidates (match_type=%s)",
-            len(ordered_candidates),
-            match_type,
-        )
+
         if not ordered_candidates:
             return []
 
         ids_to_fetch = [x[0] for x in ordered_candidates]
 
-        # No outer GROUP BY needed: every extra column is a correlated subquery.
+        # 4. Fetch Detailed Info with Video Joins
+        # We use a subquery to get the top N representative docs per topic that meet the min_doc_score
         final_rows = conn.execute(
             """
-            SELECT
+            SELECT 
                 t.id,
                 t.topic_id,
                 t.name,
@@ -616,43 +689,63 @@ def search_topics_by_word(
                     SELECT tw.word
                     FROM public.topic_words tw
                     WHERE tw.topic_id = t.id
-                      AND tw.word ILIKE %(word_like)s
+                    AND tw.word ILIKE %(word_like)s
                     ORDER BY tw.rank ASC
                 ) AS matched_kws,
-                -- Top 5 words: pick rows first (ORDER BY + LIMIT), THEN aggregate
+                -- Top 5 words
                 (SELECT jsonb_agg(
-                            jsonb_build_object('word', x.word, 'score', x.score, 'rank', x.rank)
-                            ORDER BY x.rank ASC
-                        )
+                    jsonb_build_object('word', x.word, 'score', x.score, 'rank', x.rank)
+                    ORDER BY x.rank ASC
+                )
+                FROM (
+                    SELECT w.word, w.score, w.rank
+                    FROM public.topic_words w
+                    WHERE w.topic_id = t.id
+                    ORDER BY w.rank ASC
+                    LIMIT 5
+                ) x) AS top_words_json,
+                -- Representative Docs with Video Info
+                (SELECT jsonb_agg(to_jsonb(doc_obj) ORDER BY doc_obj.membership_score DESC)
                  FROM (
-                     SELECT w.word, w.score, w.rank
-                     FROM public.topic_words w
-                     WHERE w.topic_id = t.id
-                     ORDER BY w.rank ASC
-                     LIMIT 5
-                 ) x) AS top_words_json,
-                -- Best representative document snippet
-                (SELECT rd.content
-                 FROM public.topic_representative_docs rd
-                 WHERE rd.topic_id = t.id
-                 ORDER BY rd.membership_score DESC
-                 LIMIT 1) AS rep_snippet
+                     SELECT 
+                         rd.video_id, 
+                         rd.membership_score, 
+                         rd.content as content_snippet,
+                         v.title, 
+                         v.thumbnail, 
+                         v.preview, 
+                         v.release_date
+                     FROM public.topic_representative_docs rd
+                     LEFT JOIN public.videos v ON rd.video_id = v.video_id
+                     WHERE rd.topic_id = t.id 
+                     AND rd.membership_score >= %(min_doc_score)s
+                     ORDER BY rd.membership_score DESC
+                     LIMIT %(max_rep_docs)s
+                 ) doc_obj
+                ) AS rep_docs_with_video
             FROM public.topics t
             JOIN public.topic_runs tr ON t.run_id = tr.id
             WHERE t.id = ANY(%(ids)s::uuid[])
-        """,
-            {"ids": ids_to_fetch, "word_like": f"%{word}%"},
+            """,
+            {
+                "ids": ids_to_fetch,
+                "word_like": f"%{word}%",
+                "min_doc_score": min_doc_score,
+                "max_rep_docs": max_rep_docs,
+            },
         ).fetchall()
-        logger.info("Final rows fetched: %d", len(final_rows))
 
         row_map = {str(r["id"]): r for r in final_rows}
         result: List[TopicSearchResultItem] = []
+
         for tid, score, m_type in ordered_candidates:
             r = row_map.get(tid)
             if not r:
-                logger.warning("Topic %s missing from final fetch", tid)
                 continue
+
             matched_kws = [kw for kw in (r["matched_kws"] or []) if kw is not None]
+
+            # Parse Top Words
             top_words_raw = r["top_words_json"]
             if not top_words_raw:
                 top_words = []
@@ -660,6 +753,30 @@ def search_topics_by_word(
                 top_words = json.loads(top_words_raw)
             else:
                 top_words = top_words_raw
+
+            # Parse Representative Docs
+            rep_docs_raw = r["rep_docs_with_video"]
+            rep_docs = []
+            if rep_docs_raw:
+                if isinstance(rep_docs_raw, str):
+                    rep_docs_list = json.loads(rep_docs_raw)
+                else:
+                    rep_docs_list = rep_docs_raw
+
+                for doc in rep_docs_list:
+                    if doc:  # Ensure doc is not null
+                        rep_docs.append(
+                            RepresentativeDocWithVideo(
+                                video_id=doc.get("video_id"),
+                                title=doc.get("title"),
+                                thumbnail=doc.get("thumbnail"),
+                                preview=doc.get("preview"),
+                                release_date=doc.get("release_date"),
+                                membership_score=float(doc.get("membership_score", 0)),
+                                content_snippet=doc.get("content_snippet"),
+                            )
+                        )
+
             result.append(
                 TopicSearchResultItem(
                     run_id=str(r["run_id"]),
@@ -672,16 +789,16 @@ def search_topics_by_word(
                     matched_keywords=matched_kws,
                     match_type=m_type,
                     top_words=top_words,
-                    representative_snippet=r["rep_snippet"],
+                    representative_docs=rep_docs,
                 )
             )
 
-    logger.info(
-        "Hybrid topic search done: %d results in %.1fms",
-        len(result),
-        (time.perf_counter() - t0) * 1000,
-    )
-    return result
+        logger.info(
+            "Hybrid topic search done: %d results in %.1fms",
+            len(result),
+            (time.perf_counter() - t0) * 1000,
+        )
+        return result
 
 
 def get_topics_dashboard() -> DashboardResponse:

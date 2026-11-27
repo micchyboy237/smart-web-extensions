@@ -4,7 +4,6 @@ function app() {
   const PAGE_SIZE = 20;
   const DIVERSITY_LEVELS = { off: 0, low: 0.25, medium: 0.5, high: 0.8 };
 
-  // Helper to format numbers (1.1k, 11.1k, etc.)
   function formatCount(num) {
     if (num == null) return "0";
     if (num < 1000) return num.toString();
@@ -22,7 +21,7 @@ function app() {
 
   return {
     // ── state ──
-    mode: "browse",
+    mode: "search",
     query: "",
     lastQuery: "",
     items: [],
@@ -55,30 +54,56 @@ function app() {
     detail: { open: false, loading: false, video: null },
     similarOf: null,
     toasts: [],
-    previousMode: null,
-    previousQuery: null,
+
+    // ── Topic Mode State ──
+    topics: {
+      dashboard: [],
+      currentRun: null,
+      loading: false,
+      error: null,
+      searchQuery: "", // Separate search for topics
+    },
+
     // ── preview state ──
     showPreview: null,
     holdPreviews: [],
     _previewPlayer: null,
-    // ── generation counters ──
     _gen: 0,
 
-    // ── lifecycle ──
     boot() {
       this.hydrateFromURL();
       this.refreshIcons();
       this.$nextTick(() => this.refreshIcons());
       this.fetchFacets();
+
       window.addEventListener("popstate", () => {
         this.hydrateFromURL();
-        this.refetch();
+        // Only refetch if NOT in topic mode
+        if (this.mode !== "topics") {
+          this.refetch();
+        } else {
+          // If we are in topics, ensure we load the right view
+          if (this.topics.currentRun && !this.topics.dashboard.length) {
+            // If we landed directly on a run via URL, fetch dashboard first then detail
+            this.fetchTopicDashboard().then(() => {
+              // Logic to re-open specific run if needed could go here
+            });
+          }
+        }
       });
-      this.refetch();
+
+      // Initial Load Logic
+      if (this.mode === "topics") {
+        this.fetchTopicDashboard();
+      } else {
+        this.refetch();
+      }
+
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
           if (this.genresModalOpen) this.genresModalOpen = false;
           if (this.codesModalOpen) this.codesModalOpen = false;
+          else if (this.topics.currentRun) this.closeTopicDetail();
           else this.closeDetail();
         }
         if (
@@ -86,12 +111,20 @@ function app() {
           !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)
         ) {
           e.preventDefault();
-          this.$refs.searchInput.focus();
+          // Focus appropriate input based on mode
+          if (this.mode === "topics") {
+            this.$refs.topicSearchInput?.focus();
+          } else {
+            this.$refs.searchInput?.focus();
+          }
         }
       });
+
+      // Infinite Scroll Setup
       const io = new IntersectionObserver(
         (entries) => {
           if (
+            this.mode !== "topics" && // Disable infinite scroll in topic mode
             entries[0].isIntersecting &&
             !this.exhausted &&
             !this.loading &&
@@ -103,19 +136,24 @@ function app() {
         { rootMargin: "400px" },
       );
       io.observe(this.$refs.sentinel);
+
       const checkSentinel = () => {
+        if (this.mode === "topics") return;
         const el = this.$refs.sentinel;
         if (!el || this.exhausted || this.loading || !this.items.length) return;
         const rect = el.getBoundingClientRect();
         if (rect.top < window.innerHeight + 400) this.loadMore();
       };
+
       window.addEventListener("scroll", checkSentinel, { passive: true });
+
       this.$watch("items", () => {
         this.$nextTick(() => {
           this.refreshIcons();
           checkSentinel();
         });
       });
+
       this.$watch("detail.open", () =>
         this.$nextTick(() => this.refreshIcons()),
       );
@@ -123,14 +161,13 @@ function app() {
         this._pauseCurrentPreview();
         if (key) this.$nextTick(() => this._playPreview(key));
       });
-      this.$watch("holdPreviews", (keys) => {
-        if (!this.showPreview && keys.length === 0) this._pauseCurrentPreview();
-      });
     },
+
     refreshIcons() {
       if (window.lucide) lucide.createIcons();
     },
-    // ── preview playback ──
+
+    // ── Preview Helpers ──
     _previewKeyOf(item) {
       return item?.id ? `home-0-${item.id}` : null;
     },
@@ -151,9 +188,7 @@ function app() {
       if (el && !el.paused) {
         try {
           el.pause();
-        } catch {
-          /* ignore */
-        }
+        } catch {}
       }
       this._previewPlayer = null;
     },
@@ -170,9 +205,7 @@ function app() {
       try {
         const p = el.play();
         if (p && typeof p.catch === "function") p.catch(() => {});
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     },
     playPreview(key) {
       this._playPreview(key);
@@ -208,14 +241,29 @@ function app() {
       this.showPreview = null;
       this.holdPreviews = [];
     },
-    // ── URL sync ──
+
+    // ── URL Sync ──
     hydrateFromURL() {
       const p = new URLSearchParams(location.search);
       const urlMode = p.get("mode");
       const hasQ = !!p.get("q");
-      this.mode = urlMode || (hasQ ? "search" : "browse");
-      this.query = p.get("q") || "";
-      this.lastQuery = this.query;
+
+      if (urlMode === "topics") {
+        this.mode = "topics";
+        const runId = p.get("run");
+        if (runId) {
+          // We will handle opening the run in boot/fetch logic to avoid race conditions
+          this.topics.currentRun = { run: { id: runId } }; // Placeholder to trigger UI
+        } else {
+          this.topics.currentRun = null;
+        }
+      } else {
+        this.mode = "search";
+        this.query = p.get("q") || "";
+        this.lastQuery = this.query;
+        this.topics.currentRun = null;
+      }
+
       this.filters.code = p.get("code") || "";
       this.filters.from = p.get("from") || "";
       this.filters.to = p.get("to") || "";
@@ -228,14 +276,22 @@ function app() {
       const div = p.get("div");
       this.diversity = div && div in DIVERSITY_LEVELS ? div : "off";
     },
+
     syncURL(push = false) {
       const p = new URLSearchParams();
-      if (this.mode === "search" && this.lastQuery) p.set("q", this.lastQuery);
-      if (this.mode === "browse") p.set("mode", "browse");
-      if (this.mode === "similar" && this.similarOf) {
-        p.set("mode", "similar");
-        p.set("sim", this.similarOf);
+      if (this.mode === "topics") {
+        p.set("mode", "topics");
+        if (this.topics.currentRun) {
+          p.set("run", this.topics.currentRun.run.id);
+        }
+      } else {
+        if (this.lastQuery) p.set("q", this.lastQuery);
+        if (this.mode === "similar" && this.similarOf) {
+          p.set("mode", "similar");
+          p.set("sim", this.similarOf);
+        }
       }
+
       if (this.filters.code) p.set("code", this.filters.code);
       if (this.filters.from) p.set("from", this.filters.from);
       if (this.filters.to) p.set("to", this.filters.to);
@@ -247,67 +303,66 @@ function app() {
         p.set("cf", this.filters.completionFilter);
       if (this.diversity !== "off" && this.isGroupedMode())
         p.set("div", this.diversity);
+
       const newUrl = `${location.pathname}?${p}`;
       if (push) history.pushState(null, "", newUrl);
       else history.replaceState(null, "", newUrl);
     },
+
     isGroupedMode() {
-      return (
-        this.mode === "search" ||
-        this.mode === "browse" ||
-        this.mode === "similar"
-      );
+      return this.mode === "search" || this.mode === "similar";
     },
-    // ── actions ──
+
+    // ── Actions ──
     onQueryInput() {
       clearTimeout(this._deb);
       this._deb = setTimeout(() => {
+        if (this.mode === "topics") {
+          // Handle topic search if implemented later
+          return;
+        }
         if (this.query.trim()) {
           this.doSearch();
-        } else if (this.mode === "search" || this.mode === "similar") {
-          this.doBrowse();
         }
       }, 400);
     },
+
     doSearch() {
       const q = this.query.trim();
-      if (!q) {
-        if (this.mode !== "browse") this.doBrowse();
-        return;
-      }
-      this.previousMode = this.mode;
       this.mode = "search";
       this.lastQuery = q;
       this.similarOf = null;
       this.syncURL(true);
       this.refetch();
     },
-    doBrowse() {
-      this.previousMode = this.mode;
-      this.mode = "browse";
-      this.similarOf = null;
+
+    toggleTopicMode() {
+      this.mode = "topics";
+      this.topics.currentRun = null;
       this.syncURL(true);
-      this.refetch();
+      this.fetchTopicDashboard();
     },
+
     setDiversity(level) {
       if (!(level in DIVERSITY_LEVELS)) return;
       this.diversity = level;
       this.syncURL();
       if (this.isGroupedMode()) this.refetch();
     },
+
     findSimilar(id) {
       clearTimeout(this._deb);
       this.closeDetail();
-      this.previousMode = this.mode;
-      this.previousQuery = this.lastQuery;
       this.mode = "similar";
       this.similarOf = id;
       this.syncURL(true);
       this.refetch();
     },
+
     goBack() {
       window.history.back();
     },
+
     // Code autocomplete
     onCodeInputFocus() {
       this.showCodeDropdown = true;
@@ -346,33 +401,35 @@ function app() {
       this.codeInput = "";
       this.showCodeDropdown = false;
       this.syncURL();
-      this.refetch();
+      if (this.mode !== "topics") this.refetch();
     },
     removeCodeChip(code) {
       this.filters.code = this._currentCodes()
         .filter((c) => c !== code)
         .join(", ");
       this.syncURL();
-      this.refetch();
+      if (this.mode !== "topics") this.refetch();
     },
     toggleGenre(name) {
       const i = this.filters.genres.indexOf(name);
       if (i >= 0) this.filters.genres.splice(i, 1);
       else this.filters.genres.push(name);
       this.syncURL();
-      this.refetch();
+      if (this.mode !== "topics") this.refetch();
     },
     setCompletionFilter(val) {
       this.filters.completionFilter = val;
       this.syncURL();
-      this.refetch();
-      this.fetchFacets();
+      if (this.mode !== "topics") {
+        this.refetch();
+        this.fetchFacets();
+      }
     },
     pickYear(year) {
       this.filters.from = `${year}-01-01`;
       this.filters.to = `${year}-12-31`;
       this.syncURL();
-      this.refetch();
+      if (this.mode !== "topics") this.refetch();
     },
     clearFilters() {
       this.filters = {
@@ -385,7 +442,7 @@ function app() {
       };
       this.codeInput = "";
       this.syncURL();
-      this.refetch();
+      if (this.mode !== "topics") this.refetch();
     },
     recentYears() {
       return this.facets.years
@@ -393,7 +450,8 @@ function app() {
         .slice(-10)
         .reverse();
     },
-    // Genre sorting
+
+    // Sorting
     get sortedAllGenres() {
       const genres = [...this.allGenres];
       if (this.genreSortBy === "name") {
@@ -404,14 +462,13 @@ function app() {
       return this.genreSortOrder === "asc" ? genres.reverse() : genres;
     },
     toggleGenreSort(by) {
-      if (this.genreSortBy === by) {
+      if (this.genreSortBy === by)
         this.genreSortOrder = this.genreSortOrder === "asc" ? "desc" : "asc";
-      } else {
+      else {
         this.genreSortBy = by;
         this.genreSortOrder = by === "count" ? "desc" : "asc";
       }
     },
-    // Code sorting
     get sortedAllCodes() {
       const codes = [...this.facets.codes];
       if (this.codeSortBy === "name") {
@@ -422,14 +479,15 @@ function app() {
       return this.codeSortOrder === "asc" ? codes.reverse() : codes;
     },
     toggleCodeSort(by) {
-      if (this.codeSortBy === by) {
+      if (this.codeSortBy === by)
         this.codeSortOrder = this.codeSortOrder === "asc" ? "desc" : "asc";
-      } else {
+      else {
         this.codeSortBy = by;
         this.codeSortOrder = by === "count" ? "desc" : "asc";
       }
     },
-    // ── fetching (paginated modes) ──
+
+    // ── Fetching ──
     refetch() {
       this.clearPreviews();
       this.items = [];
@@ -440,6 +498,7 @@ function app() {
     loadMore() {
       if (!this.exhausted && !this.loading) this.fetchPage();
     },
+
     async fetchPage({ reset = false } = {}) {
       this.loading = true;
       const gen = ++this._gen;
@@ -449,6 +508,7 @@ function app() {
           if (gen === this._gen) this.loading = false;
           return;
         }
+
         const res = await fetch(`${API}${params.path}`, {
           method: params.method,
           headers: params.body
@@ -456,19 +516,20 @@ function app() {
             : undefined,
           body: params.body ? JSON.stringify(params.body) : undefined,
         });
+
         if (gen !== this._gen) return;
         this.online = true;
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(`${res.status}: ${txt}`);
-        }
+        if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+
         const page = await res.json();
         if (gen !== this._gen) return;
+
         if (reset) {
           this.items = [];
           this.cursor = null;
           this.exhausted = false;
         }
+
         const incoming =
           params.kind === "grouped"
             ? page.items.map(normalizeGrouped)
@@ -486,7 +547,50 @@ function app() {
         if (gen === this._gen) this.loading = false;
       }
     },
-    // ── shared filter helpers ──
+
+    // ── Topic Fetching ──
+    async fetchTopicDashboard() {
+      this.topics.loading = true;
+      this.topics.error = null;
+      try {
+        const res = await fetch(`${API}/topics/dashboard`);
+        if (!res.ok) throw new Error("Failed to load dashboard");
+        const data = await res.json();
+        this.topics.dashboard = data.codes || [];
+
+        // If we had a run ID in URL, open it now
+        const p = new URLSearchParams(location.search);
+        const runId = p.get("run");
+        if (runId) {
+          await this.openTopicDetail(runId);
+        }
+      } catch (e) {
+        this.topics.error = e.message;
+      } finally {
+        this.topics.loading = false;
+      }
+    },
+
+    async openTopicDetail(runId) {
+      this.topics.loading = true;
+      try {
+        const res = await fetch(`${API}/topics/runs/${runId}`);
+        if (!res.ok) throw new Error("Failed to load topic details");
+        this.topics.currentRun = await res.json();
+        this.syncURL(true); // Persist run ID
+      } catch (e) {
+        this.toast("error", e.message);
+      } finally {
+        this.topics.loading = false;
+      }
+    },
+
+    closeTopicDetail() {
+      this.topics.currentRun = null;
+      this.syncURL(true);
+    },
+
+    // ── Shared Filter Helpers ──
     _codeList() {
       const raw = (this.filters.code || "").trim();
       if (!raw) return [];
@@ -509,6 +613,7 @@ function app() {
         ? new Date(this.filters.to + "T23:59:59Z").toISOString()
         : null;
     },
+
     buildParams(reset) {
       if (this.mode === "similar") {
         const p = new URLSearchParams();
@@ -532,14 +637,9 @@ function app() {
           method: "GET",
         };
       }
-      if (this.mode === "search" && !this.lastQuery) {
-        this.mode = "browse";
-        this.similarOf = null;
-        this.syncURL();
-      }
+
       const p = new URLSearchParams();
-      if (this.mode === "search" && this.lastQuery)
-        p.set("query", this.lastQuery);
+      if (this.lastQuery) p.set("query", this.lastQuery);
       p.set("limit", String(PAGE_SIZE));
       if (!reset && this.cursor) p.set("cursor", this.cursor);
       this._codeList().forEach((c) => p.append("code", c));
@@ -555,33 +655,27 @@ function app() {
       if (div > 0) p.set("diversity", String(div));
       return { kind: "grouped", path: `/search_grouped?${p}`, method: "GET" };
     },
+
     async fetchFacets() {
       try {
-        // 1. Fetch standard facets (for sidebar summary: top 60 genres, top 40 codes, years)
         let qs = "";
-        if (this.filters.completionFilter !== "all") {
+        if (this.filters.completionFilter !== "all")
           qs = `?completion_filter=${this.filters.completionFilter}`;
-        }
-        // We still need /facets for years and the limited sidebar lists
         const r = await fetch(`${API}/facets${qs}`);
         const data = await r.json();
-        // Use the limited list for the sidebar view to keep it clean
         this.facets.genres = data.genres;
         this.facets.years = data.years;
-        // 2. Fetch ALL genres from the new endpoint for the Modal
         const genresRes = await fetch(`${API}/facets/genres${qs}`);
         const genresData = await genresRes.json();
         this.allGenres = genresData.genres || [];
-        // 3. Fetch ALL codes from /facets/codes WITH completion filter
         const codesRes = await fetch(`${API}/facets/codes${qs}`);
         const codesData = await codesRes.json();
         this.facets.codes = codesData.codes || [];
         this.codeSuggestions = this.facets.codes.slice(0, 10);
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     },
-    // ── detail modal ──
+
+    // ── Detail Modal ──
     async openDetail(id) {
       this.detail = { open: true, loading: true, video: null };
       this.$nextTick(() => this.refreshIcons());
@@ -600,7 +694,7 @@ function app() {
     closeDetail() {
       this.detail = { open: false, loading: false, video: null };
     },
-    // ── toasts ──
+
     toast(type, msg) {
       const id = Math.random().toString(36).slice(2);
       this.toasts.push({ id, type, msg });
@@ -609,7 +703,6 @@ function app() {
       }, 4000);
       this.$nextTick(() => this.refreshIcons());
     },
-    // Expose helper to template
     formatCount,
   };
 }

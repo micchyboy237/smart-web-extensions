@@ -12,6 +12,22 @@ class TopicSearchRequest(BaseModel):
     match_type: MatchType = Field(
         "all", description="Filter by match strategy: all, semantic, keyword, or hybrid"
     )
+    # New filtering parameters
+    min_topic_score: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="Minimum relevance score for a topic to be included",
+    )
+    min_doc_score: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description="Minimum membership score for representative docs",
+    )
+    max_rep_docs: int = Field(
+        5, ge=1, le=20, description="Max number of representative docs per topic"
+    )
 
 
 class SaveTopicsRequest(BaseModel):
@@ -30,6 +46,18 @@ class TopicRunListItem(BaseModel):
     created_at: datetime
 
 
+class RepresentativeDocWithVideo(BaseModel):
+    """Represents a single representative document with its full video metadata."""
+
+    video_id: str
+    title: Optional[str]
+    thumbnail: Optional[str]
+    preview: Optional[str]
+    release_date: Optional[datetime]
+    membership_score: float
+    content_snippet: Optional[str]
+
+
 class TopicSearchResultItem(BaseModel):
     run_id: str
     code: str
@@ -40,14 +68,11 @@ class TopicSearchResultItem(BaseModel):
     relevance_score: float
     matched_keywords: List[str] = Field(default_factory=list)
     match_type: Literal["semantic", "keyword", "hybrid"]
-
-    # New fields for rich client rendering
     top_words: List[WordScoreTD] = Field(
         default_factory=list, description="Top 5 defining words for this topic"
     )
-    representative_snippet: Optional[str] = Field(
-        None, description="Content snippet from the most representative document"
-    )
+    # Replaced single snippet with list of rich objects
+    representative_docs: List[RepresentativeDocWithVideo] = Field(default_factory=list)
 
     class Config:
         populate_by_name = True

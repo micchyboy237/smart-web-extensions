@@ -31,7 +31,10 @@ class TopicWordTD(TypedDict):
 class RepresentativeDocTD(TypedDict):
     content: str
     membership_score: Optional[float]
-    video_id: Optional[str]  # Added
+    video_id: Optional[str]
+    thumbnail: Optional[str]
+    preview: Optional[str]
+    title: Optional[str]
 
 
 class TopicSummaryTD(TypedDict):
@@ -46,11 +49,14 @@ class TopicSummaryTD(TypedDict):
 
 class DocumentAssignmentTD(TypedDict):
     source_index: int
-    video_id: str  # Added
+    video_id: str
     topic_id: int
     topic_name: str
     scores: List[float]
     content: str
+    thumbnail: Optional[str]
+    preview: Optional[str]
+    title: Optional[str]
 
 
 class RunMetadataTD(TypedDict):
