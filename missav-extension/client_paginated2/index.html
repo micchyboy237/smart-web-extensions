@@ -37,28 +37,20 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
-    <link rel="stylesheet" href="styles.css" />
-
-    <!--
-      ORDER MATTERS (both scripts are deferred, so they run in document order):
-      1) app.js  -> adds an "alpine:init" listener that registers Alpine.data("app", app)
-      2) Alpine  -> loads, fires "alpine:init", then scans the page and starts itself
-      Never call Alpine.start() manually with the CDN build.
-    -->
-    <script type="module" src="js/app.js"></script>
     <script
       defer
       src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"
     ></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body
     class="bg-ink-950 text-slate-200 min-h-screen bg-grain antialiased"
-    x-data="app"
+    x-data="app()"
     x-init="boot()"
     x-cloak
   >
-    <!-- ═══ TOP NAV ═══ -->
+    <!-- ═══════════════════ TOP NAV ═══════════════════ -->
     <header
       class="sticky top-0 z-30 border-b border-white/5 bg-ink-950/80 backdrop-blur-xl"
     >
@@ -71,17 +63,10 @@
           >
             <i data-lucide="film" class="h-5 w-5 text-white"></i>
           </div>
-          <span class="hidden text-lg font-extrabold tracking-tight sm:inline"
-            >MissAV<span class="text-accent-400">.</span>Explorer</span
-          >
+          <span class="hidden text-lg font-extrabold tracking-tight sm:inline">
+            MissAV<span class="text-accent-400">.</span>Explorer
+          </span>
         </a>
-        <button
-          x-show="mode === 'similar'"
-          @click="goBack()"
-          class="flex items-center gap-1 rounded-xl border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:bg-white/5"
-        >
-          <i data-lucide="arrow-left" class="h-4 w-4"></i> Back
-        </button>
         <form
           @submit.prevent="doSearch()"
           class="flex flex-1 items-center gap-2"
@@ -96,7 +81,7 @@
               x-model="query"
               @input.debounce.400ms="onQueryInput()"
               type="search"
-              placeholder="Describe what you want…"
+              placeholder="Describe what you want — try “lonely wife, rainy night”…"
               class="w-full rounded-xl border border-white/10 bg-ink-800/70 py-2.5 pl-10 pr-24 text-sm text-slate-100 placeholder:text-slate-500 transition focus:border-accent-500/60 focus:bg-ink-800 focus:outline-none focus:ring-2 focus:ring-accent-500/30"
             />
             <kbd
@@ -120,7 +105,9 @@
           <button
             type="button"
             @click="toggleClusterMode()"
-            :class="mode === 'clustered' ? 'bg-violet-500 text-ink-950 shadow-glow' : 'border border-white/10 text-slate-300 hover:border-white/20 hover:bg-white/5'"
+            :class="mode === 'clustered'
+          ? 'bg-violet-500 text-ink-950 shadow-glow'
+          : 'border border-white/10 text-slate-300 hover:border-white/20 hover:bg-white/5'"
             class="hidden items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition md:flex"
             :title="mode === 'clustered' ? 'Exit grouped view' : 'Group results into topics'"
           >
@@ -130,14 +117,24 @@
             ></span>
           </button>
         </form>
+        <!-- Back Button for Similar Mode -->
+        <button
+          x-show="mode === 'similar'"
+          @click="goBack()"
+          class="flex items-center gap-1.5 rounded-xl border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:bg-white/5"
+          title="Go Back"
+        >
+          <i data-lucide="arrow-left" class="h-4 w-4"></i>
+          <span class="hidden sm:inline">Back</span>
+        </button>
         <div class="hidden items-center gap-2 md:flex">
           <span
             class="flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/60 px-2.5 py-1 text-[11px] font-medium text-slate-400"
           >
-            <!-- FIX: two :class on one element → browser keeps only one. Merged. -->
             <span
               class="h-1.5 w-1.5 rounded-full"
-              :class="online ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'"
+              :class="online ? 'bg-emerald-400' : 'bg-rose-500'"
+              :class="online ? 'animate-pulse' : ''"
             ></span>
             <span x-text="online ? 'live' : 'offline'"></span>
           </span>
@@ -150,7 +147,7 @@
         </button>
       </div>
     </header>
-    <!-- ═══ MAIN LAYOUT ═══ -->
+    <!-- ═══════════════════ MAIN LAYOUT ═══════════════════ -->
     <div
       class="relative z-10 mx-auto flex max-w-[1600px] gap-6 px-4 py-6 md:px-6"
     >
@@ -175,8 +172,8 @@
               <i data-lucide="x" class="h-5 w-5"></i>
             </button>
           </div>
-          <!-- ── Series code autocomplete ── -->
-          <label class="mb-4 block">
+          <!-- Series Code Autocomplete -->
+          <label class="mb-4 block relative">
             <span class="mb-1.5 block text-xs font-medium text-slate-500"
               >Series code</span
             >
@@ -186,61 +183,61 @@
                 class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500"
               ></i>
               <input
-                x-model="codeAutocomplete.input"
-                @focus="focusCodeInput()"
-                @input="onCodeInput()"
-                @blur="onCodeBlur()"
-                @keydown="onCodeKeydown($event)"
-                placeholder="Type to search codes…"
+                x-model="codeInput"
+                @focus="onCodeInputFocus()"
+                @blur="onCodeInputBlur()"
+                @input="updateCodeSuggestions()"
+                placeholder="Type to search..."
                 class="w-full rounded-lg border border-white/10 bg-ink-800 py-2 pl-9 pr-3 text-sm text-slate-100 placeholder:text-slate-600 focus:border-accent-500/60 focus:outline-none"
               />
-              <!-- dropdown -->
+              <!-- Autocomplete Dropdown -->
               <div
-                x-show="codeAutocomplete.open && codeOptions.length"
-                x-transition
-                class="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-white/10 bg-ink-800 shadow-xl"
+                x-show="showCodeDropdown && codeSuggestions.length > 0"
+                class="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-lg border border-white/10 bg-ink-800 shadow-xl"
+                style="display: none"
               >
-                <template x-for="(opt, idx) in codeOptions" :key="opt.code">
-                  <button
-                    type="button"
-                    @mousedown.prevent="addCode(opt.code)"
-                    :class="idx === codeAutocomplete.highlightedIndex ? 'bg-accent-500/20' : ''"
-                    class="flex w-full items-center justify-between px-3 py-1.5 text-left text-xs text-slate-300 hover:bg-white/5"
+                <template
+                  x-for="codeObj in codeSuggestions"
+                  :key="codeObj.code"
+                >
+                  <div
+                    @click="addCodeChip(codeObj)"
+                    class="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-white/5 text-sm"
                   >
-                    <span class="font-mono" x-text="opt.code"></span>
                     <span
-                      class="text-[10px] text-slate-500"
-                      x-text="`${opt.count.toLocaleString()}`"
+                      class="font-mono text-accent-300"
+                      x-text="codeObj.code"
                     ></span>
-                  </button>
+                    <span
+                      class="text-xs text-slate-500"
+                      x-text="codeObj.count"
+                    ></span>
+                  </div>
                 </template>
               </div>
             </div>
-            <!-- chips -->
-            <div
-              x-show="selectedCodes.length"
-              class="mt-2 flex flex-wrap gap-1.5"
-            >
-              <template x-for="code in selectedCodes" :key="code">
-                <span
-                  class="inline-flex items-center gap-1 rounded-full bg-violet-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-violet-300"
+            <!-- Chips Container -->
+            <div class="flex flex-wrap gap-2 mt-2">
+              <template x-if="filters.code">
+                <template
+                  x-for="code in filters.code.split(',').map(c => c.trim()).filter(Boolean)"
+                  :key="code"
                 >
-                  <span x-text="code"></span>
-                  <button
-                    type="button"
-                    @click="removeCode(code)"
-                    class="rounded-full p-0.5 hover:bg-white/10"
+                  <span
+                    class="inline-flex items-center gap-1 rounded-full bg-violet-500/20 border border-violet-500/30 px-2 py-0.5 text-xs text-violet-200"
                   >
-                    <i data-lucide="x" class="h-3 w-3"></i>
-                  </button>
-                </span>
+                    <span x-text="code"></span>
+                    <button
+                      @click="removeCodeChip(code)"
+                      class="hover:text-white"
+                    >
+                      <i data-lucide="x" class="h-3 w-3"></i>
+                    </button>
+                  </span>
+                </template>
               </template>
             </div>
-            <span class="mt-1 block text-[10px] text-slate-600"
-              >Select multiple series — matches any.</span
-            >
           </label>
-          <!-- Data status -->
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -273,7 +270,6 @@
               </button>
             </div>
           </div>
-          <!-- Released between -->
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -285,18 +281,17 @@
               <input
                 type="date"
                 x-model="filters.from"
-                @change="mode === 'clustered' ? fetchClustered() : refetch(); pushURL()"
+                @change="mode === 'clustered' ? fetchClustered() : refetch()"
                 class="rounded-lg border border-white/10 bg-ink-800 px-2.5 py-2 text-xs text-slate-100 focus:border-accent-500/60 focus:outline-none [color-scheme:dark]"
               />
               <input
                 type="date"
                 x-model="filters.to"
-                @change="mode === 'clustered' ? fetchClustered() : refetch(); pushURL()"
+                @change="mode === 'clustered' ? fetchClustered() : refetch()"
                 class="rounded-lg border border-white/10 bg-ink-800 px-2.5 py-2 text-xs text-slate-100 focus:border-accent-500/60 focus:outline-none [color-scheme:dark]"
               />
             </div>
           </div>
-          <!-- Genre match -->
           <div class="mb-4">
             <span
               class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -307,14 +302,14 @@
               class="flex rounded-lg border border-white/10 bg-ink-800 p-1 text-xs"
             >
               <button
-                @click="filters.genresMode = 'any'; mode === 'clustered' ? fetchClustered() : refetch(); pushURL()"
+                @click="filters.genresMode = 'any'; mode === 'clustered' ? fetchClustered() : refetch()"
                 :class="filters.genresMode === 'any' ? 'bg-accent-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
                 class="flex-1 rounded-md py-1.5 font-semibold transition"
               >
                 Any of
               </button>
               <button
-                @click="filters.genresMode = 'all'; mode === 'clustered' ? fetchClustered() : refetch(); pushURL()"
+                @click="filters.genresMode = 'all'; mode === 'clustered' ? fetchClustered() : refetch()"
                 :class="filters.genresMode === 'all' ? 'bg-accent-500 text-ink-950' : 'text-slate-400 hover:text-slate-200'"
                 class="flex-1 rounded-md py-1.5 font-semibold transition"
               >
@@ -322,42 +317,47 @@
               </button>
             </div>
           </div>
-          <!-- Genres with max-height + show-all modal -->
+          <!-- Genres Section with Modal -->
           <div class="mb-4">
             <span
-              class="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+              class="mb-2 flex items-center justify-between text-xs font-medium text-slate-500"
             >
-              <i data-lucide="drama" class="h-3.5 w-3.5"></i> Genres
+              <span class="flex items-center gap-1.5">
+                <i data-lucide="drama" class="h-3.5 w-3.5"></i> Genres
+              </span>
               <span
-                class="ml-auto text-[10px] text-slate-600"
+                class="text-[10px] text-slate-600"
                 x-text="`${filters.genres.length} selected`"
               ></span>
             </span>
-            <div class="flex flex-wrap gap-1.5">
-              <template x-for="g in visibleGenresList" :key="g.name">
+            <!-- Visible Chips (Limited Height) -->
+            <div
+              class="max-h-32 overflow-y-auto flex flex-wrap gap-1.5 mb-2 pr-1 custom-scrollbar"
+            >
+              <template x-for="g in facets.genres" :key="g.name">
                 <button
                   @click="toggleGenre(g.name)"
-                  :class="filters.genres.includes(g.name) ? 'border-accent-500 bg-accent-500/15 text-accent-300' : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
-                  class="rounded-full border px-2.5 py-1 text-[11px] font-medium transition"
+                  :class="filters.genres.includes(g.name)
+                ? 'border-accent-500 bg-accent-500/15 text-accent-300'
+                : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                  class="rounded-full border px-2.5 py-1 text-[11px] font-medium transition whitespace-nowrap"
                   :title="`${g.count.toLocaleString()} videos`"
                 >
                   <span x-text="g.name"></span>
                   <span
-                    class="ml-1 text-[10px] opacity-60"
-                    x-text="g.count.toLocaleString()"
+                    class="ml-1 text-[9px] opacity-60"
+                    x-text="g.count"
                   ></span>
                 </button>
               </template>
             </div>
             <button
-              x-show="hasMoreGenres"
-              @click="openGenresModal()"
-              class="mt-2 flex items-center gap-1 text-[11px] font-medium text-accent-400 hover:text-accent-300"
+              @click="genresModalOpen = true"
+              class="w-full text-xs text-accent-400 hover:text-accent-300 font-medium flex items-center justify-center gap-1 py-1"
             >
-              <i data-lucide="maximize-2" class="h-3 w-3"></i> Show all genres
+              <i data-lucide="list" class="h-3 w-3"></i> Show All Genres
             </button>
           </div>
-          <!-- Quick year -->
           <div class="mb-4">
             <span
               class="mb-2 flex items-center gap-1.5 text-xs font-medium text-slate-500"
@@ -368,7 +368,9 @@
               <template x-for="y in recentYears()" :key="y.year">
                 <button
                   @click="pickYear(y.year)"
-                  :class="filters.from === y.year+'-01-01' && filters.to === y.year+'-12-31' ? 'border-violet-500 bg-violet-500/20 text-violet-300' : 'border-white/10 bg-ink-800 text-slate-400 hover:text-slate-200'"
+                  :class="filters.from === y.year+'-01-01' && filters.to === y.year+'-12-31'
+                ? 'border-violet-500 bg-violet-500/20 text-violet-300'
+                : 'border-white/10 bg-ink-800 text-slate-400 hover:text-slate-200'"
                   class="rounded-md border px-2 py-1 text-[11px] font-medium transition"
                   :title="`${y.count.toLocaleString()} videos`"
                   x-text="y.year"
@@ -387,7 +389,7 @@
       </aside>
       <!-- ─── Results ─── -->
       <section class="min-w-0 flex-1">
-        <!-- header -->
+        <!-- result header -->
         <div class="mb-5 flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 class="text-2xl font-extrabold tracking-tight text-slate-100">
@@ -412,14 +414,10 @@
                 </span>
               </template>
               <template x-if="mode === 'similar'">
-                <span class="flex items-center gap-2">
-                  <i data-lucide="orbit" class="h-6 w-6 text-violet-400"></i>
-                  Similar to
-                  <span
-                    class="text-accent-400"
-                    x-text="similarSourceVideo ? (similarSourceVideo.title || similarSourceVideo.code) : similarOf"
-                  ></span>
-                </span>
+                <span class="flex items-center gap-2"
+                  ><i data-lucide="orbit" class="h-6 w-6 text-violet-400"></i>
+                  Similar videos</span
+                >
               </template>
               <template x-if="mode === 'browse'">
                 <span class="flex items-center gap-2"
@@ -431,67 +429,17 @@
                 >
               </template>
             </h1>
-            <!-- similar source mini detail -->
-            <div
-              x-show="mode === 'similar' && similarSourceVideo"
-              class="mt-3 flex items-center gap-3 rounded-xl border border-white/10 bg-ink-900/70 p-2"
-            >
-              <img
-                :src="similarSourceVideo?.thumbnail"
-                :alt="similarSourceVideo?.title"
-                referrerpolicy="no-referrer"
-                class="h-14 w-20 shrink-0 rounded-lg object-cover"
-                @error="$event.target.style.opacity=.2"
-              />
-              <div class="min-w-0">
-                <div
-                  class="flex items-center gap-1.5 text-[11px] text-slate-500"
-                >
-                  <span
-                    class="rounded bg-ink-800 px-1.5 py-0.5 font-mono text-accent-300"
-                    x-text="similarSourceVideo?.code"
-                  ></span>
-                  <span x-text="similarSourceVideo?.episode"></span>
-                  <span
-                    x-show="similarSourceVideo?.release_date"
-                    x-text="'· ' + similarSourceVideo?.release_date?.slice(0,10)"
-                  ></span>
-                </div>
-                <p
-                  class="truncate text-sm font-semibold text-slate-200"
-                  x-text="similarSourceVideo?.title || '(untitled)'"
-                ></p>
-              </div>
-              <div class="ml-auto flex items-center gap-1.5">
-                <button
-                  @click="openDetail(similarSourceVideo.id)"
-                  class="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-slate-300 hover:bg-white/5"
-                  title="Preview"
-                >
-                  <i data-lucide="play" class="h-4 w-4"></i>
-                </button>
-                <button
-                  @click="goBack()"
-                  class="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-slate-300 hover:bg-white/5"
-                  title="Back"
-                >
-                  <i data-lucide="arrow-left" class="h-4 w-4"></i>
-                </button>
-              </div>
-            </div>
             <p class="mt-1 text-sm text-slate-500">
               <template x-if="mode === 'clustered'">
                 <span>
                   <span x-text="clustered.data?.total_results ?? 0"></span>
                   results ·
                   <span x-text="clustered.data?.n_clusters ?? 0"></span> groups
-                  <template x-if="(clustered.data?.n_noise ?? 0) > 0"
-                    ><span class="text-slate-600">
-                      ·
-                      <span x-text="clustered.data.n_noise"></span>
-                      outliers</span
-                    ></template
-                  >
+                  <template x-if="(clustered.data?.n_noise ?? 0) > 0">
+                    <span class="text-slate-600">
+                      · <span x-text="clustered.data.n_noise"></span> outliers
+                    </span>
+                  </template>
                   <span
                     x-show="lastTook != null"
                     class="text-slate-600"
@@ -519,6 +467,7 @@
           </div>
           <!-- active filter pills -->
           <div class="flex flex-wrap items-center gap-1.5">
+            <!-- Clustered-mode config -->
             <div
               x-show="mode === 'clustered'"
               class="inline-flex flex-wrap items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/10 px-2.5 py-1 text-[11px] font-medium text-violet-200"
@@ -535,8 +484,11 @@
                 <option value="loose">Loose groups</option>
               </select>
               <span class="text-violet-400/60">|</span>
-              <label class="flex items-center gap-1" title="min_cluster_size"
-                >min size
+              <label
+                class="flex items-center gap-1"
+                title="min_cluster_size (-s)"
+              >
+                min size
                 <input
                   type="number"
                   min="2"
@@ -544,10 +496,14 @@
                   x-model.number="clusterPrefs.minClusterSize"
                   @change="applyClusterPrefs()"
                   class="w-10 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
-              /></label>
+                />
+              </label>
               <span class="text-violet-400/60">|</span>
-              <label class="flex items-center gap-1" title="epsilon"
-                >ε
+              <label
+                class="flex items-center gap-1"
+                title="cluster_selection_epsilon (-e)"
+              >
+                ε
                 <input
                   type="number"
                   min="0"
@@ -556,10 +512,14 @@
                   x-model.number="clusterPrefs.epsilon"
                   @change="applyClusterPrefs()"
                   class="w-14 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 focus:outline-none"
-              /></label>
+                />
+              </label>
               <span class="text-violet-400/60">|</span>
-              <label class="flex items-center gap-1" title="candidate limit"
-                >pool
+              <label
+                class="flex items-center gap-1"
+                title="cluster_candidate_limit — empty = server cap"
+              >
+                pool
                 <input
                   type="number"
                   min="10"
@@ -569,14 +529,16 @@
                   x-model.number="clusterPrefs.candidateLimit"
                   @change="applyClusterPrefs()"
                   class="w-16 rounded bg-ink-900/80 px-1 py-0.5 text-center text-[11px] text-violet-100 placeholder:text-violet-400/40 focus:outline-none"
-              /></label>
+                />
+              </label>
               <span
                 x-show="!lastQuery"
                 class="flex items-center gap-1"
-                title="Used only when query is blank"
-                ><span class="text-violet-400/60">|</span
-                ><label class="flex items-center gap-1"
-                  >src
+                title="Used only when the query is blank"
+              >
+                <span class="text-violet-400/60">|</span>
+                <label class="flex items-center gap-1">
+                  pool
                   <select
                     x-model="clusterPrefs.candidateSource"
                     @change="applyClusterPrefs()"
@@ -584,37 +546,29 @@
                   >
                     <option value="recent">recent</option>
                     <option value="random">random</option>
-                  </select></label
-                ></span
-              >
+                  </select>
+                </label>
+              </span>
             </div>
-            <!-- Sort & Order -->
+            <!-- Diversity selector -->
             <div
-              x-show="mode === 'browse' || mode === 'search'"
+              x-show="mode === 'browse' || mode === 'search' || mode === 'similar'"
               class="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-ink-800/80 px-2.5 py-1 text-[11px] font-medium text-slate-400"
+              title="Diversify results (MMR)"
             >
-              <i data-lucide="arrow-up-down" class="h-3 w-3"></i>
+              <i data-lucide="shuffle" class="h-3 w-3"></i>
               <select
-                x-model="sort"
-                @change="refetch(); pushURL()"
+                :value="diversity"
+                @change="setDiversity($event.target.value)"
                 class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
               >
-                <option value="similarity" x-show="mode === 'search'">
-                  Most similar
-                </option>
-                <option value="release_date">Newest release</option>
-                <option value="created_at">Recently added</option>
-              </select>
-              <span class="text-slate-600">|</span>
-              <select
-                x-model="order"
-                @change="refetch(); pushURL()"
-                class="cursor-pointer bg-transparent text-[11px] font-medium text-slate-300 focus:outline-none [color-scheme:dark]"
-              >
-                <option value="desc">Desc</option>
-                <option value="asc">Asc</option>
+                <option value="off">Diversity: off</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
               </select>
             </div>
+            <!-- genre pills -->
             <template x-for="g in filters.genres" :key="g">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-accent-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-accent-300"
@@ -628,19 +582,11 @@
                 </button>
               </span>
             </template>
+            <!-- code pill (legacy display if needed, though chips are in sidebar) -->
             <template x-if="filters.code">
-              <span
-                class="inline-flex items-center gap-1 rounded-full bg-violet-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-violet-300"
-              >
-                <span x-text="'code: ' + filters.code"></span>
-                <button
-                  @click="filters.code = ''; mode === 'clustered' ? fetchClustered() : refetch(); pushURL()"
-                  class="rounded-full p-0.5 hover:bg-white/10"
-                >
-                  <i data-lucide="x" class="h-3 w-3"></i>
-                </button>
-              </span>
+              <!-- Hidden or shown depending on preference, currently handled by sidebar chips -->
             </template>
+            <!-- date pill -->
             <template x-if="filters.from || filters.to">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
@@ -649,13 +595,14 @@
                   x-text="`${filters.from || '…'} → ${filters.to || '…'}`"
                 ></span>
                 <button
-                  @click="filters.from=''; filters.to=''; mode === 'clustered' ? fetchClustered() : refetch(); pushURL()"
+                  @click="filters.from=''; filters.to=''; mode === 'clustered' ? fetchClustered() : refetch()"
                   class="rounded-full p-0.5 hover:bg-white/10"
                 >
                   <i data-lucide="x" class="h-3 w-3"></i>
                 </button>
               </span>
             </template>
+            <!-- completion filter pill -->
             <template x-if="filters.completionFilter !== 'all'">
               <span
                 class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 py-0.5 pl-2.5 pr-1 text-[11px] font-medium text-emerald-300"
@@ -675,8 +622,9 @@
             </template>
           </div>
         </div>
-        <!-- ═══ CLUSTERED RESULTS ═══ -->
+        <!-- ═══════════════════ CLUSTERED RESULTS ═══════════════════ -->
         <div x-show="mode === 'clustered'" x-cloak>
+          <!-- skeleton -->
           <div x-show="clustered.loading && !clustered.data" class="space-y-8">
             <template x-for="ci in 3" :key="ci">
               <div>
@@ -684,9 +632,9 @@
                 <div class="flex gap-4 overflow-hidden">
                   <template x-for="ii in 6" :key="ii">
                     <div
-                      class="w-52 shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
+                      class="w-[300px] shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
                     >
-                      <div class="aspect-[4/3] skeleton"></div>
+                      <div class="aspect-[300/170] skeleton"></div>
                       <div class="space-y-2 p-3">
                         <div class="h-3 w-4/5 skeleton rounded"></div>
                         <div class="h-2.5 w-2/5 skeleton rounded"></div>
@@ -697,6 +645,7 @@
               </div>
             </template>
           </div>
+          <!-- error -->
           <div
             x-show="clustered.error"
             class="rounded-2xl border border-rose-500/30 bg-rose-950/40 p-4 text-sm text-rose-200"
@@ -710,19 +659,17 @@
               Retry
             </button>
           </div>
-          <!-- FIX: null-safe (clustered.data is null until the first fetch finishes) -->
+          <!-- rows -->
           <div
-            x-show="!clustered.loading && (clustered.data?.clusters?.length ?? 0) > 0"
+            x-show="!clustered.loading && clustered.data && clustered.data.clusters.length"
             class="space-y-8"
           >
-            <template
-              x-for="c in (clustered.data?.clusters ?? [])"
-              :key="c.cluster_id"
-            >
+            <template x-for="c in clustered.data.clusters" :key="c.cluster_id">
               <section
                 x-show="!clusterUiFor(c.cluster_id).hidden"
                 class="cluster-row"
               >
+                <!-- cluster header -->
                 <header class="mb-3 flex flex-wrap items-center gap-2">
                   <span
                     class="h-2 w-2 shrink-0 rounded-full"
@@ -736,27 +683,27 @@
                     class="flex items-center gap-0.5"
                     :title="`Cohesion ${(c.consistency_score ?? 0).toFixed(2)}`"
                   >
-                    <template x-for="s in 5" :key="s"
-                      ><span
+                    <template x-for="s in 5" :key="s">
+                      <span
                         class="h-1.5 w-3 rounded-full"
                         :class="s <= clusterSegments(c) ? clusterTierDotClass(c) : 'bg-white/10'"
-                      ></span
-                    ></template>
+                      ></span>
+                    </template>
                   </span>
                   <span class="text-[11px] text-slate-500">
                     <span x-text="c.size"></span> items
-                    <template x-if="(c.misplaced_items_count ?? 0) > 0"
-                      ><span class="text-amber-400/80">
-                        ·
-                        <span x-text="c.misplaced_items_count"></span>
-                        fringe</span
-                      ></template
-                    >
+                    <template x-if="(c.misplaced_items_count ?? 0) > 0">
+                      <span class="text-amber-400/80">
+                        · <span x-text="c.misplaced_items_count"></span> fringe
+                      </span>
+                    </template>
                   </span>
                   <button
                     @click="toggleClusterCoreOnly(c.cluster_id)"
                     class="ml-auto inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition"
-                    :class="clusterUiFor(c.cluster_id).coreOnly ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200' : 'border-white/10 text-slate-400 hover:text-slate-200'"
+                    :class="clusterUiFor(c.cluster_id).coreOnly
+                  ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-200'
+                  : 'border-white/10 text-slate-400 hover:text-slate-200'"
                     title="Hide fringe items"
                   >
                     <i data-lucide="sparkles" class="h-3 w-3"></i>
@@ -775,6 +722,7 @@
                     ></i>
                   </button>
                 </header>
+                <!-- horizontal scroller -->
                 <div class="carousel-mask">
                   <div class="carousel flex gap-3 overflow-x-auto pb-2">
                     <template
@@ -782,25 +730,38 @@
                       :key="v.id + '-' + idx"
                     >
                       <article
-                        class="card-enter group relative w-52 shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
+                        class="card-enter group relative w-[300px] shrink-0 overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
                         :class="{ 'opacity-60': isFringeItem(v) }"
                         :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
-                        @mouseenter="onCardEnter(v.id, v.preview, $event)"
-                        @mouseleave="onCardLeave(v.id, v.thumbnail, v.title, $event)"
                       >
                         <div
-                          class="relative aspect-[4/3] overflow-hidden bg-ink-800"
-                          data-preview-container
+                          class="relative aspect-[300/170] overflow-hidden bg-ink-800"
+                          @mouseenter="setPreview(v.id ? `home-0-${v.id}` : null)"
+                          @mouseleave="setPreview()"
+                          @click="v.id ? clickPreview(`home-0-${v.id}`) : null"
                         >
+                          <!-- Video Preview -->
+                          <video
+                            :src="v.preview"
+                            :id="`preview-home-0-${v.id}`"
+                            :class="{ hidden: !isPreviewActive(`home-0-${v.id}`) }"
+                            class="preview absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
+                            loop
+                            muted
+                            playsinline
+                            preload="none"
+                            @error="previewError(`home-0-${v.id}`)"
+                            @loadeddata="isPreviewActive(`home-0-${v.id}`) && playPreview(`home-0-${v.id}`)"
+                          ></video>
+                          <!-- Fallback Image -->
                           <img
                             :src="v.thumbnail"
                             :alt="v.title"
-                            referrerpolicy="no-referrer"
+                            :class="{ hidden: isPreviewActive(`home-0-${v.id}`) }"
                             loading="lazy"
                             decoding="async"
-                            data-preview-media="1"
-                            class="h-full w-full object-cover transition duration-500 group-hover:scale-110"
-                            @error="$event.target.style.opacity = .2"
+                            class="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
+                            @error="$el.style.opacity = .2"
                           />
                           <div
                             class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
@@ -809,8 +770,8 @@
                             x-show="v.similarity != null"
                             class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-accent-300 backdrop-blur"
                           >
-                            <i data-lucide="target" class="h-3 w-3"></i
-                            ><span
+                            <i data-lucide="target" class="h-3 w-3"></i>
+                            <span
                               x-text="(v.similarity * 100).toFixed(0) + '%'"
                             ></span>
                           </div>
@@ -821,33 +782,41 @@
                           >
                             <i data-lucide="zap" class="h-2.5 w-2.5"></i>
                           </div>
+                          <!-- Hover Actions -->
                           <div
-                            class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
+                            class="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100"
                           >
-                            <button
-                              @click="openDetail(v.id)"
-                              class="flex items-center gap-1.5 rounded-full bg-accent-500 px-3 py-1.5 text-xs font-bold text-ink-950 transition hover:scale-105"
+                            <div
+                              class="pointer-events-auto absolute inset-x-0 bottom-0 flex items-center justify-end gap-1.5 bg-gradient-to-t from-ink-950/90 via-ink-950/40 to-transparent p-2"
                             >
-                              <i data-lucide="play" class="h-3.5 w-3.5"></i>
-                              Preview
-                            </button>
-                            <button
-                              @click="findSimilarFromCluster(v.id)"
-                              class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
-                              title="Find similar"
-                            >
-                              <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
-                            </button>
-                            <button
-                              @click="openSource(v.url)"
-                              class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
-                              title="Open source"
-                            >
-                              <i
-                                data-lucide="external-link"
-                                class="h-3.5 w-3.5"
-                              ></i>
-                            </button>
+                              <button
+                                @click.stop="openDetail(v.id)"
+                                class="flex items-center gap-1 rounded-full bg-accent-500/90 px-2.5 py-1 text-[11px] font-bold text-ink-950 shadow transition hover:bg-accent-400"
+                              >
+                                <i data-lucide="play" class="h-3 w-3"></i>
+                                Preview
+                              </button>
+                              <button
+                                @click.stop="findSimilarFromCluster(v.id)"
+                                class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                                title="Find Similar"
+                              >
+                                <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
+                              </button>
+                              <a
+                                :href="v.url"
+                                target="_blank"
+                                rel="noopener"
+                                @click.stop
+                                class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                                title="Open Source"
+                              >
+                                <i
+                                  data-lucide="external-link"
+                                  class="h-3.5 w-3.5"
+                                ></i>
+                              </a>
+                            </div>
                           </div>
                         </div>
                         <div class="p-3">
@@ -871,7 +840,11 @@
                             >
                               <div
                                 class="h-full rounded-full"
-                                :class="clusterTier(c) === 'green' ? 'bg-emerald-400' : clusterTier(c) === 'amber' ? 'bg-amber-400' : 'bg-slate-500'"
+                                :class="clusterTier(c) === 'green'
+                              ? 'bg-emerald-400'
+                              : clusterTier(c) === 'amber'
+                              ? 'bg-amber-400'
+                              : 'bg-slate-500'"
                                 :style="`width:${Math.round((v.probability ?? 0) * 100)}%`"
                               ></div>
                             </div>
@@ -880,11 +853,12 @@
                             <template
                               x-for="g in (v.genres ?? []).slice(0, 2)"
                               :key="g"
-                              ><span
+                            >
+                              <span
                                 class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
                                 x-text="g"
-                              ></span
-                            ></template>
+                              ></span>
+                            </template>
                             <span
                               x-show="(v.genres?.length ?? 0) > 2"
                               class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
@@ -896,7 +870,7 @@
                     </template>
                     <div
                       x-show="visibleItems(c).length === 0"
-                      class="flex h-[220px] w-full items-center justify-center rounded-2xl border border-dashed border-white/10 text-xs text-slate-500"
+                      class="flex h-[170px] w-full items-center justify-center rounded-2xl border border-dashed border-white/10 text-xs text-slate-500"
                     >
                       No core items in this group — turn off “core only”.
                     </div>
@@ -905,8 +879,9 @@
               </section>
             </template>
           </div>
+          <!-- empty -->
           <div
-            x-show="!clustered.loading && clustered.data && (clustered.data.clusters?.length ?? 0) === 0"
+            x-show="!clustered.loading && clustered.data && !clustered.data.clusters.length"
             class="flex flex-col items-center justify-center py-24 text-center"
           >
             <div
@@ -928,17 +903,18 @@
             </button>
           </div>
         </div>
-        <!-- ═══ PAGINATED RESULTS ═══ -->
+        <!-- ═══════════════════ PAGINATED RESULTS ═══════════════════ -->
         <div x-show="mode !== 'clustered'">
           <div
             x-show="items.length === 0 && loading"
-            class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+            class="grid gap-4"
+            style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))"
           >
             <template x-for="i in 10" :key="i">
               <div
                 class="overflow-hidden rounded-2xl border border-white/5 bg-ink-900"
               >
-                <div class="aspect-[4/3] skeleton"></div>
+                <div class="aspect-[300/170] skeleton"></div>
                 <div class="space-y-2 p-3">
                   <div class="h-3 w-4/5 skeleton rounded"></div>
                   <div class="h-2.5 w-2/5 skeleton rounded"></div>
@@ -952,28 +928,42 @@
           </div>
           <div
             x-show="items.length > 0"
-            class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+            class="grid gap-4"
+            style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr))"
           >
             <template x-for="(v, idx) in items" :key="v.id + '-' + idx">
               <article
                 class="card-enter group relative overflow-hidden rounded-2xl border border-white/5 bg-ink-900 transition-all duration-200 hover:-translate-y-1 hover:border-accent-500/40 hover:shadow-glow"
                 :style="`animation-delay:${Math.min(idx, 10) * 25}ms`"
-                @mouseenter="onCardEnter(v.id, v.preview, $event)"
-                @mouseleave="onCardLeave(v.id, v.thumbnail, v.title, $event)"
               >
                 <div
-                  class="relative aspect-[4/3] overflow-hidden bg-ink-800"
-                  data-preview-container
+                  class="relative aspect-[300/170] overflow-hidden bg-ink-800"
+                  @mouseenter="setPreview(v.id ? `home-0-${v.id}` : null)"
+                  @mouseleave="setPreview()"
+                  @click="v.id ? clickPreview(`home-0-${v.id}`) : null"
                 >
+                  <!-- Video Preview -->
+                  <video
+                    :src="v.preview"
+                    :id="`preview-home-0-${v.id}`"
+                    :class="{ hidden: !isPreviewActive(`home-0-${v.id}`) }"
+                    class="preview absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
+                    loop
+                    muted
+                    playsinline
+                    preload="none"
+                    @error="previewError(`home-0-${v.id}`)"
+                    @loadeddata="isPreviewActive(`home-0-${v.id}`) && playPreview(`home-0-${v.id}`)"
+                  ></video>
+                  <!-- Fallback Image -->
                   <img
                     :src="v.thumbnail"
                     :alt="v.title"
-                    referrerpolicy="no-referrer"
+                    :class="{ hidden: isPreviewActive(`home-0-${v.id}`) }"
                     loading="lazy"
                     decoding="async"
-                    data-preview-media="1"
-                    class="h-full w-full object-cover transition duration-500 group-hover:scale-110"
-                    @error="$event.target.style.opacity = .2"
+                    class="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-110"
+                    @error="$el.style.opacity = .2"
                   />
                   <div
                     class="pointer-events-none absolute inset-0 bg-gradient-to-t from-ink-950/90 via-ink-950/10 to-transparent"
@@ -982,39 +972,45 @@
                     x-show="v.similarity != null"
                     class="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-accent-300 backdrop-blur"
                   >
-                    <i data-lucide="target" class="h-3 w-3"></i
-                    ><span
-                      x-text="(v.similarity * 100).toFixed(0) + '%'"
-                    ></span>
+                    <i data-lucide="target" class="h-3 w-3"></i>
+                    <span x-text="(v.similarity * 100).toFixed(0) + '%'"></span>
                   </div>
                   <div
                     x-show="v.release_date"
                     class="absolute right-2 top-2 rounded-full bg-ink-950/80 px-2 py-0.5 text-[10px] font-bold text-slate-300 backdrop-blur"
                     x-text="v.release_date?.slice(0,4)"
                   ></div>
+                  <!-- Hover Actions -->
                   <div
-                    class="absolute inset-0 flex items-center justify-center gap-2 bg-ink-950/60 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
+                    class="pointer-events-none absolute inset-0 opacity-0 transition group-hover:opacity-100"
                   >
-                    <button
-                      @click="openDetail(v.id)"
-                      class="flex items-center gap-1.5 rounded-full bg-accent-500 px-3 py-1.5 text-xs font-bold text-ink-950 transition hover:scale-105"
+                    <div
+                      class="pointer-events-auto absolute inset-x-0 bottom-0 flex items-center justify-end gap-1.5 bg-gradient-to-t from-ink-950/90 via-ink-950/40 to-transparent p-2"
                     >
-                      <i data-lucide="play" class="h-3.5 w-3.5"></i> Preview
-                    </button>
-                    <button
-                      @click="findSimilar(v.id)"
-                      class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
-                      title="Find similar"
-                    >
-                      <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
-                    </button>
-                    <button
-                      @click="openSource(v.url)"
-                      class="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/20 transition hover:bg-white/20"
-                      title="Open source"
-                    >
-                      <i data-lucide="external-link" class="h-3.5 w-3.5"></i>
-                    </button>
+                      <button
+                        @click.stop="openDetail(v.id)"
+                        class="flex items-center gap-1 rounded-full bg-accent-500/90 px-2.5 py-1 text-[11px] font-bold text-ink-950 shadow transition hover:bg-accent-400"
+                      >
+                        <i data-lucide="play" class="h-3 w-3"></i> Preview
+                      </button>
+                      <button
+                        @click.stop="findSimilar(v.id)"
+                        class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                        title="Find Similar"
+                      >
+                        <i data-lucide="orbit" class="h-3.5 w-3.5"></i>
+                      </button>
+                      <a
+                        :href="v.url"
+                        target="_blank"
+                        rel="noopener"
+                        @click.stop
+                        class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
+                        title="Open Source"
+                      >
+                        <i data-lucide="external-link" class="h-3.5 w-3.5"></i>
+                      </a>
+                    </div>
                   </div>
                 </div>
                 <div class="p-3">
@@ -1033,12 +1029,15 @@
                     <span x-text="v.episode"></span>
                   </div>
                   <div class="mt-2 flex flex-wrap gap-1">
-                    <template x-for="g in (v.genres ?? []).slice(0, 2)" :key="g"
-                      ><span
+                    <template
+                      x-for="g in (v.genres ?? []).slice(0, 2)"
+                      :key="g"
+                    >
+                      <span
                         class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
                         x-text="g"
-                      ></span
-                    ></template>
+                      ></span>
+                    </template>
                     <span
                       x-show="(v.genres?.length ?? 0) > 2"
                       class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-500"
@@ -1097,12 +1096,12 @@
         <div x-ref="sentinel" class="h-1"></div>
       </section>
     </div>
-    <!-- ═══ GENRES MODAL ═══ -->
+    <!-- ═══════════════════ GENRES MODAL ═══════════════════ -->
     <div
-      x-show="genresModal.open"
+      x-show="genresModalOpen"
       x-cloak
-      class="fixed inset-0 z-50 flex items-center justify-center p-4 modal-backdrop"
-      @click.self="genresModal.open = false"
+      class="fixed inset-0 z-[60] flex items-center justify-center p-4 modal-backdrop"
+      @click.self="genresModalOpen = false"
       x-transition.opacity
     >
       <div
@@ -1112,66 +1111,67 @@
         <div
           class="flex items-center justify-between border-b border-white/10 p-4"
         >
-          <h3 class="flex items-center gap-2 text-sm font-bold text-slate-200">
-            <i data-lucide="drama" class="h-4 w-4"></i> All Genres
-          </h3>
-          <div class="flex items-center gap-2">
-            <select
-              x-model="genresModal.sortBy"
-              @change="genresModal.order = 'desc'"
-              class="rounded-lg border border-white/10 bg-ink-800 px-2 py-1 text-xs text-slate-300 focus:outline-none [color-scheme:dark]"
-            >
-              <option value="count">Sort by count</option>
-              <option value="alphabet">Sort A–Z</option>
-            </select>
+          <h2 class="text-lg font-bold text-slate-100">All Genres</h2>
+          <button
+            @click="genresModalOpen = false"
+            class="rounded-full p-1 text-slate-400 hover:bg-white/10 hover:text-slate-200"
+          >
+            <i data-lucide="x" class="h-5 w-5"></i>
+          </button>
+        </div>
+        <div class="p-4">
+          <!-- Sort Controls -->
+          <div class="mb-4 flex items-center gap-2">
+            <span class="text-xs text-slate-500">Sort by:</span>
             <button
-              @click="genresModal.order = genresModal.order === 'desc' ? 'asc' : 'desc'"
-              class="flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/5"
+              @click="toggleGenreSort('name')"
+              :class="genreSortBy === 'name' ? 'bg-accent-500 text-ink-950' : 'bg-ink-800 text-slate-400'"
+              class="rounded px-2 py-1 text-xs font-semibold transition"
+            >
+              Name
+            </button>
+            <button
+              @click="toggleGenreSort('count')"
+              :class="genreSortBy === 'count' ? 'bg-accent-500 text-ink-950' : 'bg-ink-800 text-slate-400'"
+              class="rounded px-2 py-1 text-xs font-semibold transition"
+            >
+              Count
+            </button>
+            <button
+              @click="genreSortOrder = genreSortOrder === 'asc' ? 'desc' : 'asc'"
+              class="ml-auto rounded bg-ink-800 p-1 text-slate-400 hover:text-slate-200"
+              :title="genreSortOrder === 'asc' ? 'Ascending' : 'Descending'"
             >
               <i
-                :data-lucide="genresModal.order === 'desc' ? 'arrow-down-wide-narrow' : 'arrow-up-narrow-wide'"
-                class="h-3.5 w-3.5"
+                :data-lucide="genreSortOrder === 'asc' ? 'arrow-up' : 'arrow-down'"
+                class="h-4 w-4"
               ></i>
-              <span
-                x-text="genresModal.order === 'desc' ? 'Desc' : 'Asc'"
-              ></span>
-            </button>
-            <button
-              @click="genresModal.open = false"
-              class="grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-white/5"
-            >
-              <i data-lucide="x" class="h-4 w-4"></i>
             </button>
           </div>
-        </div>
-        <div class="max-h-[60vh] overflow-y-auto p-4">
-          <div class="flex flex-wrap gap-1.5">
-            <template x-for="g in sortedGenresList" :key="g.name">
-              <button
-                @click="toggleGenre(g.name)"
-                :class="filters.genres.includes(g.name) ? 'border-accent-500 bg-accent-500/15 text-accent-300' : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
-                class="rounded-full border px-2.5 py-1 text-[11px] font-medium transition"
-              >
-                <span x-text="g.name"></span>
-                <span
-                  class="ml-1 text-[10px] opacity-60"
-                  x-text="g.count.toLocaleString()"
-                ></span>
-              </button>
-            </template>
+          <!-- Grid -->
+          <div class="max-h-[60vh] overflow-y-auto custom-scrollbar">
+            <div class="flex flex-wrap gap-2">
+              <template x-for="g in sortedGenresForModal" :key="g.name">
+                <button
+                  @click="toggleGenre(g.name)"
+                  :class="filters.genres.includes(g.name)
+                ? 'border-accent-500 bg-accent-500/15 text-accent-300'
+                : 'border-white/10 bg-ink-800 text-slate-400 hover:border-white/20 hover:text-slate-200'"
+                  class="rounded-full border px-3 py-1.5 text-sm font-medium transition flex items-center gap-2"
+                >
+                  <span x-text="g.name"></span>
+                  <span
+                    class="rounded-full bg-ink-950 px-1.5 py-0.5 text-[10px] text-slate-500"
+                    x-text="g.count"
+                  ></span>
+                </button>
+              </template>
+            </div>
           </div>
-        </div>
-        <div class="flex justify-end border-t border-white/10 p-3">
-          <button
-            @click="genresModal.open = false"
-            class="rounded-lg bg-accent-500 px-4 py-1.5 text-xs font-bold text-ink-950 hover:bg-accent-400"
-          >
-            Done
-          </button>
         </div>
       </div>
     </div>
-    <!-- ═══ DETAIL MODAL ═══ -->
+    <!-- ═══════════════════ DETAIL MODAL ═══════════════════ -->
     <div
       x-show="detail.open"
       x-cloak
@@ -1189,9 +1189,9 @@
         >
           <i data-lucide="x" class="h-5 w-5"></i>
         </button>
-        <template x-if="detail.loading"
-          ><div class="aspect-video skeleton"></div
-        ></template>
+        <template x-if="detail.loading">
+          <div class="aspect-video skeleton"></div>
+        </template>
         <template x-if="detail.video">
           <div>
             <div class="aspect-video bg-black">
@@ -1199,7 +1199,6 @@
                 <video
                   :src="detail.video.preview"
                   :poster="detail.video.thumbnail"
-                  referrerpolicy="no-referrer"
                   controls
                   autoplay
                   muted
@@ -1207,11 +1206,12 @@
                   class="h-full w-full object-contain"
                 ></video>
               </template>
-              <template x-if="!detail.video.preview"
-                ><img
+              <template x-if="!detail.video.preview">
+                <img
                   :src="detail.video.thumbnail"
                   class="h-full w-full object-contain"
-              /></template>
+                />
+              </template>
             </div>
             <div class="max-h-[50vh] overflow-y-auto p-5">
               <div class="mb-2 flex items-center gap-2 text-xs text-slate-500">
@@ -1232,7 +1232,7 @@
               <div class="mt-3 flex flex-wrap gap-1.5">
                 <template x-for="g in (detail.video.genres || [])" :key="g">
                   <span
-                    @click="closeDetail(); filters.genres=[g]; mode === 'clustered' ? fetchClustered() : refetch(); pushURL()"
+                    @click="closeDetail(); filters.genres=[g]; mode === 'clustered' ? fetchClustered() : refetch()"
                     class="cursor-pointer rounded-full border border-white/10 bg-ink-800 px-2.5 py-0.5 text-[11px] text-slate-400 transition hover:border-accent-500/40 hover:text-accent-300"
                     x-text="g"
                   ></span>
@@ -1249,9 +1249,10 @@
                   target="_blank"
                   rel="noopener"
                   class="flex items-center gap-1.5 rounded-lg bg-accent-500 px-4 py-2 text-sm font-bold text-ink-950 transition hover:bg-accent-400"
-                  ><i data-lucide="external-link" class="h-4 w-4"></i> Open
-                  source</a
                 >
+                  <i data-lucide="external-link" class="h-4 w-4"></i> Open
+                  source
+                </a>
                 <button
                   @click="findSimilar(detail.video.id)"
                   class="flex items-center gap-1.5 rounded-lg border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/5"
@@ -1264,14 +1265,18 @@
         </template>
       </div>
     </div>
-    <!-- ═══ TOASTS ═══ -->
+    <!-- ═══════════════════ TOASTS ═══════════════════ -->
     <div
       class="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2"
     >
       <template x-for="t in toasts" :key="t.id">
         <div
           class="pointer-events-auto flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm shadow-lg backdrop-blur-md"
-          :class="{ 'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error', 'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success', 'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info' }"
+          :class="{
+        'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
+        'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
+        'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
+      }"
           x-transition
         >
           <i
@@ -1282,6 +1287,6 @@
         </div>
       </template>
     </div>
-    <!-- NOTE: app.js is now loaded in <head> (before Alpine). Nothing to load here. -->
+    <script src="app.js"></script>
   </body>
 </html>

@@ -5,6 +5,7 @@ html {
 body {
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
+/* custom scrollbar */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -19,6 +20,18 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #3b4658;
 }
+/* Custom scrollbar for specific containers */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #293241;
+  border-radius: 4px;
+}
+/* film-grain background */
 .bg-grain::before {
   content: "";
   position: fixed;
@@ -29,6 +42,7 @@ body {
   opacity: 0.35;
   mix-blend-mode: overlay;
 }
+/* skeleton shimmer */
 .skeleton {
   background: linear-gradient(90deg, #1d2430 0%, #293241 50%, #1d2430 100%);
   background-size: 200% 100%;
@@ -42,6 +56,7 @@ body {
     background-position: -200% 0;
   }
 }
+/* fade-in-up card */
 .card-enter {
   animation: cardEnter 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
@@ -55,6 +70,7 @@ body {
     transform: translateY(0) scale(1);
   }
 }
+/* modal backdrop */
 .modal-backdrop {
   backdrop-filter: blur(6px);
   background: rgba(5, 7, 12, 0.72);
@@ -62,6 +78,7 @@ body {
 [x-cloak] {
   display: none !important;
 }
+/* line-clamp helper */
 .line-clamp-2 {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -74,6 +91,7 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* ─── clustered-mode carousel ─── */
 .carousel-mask {
   position: relative;
   -webkit-mask-image: linear-gradient(
@@ -99,11 +117,4 @@ body {
 }
 .cluster-row[class*="opacity-70"] {
   transition: opacity 0.2s ease;
-}
-/* Hide default video chrome on hover-preview so it blends with the card. */
-[data-preview-container] video::-webkit-media-controls {
-  display: none !important;
-}
-[data-preview-container] video {
-  pointer-events: none;
 }
