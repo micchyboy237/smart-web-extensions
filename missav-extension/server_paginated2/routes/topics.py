@@ -57,6 +57,10 @@ def search_topics_endpoint(
     use_ngram_fusion: bool = Query(
         True, description="Enable multi-ngram semantic fusion"
     ),
+    require_word_match: bool = Query(
+        True,
+        description="Filter results to only include topics whose top words match query terms",
+    ),
 ):
     """
     Search topics using Multi-Vector Semantic Fusion.
@@ -69,4 +73,5 @@ def search_topics_endpoint(
         min_doc_score=min_doc_score,
         max_rep_docs=max_rep_docs,
         use_ngram_fusion=use_ngram_fusion,
+        require_word_match=require_word_match,
     )

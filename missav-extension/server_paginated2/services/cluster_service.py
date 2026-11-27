@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from jet.adapters.llama_cpp.cluster_utils.clusterer import TextsClusterer
 from jet.adapters.llama_cpp.embed_utils import embed
 from jet.adapters.turftopic.missav import ClusterTopicsResult, cluster_topics
+from jet.wordnet.words import get_words
 from models.schemas.topic import (
     CodeDashboardSummary,
     DashboardResponse,
@@ -614,30 +615,31 @@ def get_topics_dashboard() -> DashboardResponse:
         raise HTTPException(500, f"Failed to load dashboard: {e}")
 
 
-def generate_query_ngrams(query: str) -> List[str]:
+def _match_topic_words(ngrams: List[str], topic_words: List[dict]) -> List[str]:
     """
-    Generates a list of n-grams from a query string.
-    Example: 'beautiful mature wife' -> ['beautiful mature wife', 'beautiful mature', 'mature wife', 'beautiful', 'mature', 'wife']
+    Return the topic words that share a WHOLE word with any query n-gram.
+
+    Whole-word matching only (no substring matching), so:
+      - "son" matches "mother son" or "son"
+      - "son" does NOT match "person", "reason" or "season"
+
+    Args:
+        ngrams: Query n-grams (lowercase), e.g. ["mother", "son", "mother son"].
+        topic_words: List of {"word": str, "score": float, ...} dicts.
+
+    Returns:
+        The original topic words that matched (empty list = no match).
     """
-    words = query.lower().split()
-    if not words:
-        return []
+    ngram_set = set(ngrams)
+    ngram_tokens = {tok for g in ngrams for tok in get_words(g, n=1)}
 
-    ngrams = set()
-    # Add full phrase
-    ngrams.add(query.lower())
-
-    # Add all contiguous sub-phrases of length > 1
-    for i in range(len(words)):
-        for j in range(i + 2, len(words) + 1):
-            ngrams.add(" ".join(words[i:j]))
-
-    # Add individual words
-    for word in words:
-        ngrams.add(word)
-
-    # Sort by length descending so more specific phrases are processed first (optional but good for debugging)
-    return sorted(list(ngrams), key=len, reverse=True)
+    matched: List[str] = []
+    for tw in topic_words:
+        word = tw["word"].lower()
+        word_tokens = set(get_words(word, n=1))
+        if word in ngram_set or (word_tokens & ngram_tokens):
+            matched.append(tw["word"])
+    return matched
 
 
 def search_topics_by_ngrams(
@@ -647,22 +649,38 @@ def search_topics_by_ngrams(
     min_doc_score: float = 0.0,
     max_rep_docs: int = 5,
     use_ngram_fusion: bool = True,
+    require_word_match: bool = True,
 ) -> List[TopicSearchResultItem]:
     """
     Multi-vector semantic search using n-gram fusion.
+    Uses jet.wordnet.words.get_words for robust tokenization and n-gram generation.
+
+    When require_word_match is True, a topic is kept only if at least one of the
+    top words RETURNED to the client shares a whole word with a query n-gram.
     """
     t0 = time.perf_counter()
-    k = 60  # RRF constant
+    k = 60
+    returned_words_count = 5  # must match what the client receives
 
-    # Generate n-grams
+    # ---- 1. Build n-grams ----
+    ngrams_set: Set[str] = set()
     if use_ngram_fusion:
-        ngrams = generate_query_ngrams(query)
+        for n in [1, 2, 3]:
+            grams = get_words(query.lower(), n=n)
+            ngrams_set.update(grams)
     else:
-        ngrams = [query.lower()]
+        ngrams_set.add(query.lower())
 
-    logger.info("Searching with n-grams: %s", ngrams)
+    ngrams = sorted(g for g in ngrams_set if len(g) > 1)
+    logger.info(
+        "Searching query=%r with %d n-grams: %s | require_word_match=%s",
+        query,
+        len(ngrams),
+        ngrams[:10],
+        require_word_match,
+    )
 
-    # Store scores and which ngrams contributed
+    # ---- 2. Vector search per n-gram + RRF fusion ----
     global_scores: Dict[str, float] = {}
     contributing_ngrams: Dict[str, Set[str]] = {}
 
@@ -679,7 +697,6 @@ def search_topics_by_ngrams(
                 logger.error("Embedding failed for ngram '%s': %s", ngram, e)
                 continue
 
-            # Fetch vector candidates for this specific ngram
             rows = conn.execute(
                 """
                 SELECT id as topic_id, 
@@ -689,93 +706,120 @@ def search_topics_by_ngrams(
                 ORDER BY embedding <=> %(emb)s::vector
                 LIMIT %(limit)s
                 """,
-                {
-                    "emb": emb,
-                    "k": k,
-                    "limit": limit * 3,
-                },  # Fetch more candidates per ngram
+                {"emb": emb, "k": k, "limit": limit * 3},
             ).fetchall()
+
+            logger.debug("ngram=%r -> %d topic hits", ngram, len(rows))
 
             for r in rows:
                 tid = str(r["topic_id"])
-                score = r["rrf_score"]
+                global_scores[tid] = global_scores.get(tid, 0) + r["rrf_score"]
+                contributing_ngrams.setdefault(tid, set()).add(ngram)
 
-                global_scores[tid] = global_scores.get(tid, 0) + score
-                if tid not in contributing_ngrams:
-                    contributing_ngrams[tid] = set()
-                contributing_ngrams[tid].add(ngram)
-
-    # Filter and Sort
-    candidates = []
-    for tid, score in global_scores.items():
-        if score < min_topic_score:
-            continue
-        candidates.append((tid, score, list(contributing_ngrams[tid])))
-
+    # ---- 3. Rank candidates ----
+    candidates = [
+        (tid, score, sorted(contributing_ngrams[tid]))
+        for tid, score in global_scores.items()
+        if score >= min_topic_score
+    ]
     candidates.sort(key=lambda x: -x[1])
-    ordered_candidates = candidates[:limit]
+
+    # Bigger pool when filtering, because the word filter will drop some
+    pool_size = limit * 5 if require_word_match else limit
+    ordered_candidates = candidates[:pool_size]
+    logger.info(
+        "Candidates: total=%d, pool=%d (pool_size=%d)",
+        len(candidates),
+        len(ordered_candidates),
+        pool_size,
+    )
 
     if not ordered_candidates:
         return []
 
+    # ---- 4. Fetch topic details (on a live connection) ----
     ids_to_fetch = [x[0] for x in ordered_candidates]
 
-    # Fetch Detailed Info with Video Joins
-    final_rows = conn.execute(
-        """
-        SELECT 
-            t.id, t.topic_id, t.name, t.representative_doc_count, t.run_id, tr.code, tr.created_at,
-            (SELECT jsonb_agg(jsonb_build_object('word', x.word, 'score', x.score, 'rank', x.rank) ORDER BY x.rank ASC)
-             FROM (SELECT w.word, w.score, w.rank FROM public.topic_words w WHERE w.topic_id = t.id ORDER BY w.rank ASC LIMIT 5) x) AS top_words_json,
-            (SELECT jsonb_agg(doc_obj ORDER BY (doc_obj->>'membership_score')::float8 DESC)
-             FROM (
-                 SELECT jsonb_build_object(
-                     'video_id', rd.video_id, 'membership_score', rd.membership_score, 'content_snippet', rd.content,
-                     'title', v.title, 'thumbnail', v.thumbnail, 'preview', v.preview, 'release_date', v.release_date
-                 ) as doc_obj
-                 FROM public.topic_representative_docs rd
-                 LEFT JOIN public.videos v ON rd.video_id = v.video_id
-                 WHERE rd.topic_id = t.id AND rd.membership_score >= %(min_doc_score)s
-                 ORDER BY rd.membership_score DESC LIMIT %(max_rep_docs)s
-             ) sub) AS rep_docs_with_video
-        FROM public.topics t
-        JOIN public.topic_runs tr ON t.run_id = tr.id
-        WHERE t.id = ANY(%(ids)s::uuid[])
-        """,
-        {
-            "ids": ids_to_fetch,
-            "min_doc_score": min_doc_score,
-            "max_rep_docs": max_rep_docs,
-        },
-    ).fetchall()
+    with pool.connection() as conn:
+        final_rows = conn.execute(
+            """
+            SELECT 
+                t.id, t.topic_id, t.name, t.representative_doc_count, t.run_id, tr.code, tr.created_at,
+                (SELECT jsonb_agg(jsonb_build_object('word', x.word, 'score', x.score, 'rank', x.rank) ORDER BY x.rank ASC)
+                 FROM (SELECT w.word, w.score, w.rank FROM public.topic_words w WHERE w.topic_id = t.id ORDER BY w.rank ASC LIMIT 10) x) AS top_words_json,
+                (SELECT jsonb_agg(doc_obj ORDER BY (doc_obj->>'membership_score')::float8 DESC)
+                 FROM (
+                     SELECT jsonb_build_object(
+                         'video_id', rd.video_id, 'membership_score', rd.membership_score, 'content_snippet', rd.content,
+                         'title', v.title, 'thumbnail', v.thumbnail, 'preview', v.preview, 'release_date', v.release_date
+                     ) as doc_obj
+                     FROM public.topic_representative_docs rd
+                     LEFT JOIN public.videos v ON rd.video_id = v.video_id
+                     WHERE rd.topic_id = t.id AND rd.membership_score >= %(min_doc_score)s
+                     ORDER BY rd.membership_score DESC LIMIT %(max_rep_docs)s
+                 ) sub) AS rep_docs_with_video
+            FROM public.topics t
+            JOIN public.topic_runs tr ON t.run_id = tr.id
+            WHERE t.id = ANY(%(ids)s::uuid[])
+            """,
+            {
+                "ids": ids_to_fetch,
+                "min_doc_score": min_doc_score,
+                "max_rep_docs": max_rep_docs,
+            },
+        ).fetchall()
 
     row_map = {str(r["id"]): r for r in final_rows}
+
+    # ---- 5. Build results (filter + format) ----
     result: List[TopicSearchResultItem] = []
+    dropped = 0
 
     for tid, score, matched_ngrams_list in ordered_candidates:
         r = row_map.get(tid)
         if not r:
             continue
 
-        # Parse Top Words safely
+        # Parse top words
         top_words_raw = r["top_words_json"]
-        top_words = []
+        top_words: List[dict] = []
         if top_words_raw:
             if isinstance(top_words_raw, str):
                 top_words = json.loads(top_words_raw)
             elif isinstance(top_words_raw, list):
                 top_words = top_words_raw
 
-        # Parse Representative Docs safely
+        # Match against EXACTLY the words returned to the client
+        top_words = top_words[:returned_words_count]
+
+        if require_word_match:
+            matched_words = _match_topic_words(ngrams, top_words)
+            if not matched_words:
+                dropped += 1
+                logger.info(
+                    "Dropped topic %s (%s): top_words=%s, no match with ngrams=%s",
+                    r["topic_id"],
+                    r["code"],
+                    [w["word"] for w in top_words],
+                    ngrams,
+                )
+                continue
+            logger.info(
+                "Kept topic %s (%s): matched_words=%s",
+                r["topic_id"],
+                r["code"],
+                matched_words,
+            )
+
+        # Parse representative docs
         rep_docs_raw = r["rep_docs_with_video"]
-        rep_docs = []
+        rep_docs: List[RepresentativeDocWithVideo] = []
         if rep_docs_raw:
             rep_docs_list = []
             if isinstance(rep_docs_raw, str):
                 rep_docs_list = json.loads(rep_docs_raw)
             elif isinstance(rep_docs_raw, list):
                 rep_docs_list = rep_docs_raw
-
             for doc in rep_docs_list:
                 if doc:
                     rep_docs.append(RepresentativeDocWithVideo(**doc))
@@ -795,9 +839,13 @@ def search_topics_by_ngrams(
             )
         )
 
+        if len(result) >= limit:
+            break
+
     logger.info(
-        "N-gram fusion search done: %d results in %.1fms",
+        "N-gram fusion search done: %d results (dropped=%d) in %.1fms",
         len(result),
+        dropped,
         (time.perf_counter() - t0) * 1000,
     )
     return result
