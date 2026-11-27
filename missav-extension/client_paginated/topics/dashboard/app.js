@@ -1,26 +1,48 @@
 const API_BASE = "http://localhost:9001";
 let wordChartInstance = null;
+let currentRunData = null; // Store full run data locally
 
 function initChart() {
   const chartDom = document.getElementById("wordChart");
   wordChartInstance = echarts.init(chartDom);
+
+  // Use ResizeObserver to handle dynamic container sizing
+  new ResizeObserver(() => {
+    wordChartInstance.resize();
+  }).observe(chartDom.parentElement);
+
   window.addEventListener("resize", () => wordChartInstance.resize());
 }
 
 async function loadDashboard() {
-  const res = await fetch(`${API_BASE}/topics/dashboard`);
-  const data = await res.json();
-  renderGrid(data.codes);
+  try {
+    const res = await fetch(`${API_BASE}/topics/dashboard`);
+    if (!res.ok) throw new Error("Failed to fetch dashboard");
+    const data = await res.json();
+    renderGrid(data.codes);
+  } catch (err) {
+    console.error(err);
+    document.getElementById("dashboardGrid").innerHTML =
+      `<p class="text-red-500 col-span-full text-center">Error loading dashboard: ${err.message}</p>`;
+  }
 }
 
 function renderGrid(codes) {
   const grid = document.getElementById("dashboardGrid");
   grid.innerHTML = "";
+
+  if (!codes || codes.length === 0) {
+    grid.innerHTML =
+      '<p class="text-gray-500 col-span-full text-center py-10">No topic runs found. Start a new analysis!</p>';
+    return;
+  }
+
   codes.forEach((item) => {
+    // Format keywords with scores
     const wordsHtml = item.top_topic_words
       .map(
         (w) =>
-          `<span class="tag" title="Score: ${w.score.toFixed(2)}">${w.word}</span>`,
+          `<span class="keyword-tag">${w.word}<span class="keyword-score">${w.score.toFixed(2)}</span></span>`,
       )
       .join("");
 
@@ -31,20 +53,20 @@ function renderGrid(codes) {
 
     card.innerHTML = `
             <div class="flex justify-between items-start mb-4">
-                <div class="bg-indigo-50 text-indigo-700 font-bold px-3 py-1 rounded-md text-sm">${item.code.toUpperCase()}</div>
+                <div class="bg-indigo-50 text-indigo-700 font-bold px-3 py-1 rounded-md text-sm tracking-wide">${item.code.toUpperCase()}</div>
                 <span class="text-xs text-gray-400">${new Date(item.created_at).toLocaleDateString()}</span>
             </div>
-            <div class="flex-grow">
-                <div class="text-sm text-gray-600 mb-4 space-y-1">
-                    <div class="flex justify-between"><span>Topics:</span> <strong>${item.n_topics}</strong></div>
-                    <div class="flex justify-between"><span>Docs:</span> <strong>${item.n_docs}</strong></div>
-                    <div class="flex justify-between"><span>Rep. Docs:</span> <strong>${item.top_topic_rep_count || 0}</strong></div>
+            <div class="flex-grow space-y-2">
+                <div class="grid grid-cols-2 gap-2 text-sm text-gray-600 bg-gray-50 p-2 rounded">
+                    <div>Topics: <strong>${item.n_topics}</strong></div>
+                    <div>Docs: <strong>${item.n_docs}</strong></div>
+                    <div class="col-span-2">Rep. Docs: <strong>${item.top_topic_rep_count || 0}</strong></div>
                 </div>
-                ${item.top_topic_name ? `<p class="text-sm font-medium text-gray-800 mb-2">Primary: "${item.top_topic_name}"</p>` : ""}
+                ${item.top_topic_name ? `<p class="text-sm font-medium text-gray-800 mt-2">Primary: "${item.top_topic_name}"</p>` : ""}
             </div>
-            <div class="border-t pt-3 mt-2">
+            <div class="border-t pt-3 mt-4">
                 <p class="text-xs text-gray-400 uppercase font-semibold mb-2">Top Keywords</p>
-                <div class="flex flex-wrap">${wordsHtml}</div>
+                <div class="flex flex-wrap">${wordsHtml || '<span class="text-gray-400 text-xs">No data</span>'}</div>
             </div>
         `;
     grid.appendChild(card);
@@ -54,46 +76,88 @@ function renderGrid(codes) {
 async function loadRunDetails(runId, code) {
   document.getElementById("detailView").classList.remove("hidden");
   document.getElementById("detailView").scrollIntoView({ behavior: "smooth" });
-  document.getElementById("detailTitle").innerText =
-    `Analysis: ${code.toUpperCase()}`;
 
-  const res = await fetch(`${API_BASE}/topics/runs/${runId}`);
-  const data = await res.json();
-  document.getElementById("detailMeta").innerText =
-    `Run ID: ${runId} • ${data.topics.length} Topics Found`;
+  // Show loading state in detail view
+  document.getElementById("detailTitle").innerText = "Loading...";
 
-  const mainTopic = data.topics[0];
-  if (mainTopic) {
-    // Chart
-    wordChartInstance.setOption({
-      tooltip: { trigger: "axis" },
-      xAxis: {
-        type: "category",
-        data: mainTopic.words.map((w) => w.word),
-        axisLabel: { rotate: 30 },
-      },
-      yAxis: { type: "value" },
-      series: [
-        {
-          data: mainTopic.words.map((w) => w.score),
-          type: "bar",
-          itemStyle: { color: "#4f46e5", borderRadius: [4, 4, 0, 0] },
-        },
-      ],
+  try {
+    const res = await fetch(`${API_BASE}/topics/runs/${runId}`);
+    if (!res.ok) throw new Error("Failed to load details");
+    currentRunData = await res.json();
+
+    document.getElementById("detailTitle").innerText =
+      `Analysis: ${currentRunData.run.code.toUpperCase()}`;
+    document.getElementById("detailMeta").innerText =
+      `Run ID: ${runId} • ${currentRunData.topics.length} Topics • ${currentRunData.run.n_docs} Docs`;
+
+    // Populate Topic Selector
+    const select = document.getElementById("topicSelect");
+    select.innerHTML = "";
+    currentRunData.topics.forEach((t, index) => {
+      const option = document.createElement("option");
+      option.value = index;
+      option.text = `#${t.topic_id} ${t.name || "Unnamed"}`;
+      select.appendChild(option);
     });
 
-    // Docs
-    document.getElementById("repCountBadge").innerText =
-      mainTopic.representative_docs.length;
-    const docsContainer = document.getElementById("repDocsContainer");
-    docsContainer.innerHTML = "";
-    mainTopic.representative_docs.forEach((doc) => {
+    // Load first topic by default
+    changeTopic(0);
+  } catch (err) {
+    alert("Error loading details: " + err.message);
+    closeDetails();
+  }
+}
+
+function changeTopic(index) {
+  if (!currentRunData) return;
+  const topic = currentRunData.topics[index];
+
+  // Update Chart
+  const option = {
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    grid: { left: "3%", right: "4%", bottom: "3%", containLabel: true },
+    xAxis: {
+      type: "category",
+      data: topic.words.map((w) => w.word),
+      axisLabel: { interval: 0, rotate: 30, fontSize: 10 },
+    },
+    yAxis: { type: "value", name: "Relevance Score" },
+    series: [
+      {
+        data: topic.words.map((w) => w.score),
+        type: "bar",
+        itemStyle: { color: "#4f46e5", borderRadius: [4, 4, 0, 0] },
+        barWidth: "60%",
+      },
+    ],
+  };
+  wordChartInstance.setOption(option, true); // true = not merge, replace
+
+  // Update Docs
+  document.getElementById("repCountBadge").innerText =
+    topic.representative_docs.length;
+  const docsContainer = document.getElementById("repDocsContainer");
+  docsContainer.innerHTML = "";
+
+  if (topic.representative_docs.length === 0) {
+    docsContainer.innerHTML =
+      '<p class="text-gray-400 text-sm italic">No representative documents found.</p>';
+  } else {
+    topic.representative_docs.forEach((doc) => {
       const div = document.createElement("div");
       div.className = "doc-snippet";
-      div.innerHTML = `"${doc.content}" <br><span class="text-xs text-indigo-500 not-italic mt-1 block">Confidence: ${(doc.membership_score * 100).toFixed(1)}%</span>`;
+      const confidence = doc.membership_score
+        ? (doc.membership_score * 100).toFixed(1)
+        : "N/A";
+      div.innerHTML = `"${doc.content}" <br><span class="text-xs text-indigo-500 not-italic mt-2 block font-semibold">Confidence: ${confidence}%</span>`;
       docsContainer.appendChild(div);
     });
   }
+}
+
+function closeDetails() {
+  document.getElementById("detailView").classList.add("hidden");
+  currentRunData = null;
 }
 
 // Modal Logic
@@ -117,7 +181,7 @@ async function handleSave(e) {
   text.innerText = "Processing...";
 
   const payload = {
-    code: document.getElementById("inputCode").value,
+    code: document.getElementById("inputCode").value.toLowerCase(),
     n_topics: parseInt(document.getElementById("inputNTopics").value),
     n_docs: parseInt(document.getElementById("inputNDocs").value),
     no_llm: document.getElementById("inputNoLlm").checked,
@@ -130,16 +194,16 @@ async function handleSave(e) {
       body: JSON.stringify(payload),
     });
 
-    if (!res.ok) throw new Error("Save failed");
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Save failed");
+    }
 
+    // The response is now a CodeDashboardSummaryTD
     const newSummary = await res.json();
 
-    // Prepend new card to grid
-    const grid = document.getElementById("dashboardGrid");
-    const tempDiv = document.createElement("div");
-    // Re-use render logic by creating a temporary array
-    renderGrid([newSummary, ...getCurrentGridData()]);
-
+    // Refresh grid to include new item
+    loadDashboard();
     closeModal();
     document.getElementById("analysisForm").reset();
   } catch (err) {
@@ -149,13 +213,6 @@ async function handleSave(e) {
     spinner.classList.add("hidden");
     text.innerText = "Start Analysis";
   }
-}
-
-// Helper to keep grid state simple for this example
-function getCurrentGridData() {
-  // In a real app, you'd maintain a state array. For now, we'll just reload.
-  loadDashboard();
-  return [];
 }
 
 document.addEventListener("DOMContentLoaded", () => {

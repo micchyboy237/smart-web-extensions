@@ -6,7 +6,7 @@
     <title>MissAV Topic Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="style.css" />
   </head>
   <body class="bg-gray-50 text-gray-800 font-sans">
     <div class="container mx-auto p-6 max-w-7xl">
@@ -25,7 +25,7 @@
           onclick="openModal()"
           class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-lg shadow-md transition flex items-center gap-2"
         >
-          <span>+</span> Analyze New Code
+          <span class="text-xl font-bold">+</span> Analyze New Code
         </button>
       </header>
 
@@ -40,32 +40,56 @@
       <!-- Detail View Section -->
       <div
         id="detailView"
-        class="hidden mt-10 bg-white p-8 rounded-xl shadow-lg border border-indigo-50"
+        class="hidden mt-10 bg-white p-8 rounded-xl shadow-lg border border-indigo-50 animate-fade-in"
       >
-        <div class="flex justify-between items-center mb-6">
+        <div
+          class="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4"
+        >
           <div>
             <h2 id="detailTitle" class="text-2xl font-bold text-gray-800"></h2>
             <p id="detailMeta" class="text-gray-500 text-sm"></p>
           </div>
-          <button
-            onclick="closeDetails()"
-            class="text-gray-400 hover:text-red-500 text-2xl"
+
+          <!-- Topic Selector -->
+          <div
+            class="flex items-center gap-3 bg-gray-50 p-2 rounded-lg border border-gray-200"
           >
-            &times;
-          </button>
+            <label for="topicSelect" class="text-sm font-semibold text-gray-600"
+              >View Topic:</label
+            >
+            <select
+              id="topicSelect"
+              onchange="changeTopic(this.value)"
+              class="bg-white border-gray-300 text-gray-700 text-sm rounded-md focus:ring-indigo-500 focus:border-indigo-500 block p-2"
+            >
+              <!-- Options injected via JS -->
+            </select>
+            <button
+              onclick="closeDetails()"
+              class="ml-4 text-gray-400 hover:text-red-500 text-2xl"
+            >
+              &times;
+            </button>
+          </div>
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <!-- Chart Section -->
           <div
-            class="lg:col-span-2 bg-gray-50 p-4 rounded-lg border border-gray-100"
+            class="lg:col-span-2 bg-gray-50 p-4 rounded-lg border border-gray-100 relative"
           >
-            <h3 class="font-semibold text-gray-700 mb-4 text-center">
-              Primary Topic Word Distribution
+            <h3 class="font-semibold text-gray-700 mb-2 text-center">
+              Word Relevance Distribution
             </h3>
-            <div id="wordChart" class="w-full h-80"></div>
+            <!-- Fixed height container for ECharts -->
+            <div id="wordChart" class="w-full h-[400px]"></div>
           </div>
-          <div class="lg:col-span-1">
-            <h3 class="font-bold text-gray-700 mb-4 flex justify-between">
+
+          <!-- Docs Section -->
+          <div class="lg:col-span-1 flex flex-col h-[450px]">
+            <h3
+              class="font-bold text-gray-700 mb-4 flex justify-between items-center"
+            >
               Representative Snippets
               <span
                 id="repCountBadge"
@@ -75,14 +99,14 @@
             </h3>
             <div
               id="repDocsContainer"
-              class="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar"
+              class="flex-grow space-y-4 overflow-y-auto pr-2 custom-scrollbar"
             ></div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Modal for New Analysis -->
+    <!-- Modal -->
     <div
       id="analysisModal"
       class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50 backdrop-blur-sm"

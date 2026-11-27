@@ -20,9 +20,28 @@
   box-shadow: 0 12px 24px -8px rgba(79, 70, 229, 0.15);
 }
 
-.tag {
-  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100 mr-1 mb-1;
+/* Keyword Tag Styling */
+.keyword-tag {
+  @apply inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100 mr-1 mb-1;
 }
+.keyword-score {
+  @apply ml-1 text-indigo-400 font-normal;
+}
+
 .doc-snippet {
-  @apply text-sm text-gray-600 bg-gray-50 p-3 rounded-lg border-l-4 border-indigo-400 italic leading-relaxed;
+  @apply text-sm text-gray-600 bg-gray-50 p-3 rounded-lg border-l-4 border-indigo-400 italic leading-relaxed shadow-sm;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.5s ease-out;
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
