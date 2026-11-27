@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-27T11:19:17.412175
+Generated: 2026-11-27T12:43:14.390135
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -153,7 +153,7 @@ CREATE TABLE "public"."topics" (
 - `topics_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topics_pkey ON public.topics USING btree (id)
 - `topics_run_id_topic_id_key` [UNIQUE]: CREATE UNIQUE INDEX topics_run_id_topic_id_key ON public.topics USING btree (run_id, topic_id)
 
-### Table: public.videos (111955 rows)
+### Table: public.videos (98089 rows)
 ```sql
 CREATE TABLE "public"."videos" (
     "id" text NOT NULL,
@@ -192,6 +192,7 @@ CREATE TABLE "public"."videos" (
 
 **Indexes:**
 - `idx_videos_genres_gin`: CREATE INDEX idx_videos_genres_gin ON public.videos USING gin (genres)
+- `uq_videos_video_id` [UNIQUE]: CREATE UNIQUE INDEX uq_videos_video_id ON public.videos USING btree (video_id)
 - `videos_embedding_cosine_hnsw_idx`: CREATE INDEX videos_embedding_cosine_hnsw_idx ON public.videos USING hnsw (embedding vector_cosine_ops)
 - `videos_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX videos_pkey ON public.videos USING btree (id)
 - `videos_title_fts_idx`: CREATE INDEX videos_title_fts_idx ON public.videos USING gin (to_tsvector('english'::regconfig, title))
@@ -307,7 +308,7 @@ CREATE TABLE "public"."videos" (
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-17l6brk | [0.00648989,-0.0044071493,0.0077482564,0.008237675… | https://missav.ws/dm40/en/oba-194 | oba | 194 | oba-194 | Aunt Who Likes Virgins' Terrible Brush Wholesale K… | https://fourhoi.com/oba-194/cover-n.jpg | https://fourhoi.com/oba-194/preview.mp4 | Kaoru remarried to a man with a child half a year… | 2015-06-04 12:00:15+08 | 2026-11-12 13:19:49.343431+08 | 2026-11-16 21:12:37.409468+08 | {Stepmother,"Mature Woman","Tall Lady",Slim,Virgin… |
-| jav-17ll1n8 | [0.014591947,0.044328332,-0.0042954944,0.02439414,… | https://missav.ws/dm74/en/jukd-714 | jukd | 714 | jukd-714 | Mother-in-law Sayoko Machimura | https://fourhoi.com/jukd-714/cover-n.jpg | https://fourhoi.com/jukd-714/preview.mp4 | Keiko (Machimura), who was separated from her husb… | 2007-11-07 11:00:44+08 | 2026-11-12 13:18:13.788721+08 | 2026-11-16 21:12:37.409468+08 | {Stepmother,"Mature Woman",Individual,Ride,"Slim P… |
-| jav-17lsij7 | [0.025895968,-0.016332118,-0.015524381,0.03914764,… | https://missav.ws/dm2/en/nacr-056 | nacr | 056 | nacr-056 | What if... Aoki Rei was... - Rei Aoki | https://fourhoi.com/nacr-056/cover-n.jpg | https://fourhoi.com/nacr-056/preview.mp4 | Slender beautiful mature woman Aoki Rei will make… | 2016-06-01 12:00:58+08 | 2026-11-12 13:13:21.874758+08 | 2026-11-16 21:12:37.409468+08 | {"Mature Woman",Slim,Individual,Masturbate,Toy,"Bi… |
+| jav-y8qeoj | [-0.009271053,0.0062114066,0.0070300144,0.04212784… | https://missav.ws/dm69/en/jux-455 | jux | 455 | jux-455 | Father's Woman Kurea Hasumi - Hasumi Claire | https://fourhoi.com/jux-455/cover-n.jpg | https://fourhoi.com/jux-455/preview.mp4 | I have always hated my father. It happened when I… | 2014-11-01 11:00:17+08 | 2026-11-16 02:06:50.944086+08 | 2026-11-16 21:12:37.409468+08 | {"Mature Woman",Slut,"Big Breasts","Butt Fetish",I… |
+| jav-tmlzvx | [0.021368481,0.090894856,-0.005272269,0.0072020646… | https://missav.ws/en/wnxg-035 | wnxg | 035 | wnxg-035 | I can't stand my mother's blowjob anymore! ! 8 Hou… | https://d.surrit.com/wnxg-035/cover-n.jpg | https://d.surrit.com/wnxg-035/preview.mp4 | Mothers Who Love Pacifiers Love Their Son's Erecti… | 2014-07-20 12:00:00+08 | 2026-11-23 06:52:50.708378+08 | 2026-11-26 17:21:18.252582+08 | {Mother,Incest,"Oral Sex","4 Hours Or More",Hd} |
+| jav-11rxb40 | [0.023667065,0.03545914,-0.023778375,0.01586697,0.… | https://missav.ws/dm51/en/jul-402 | jul | 402 | jul-402 | Whether I Fight With My Friends, Or My Girlfriend… | https://fourhoi.com/jul-402/cover-n.jpg | https://fourhoi.com/jul-402/preview.mp4 | When I was depressed and came back from school, my… | 2020-12-05 11:00:24+08 | 2026-11-12 13:17:09.926363+08 | 2026-11-16 21:12:37.409468+08 | {Stepmother,"Mature Woman",Wife,"Fat Girl","Big Br… |
 ================================================================================

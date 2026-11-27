@@ -55,7 +55,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-
     OUTPUT_DIR = Path(__file__).parent / "generated" / Path(__file__).stem
     OUTPUT_DIR = OUTPUT_DIR / args.code
     shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
@@ -85,7 +84,6 @@ def main():
         figure.write_html(path, include_plotlyjs="cdn")
         saved_files.append(path)
 
-    # Call the core business logic
     results: ClusterTopicsResult = cluster_topics(
         code=args.code,
         n_topics=args.n_topics,
@@ -95,7 +93,6 @@ def main():
         representative_top_k=None,
     )
 
-    # Save Input Data
     write_json(INPUT_FILE, results["raw_inputs"])
     console.print(
         f"💾 Saved input documents ({results['raw_inputs']['total_documents']})"
@@ -118,13 +115,20 @@ def main():
     write_json(SCORED_DOCS_FILE, results["scored_results"])
     console.print(f"💾 Saved scored documents ({len(results['scored_results'])})")
 
+    # CHANGED: include id / video_id / url for each sorted document
     write_json(
         SORTED_INPUT_FILE,
         {
             "total_documents": len(results["sorted_corpus_initial"]),
             "documents": [
-                {"index": i, "content": doc}
-                for i, doc in enumerate(results["sorted_corpus_initial"])
+                {
+                    "index": i,
+                    "id": record["id"],
+                    "video_id": record["video_id"],
+                    "url": record["url"],
+                    "content": record["text"],
+                }
+                for i, record in enumerate(results["sorted_records"])
             ],
         },
     )
@@ -132,22 +136,30 @@ def main():
         f"💾 Saved sorted input documents ({len(results['sorted_corpus_initial'])})"
     )
 
-    # Save Output Data
     write_json(
         TOPICS_FILE, {"n_topics": len(results["topics"]), "topics": results["topics"]}
     )
-
     write_json(
         REPRESENTATIVE_DOCS_FILE,
         {"top_k": None, "topics": results["representative_topics"]},
     )
 
-    # Save CSV
+    # NEW: quick check that every representative doc has its video id
+    rep_total = sum(len(t["documents"]) for t in results["representative_topics"])
+    rep_with_id = sum(
+        1
+        for t in results["representative_topics"]
+        for d in t["documents"]
+        if d.get("id") and d.get("video_id")
+    )
+    console.print(f"🔗 Representative docs with ids: {rep_with_id}/{rep_total}")
+    if rep_with_id != rep_total:
+        console.print("[bold red]✗ Some representative docs are missing ids[/bold red]")
+
     model = results["model"]
     topics_df = model.topics_df(top_k=args.top_k, show_scores=True)
     topics_df.to_csv(TOPICS_CSV, index=False)
     saved_files.append(TOPICS_CSV)
-
     write_json(
         DOCUMENT_TOPICS_FILE,
         {
@@ -156,17 +168,14 @@ def main():
             "documents": results["document_topics"],
         },
     )
-
     console.print(f"💾 Saved {len(results['topics'])} topics and document assignments")
 
-    # Print Console Table
     topic_names = [str(name) for name in model.topic_names]
     topic_table = Table(title="Extracted topics", show_lines=True)
     topic_table.add_column("ID", justify="right", style="blue")
     topic_table.add_column("Name", style="cyan")
     topic_table.add_column("Rep. docs", justify="right", style="green")
     topic_table.add_column("Top words", style="magenta", max_width=80)
-
     for topic in results["topics"]:
         words = ", ".join(item["word"] for item in topic["words"][: args.top_k])
         topic_name = topic_names[topic["topic_id"]]
@@ -178,11 +187,9 @@ def main():
         )
     console.print(topic_table)
 
-    # Save Figures
     write_figure(TOPIC_BARCHARTS_FILE, results["figures"]["barcharts"])
     write_figure(TOPIC_MAP_FILE, results["figures"]["topic_map"])
     write_figure(DOCUMENT_MAP_FILE, results["figures"]["document_map"])
-
     console.print("💾 Saved visualization figures")
 
     console.print("\n[bold green]📂 Saved files:[/bold green]")

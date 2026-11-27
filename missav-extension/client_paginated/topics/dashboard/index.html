@@ -11,7 +11,7 @@
   <body class="bg-gray-50 text-gray-800 font-sans">
     <div class="container mx-auto p-6 max-w-7xl">
       <header
-        class="flex justify-between items-center mb-8 border-b pb-4 border-gray-200"
+        class="flex justify-between items-center mb-6 border-b pb-4 border-gray-200"
       >
         <div>
           <h1 class="text-3xl font-bold text-indigo-600">
@@ -29,10 +29,99 @@
         </button>
       </header>
 
-      <!-- Dashboard Grid -->
+      <!-- Topic Search -->
+      <form
+        id="searchForm"
+        onsubmit="handleSearch(event)"
+        class="bg-white p-3 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row gap-3 items-stretch md:items-center"
+      >
+        <div class="relative flex-grow">
+          <span
+            class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+            >🔍</span
+          >
+          <input
+            type="text"
+            id="searchInput"
+            placeholder="Search topics by word, e.g. husband, marriage, mother-in-law..."
+            autocomplete="off"
+            class="w-full pl-10 pr-3 py-2.5 rounded-lg border border-gray-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+          />
+        </div>
+
+        <select
+          id="searchMatchType"
+          title="Match type"
+          class="bg-white border border-gray-300 text-gray-700 text-sm rounded-lg p-2.5 focus:ring-indigo-500 focus:border-indigo-500"
+        >
+          <option value="all">All matches</option>
+          <option value="semantic">Semantic only</option>
+          <option value="keyword">Keyword only</option>
+          <option value="hybrid">Hybrid only</option>
+        </select>
+
+        <select
+          id="searchLimit"
+          title="Max results"
+          class="bg-white border border-gray-300 text-gray-700 text-sm rounded-lg p-2.5 focus:ring-indigo-500 focus:border-indigo-500"
+        >
+          <option value="10">10 results</option>
+          <option value="20">20 results</option>
+          <option value="50">50 results</option>
+        </select>
+
+        <div class="flex gap-2">
+          <button
+            type="submit"
+            id="searchBtn"
+            class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-sm font-medium rounded-lg flex items-center justify-center"
+          >
+            <span>Search</span>
+            <svg
+              id="searchSpinner"
+              class="animate-spin ml-2 h-4 w-4 text-white hidden"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle>
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path>
+            </svg>
+          </button>
+          <button
+            type="button"
+            id="searchClearBtn"
+            onclick="clearSearch()"
+            class="hidden px-4 py-2.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-lg"
+          >
+            Clear
+          </button>
+        </div>
+      </form>
+
+      <!-- Search status line -->
+      <div
+        id="searchStatus"
+        class="hidden mt-3 mb-1 text-sm text-gray-600 px-1"
+      >
+        <span id="searchStatusText"></span>
+      </div>
+
+      <!-- Dashboard Grid (also shows search results) -->
       <div
         id="dashboardGrid"
-        class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
+        class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mt-6"
       >
         <!-- Cards injected via JS -->
       </div>
@@ -128,6 +217,7 @@
               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
             />
           </div>
+
           <div class="grid grid-cols-2 gap-4">
             <div>
               <label class="block text-sm font-medium text-gray-700"
@@ -155,6 +245,7 @@
               />
             </div>
           </div>
+
           <div class="mt-4">
             <label class="block text-sm font-medium text-gray-700"
               >Top Keywords per Topic</label
@@ -169,6 +260,7 @@
               title="Number of top words to extract for each topic"
             />
           </div>
+
           <div class="flex items-center">
             <input
               type="checkbox"
@@ -179,6 +271,7 @@
               >Disable LLM Naming (Faster)</label
             >
           </div>
+
           <div class="mt-6 flex justify-end gap-3">
             <button
               type="button"
