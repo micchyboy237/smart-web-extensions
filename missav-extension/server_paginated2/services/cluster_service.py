@@ -487,16 +487,15 @@ def search_topics_by_word(
     """
     Hybrid search combining Vector Semantic Search and Full-Text Search (FTS).
     Uses Reciprocal Rank Fusion (RRF) to merge results.
-
-    Args:
-        word: The search term.
-        limit: Max number of results.
-        match_type: 'all', 'semantic', 'keyword', or 'hybrid'.
     """
     t0 = time.perf_counter()
-    k = 60  # RRF constant
-
-    # 1. Generate Query Embedding
+    k = 60
+    logger.info(
+        "search_topics_by_word start: word=%r limit=%d match_type=%s",
+        word,
+        limit,
+        match_type,
+    )
     try:
         query_emb = embed(
             word, model=EMBED_MODEL, return_format="list", prefix=EMBED_QUERY_PREFIX
@@ -506,10 +505,9 @@ def search_topics_by_word(
         raise HTTPException(500, "Failed to generate query embedding")
 
     with pool.connection() as conn:
-        # 2. Vector Search (Semantic)
         vec_rows = conn.execute(
             """
-            SELECT id as topic_id, run_id, 
+            SELECT id as topic_id, run_id,
                    1.0 / (%(k)s + ROW_NUMBER() OVER (ORDER BY embedding <=> %(emb)s::vector)) as rrf_score
             FROM public.topics
             WHERE embedding IS NOT NULL
@@ -519,7 +517,6 @@ def search_topics_by_word(
             {"emb": query_emb, "k": k, "limit": limit * 2},
         ).fetchall()
 
-        # 3. FTS Search (Keyword/Name match)
         fts_rows = conn.execute(
             """
             SELECT t.id as topic_id, t.run_id,
@@ -531,92 +528,127 @@ def search_topics_by_word(
         """,
             {"q": word, "k": k, "limit": limit * 2},
         ).fetchall()
+        logger.info("Candidates fetched: vec=%d fts=%d", len(vec_rows), len(fts_rows))
 
-        # 4. Fuse Results (RRF) and Track Sources
         scores: Dict[str, float] = {}
         sources: Dict[str, set] = {}
-
         for r in vec_rows:
             tid = str(r["topic_id"])
             scores[tid] = scores.get(tid, 0) + r["rrf_score"]
             sources.setdefault(tid, set()).add("vec")
-
         for r in fts_rows:
             tid = str(r["topic_id"])
             scores[tid] = scores.get(tid, 0) + r["rrf_score"]
             sources.setdefault(tid, set()).add("fts")
 
-        # 5. Determine Match Type for Each Candidate
         candidates = []
         for tid, score in scores.items():
             source_set = sources.get(tid, set())
             has_vec = "vec" in source_set
             has_fts = "fts" in source_set
-
             if has_vec and has_fts:
                 m_type = "hybrid"
             elif has_vec:
                 m_type = "semantic"
             else:
                 m_type = "keyword"
-
-            # Apply Filter
             if match_type != "all" and m_type != match_type:
                 continue
-
             candidates.append((tid, score, m_type))
 
-        # Sort by score descending
         candidates.sort(key=lambda x: -x[1])
         ordered_candidates = candidates[:limit]
-
+        logger.info(
+            "After fusion/filter: %d candidates (match_type=%s)",
+            len(ordered_candidates),
+            match_type,
+        )
         if not ordered_candidates:
             return []
 
-        # 6. Fetch full details for the winning topics
-        ids_to_fetch = [int(x[0]) for x in ordered_candidates]
+        ids_to_fetch = [x[0] for x in ordered_candidates]
 
+        # No outer GROUP BY needed: every extra column is a correlated subquery.
         final_rows = conn.execute(
             """
-            SELECT 
-                t.id, 
-                t.name, 
-                t.representative_doc_count, 
-                t.run_id, 
-                tr.code, 
+            SELECT
+                t.id,
+                t.topic_id,
+                t.name,
+                t.representative_doc_count,
+                t.run_id,
+                tr.code,
                 tr.created_at,
-                ARRAY_AGG(CASE WHEN tw.word ILIKE %(word_like)s THEN tw.word END) AS matched_kws
+                -- Words in this topic that match the search term
+                ARRAY(
+                    SELECT tw.word
+                    FROM public.topic_words tw
+                    WHERE tw.topic_id = t.id
+                      AND tw.word ILIKE %(word_like)s
+                    ORDER BY tw.rank ASC
+                ) AS matched_kws,
+                -- Top 5 words: pick rows first (ORDER BY + LIMIT), THEN aggregate
+                (SELECT jsonb_agg(
+                            jsonb_build_object('word', x.word, 'score', x.score, 'rank', x.rank)
+                            ORDER BY x.rank ASC
+                        )
+                 FROM (
+                     SELECT w.word, w.score, w.rank
+                     FROM public.topic_words w
+                     WHERE w.topic_id = t.id
+                     ORDER BY w.rank ASC
+                     LIMIT 5
+                 ) x) AS top_words_json,
+                -- Best representative document snippet
+                (SELECT rd.content
+                 FROM public.topic_representative_docs rd
+                 WHERE rd.topic_id = t.id
+                 ORDER BY rd.membership_score DESC
+                 LIMIT 1) AS rep_snippet
             FROM public.topics t
             JOIN public.topic_runs tr ON t.run_id = tr.id
-            LEFT JOIN public.topic_words tw ON t.id = tw.topic_id
-            WHERE t.id = ANY(%(ids)s)
-            GROUP BY t.id, t.run_id, tr.code, tr.created_at
+            WHERE t.id = ANY(%(ids)s::uuid[])
         """,
             {"ids": ids_to_fetch, "word_like": f"%{word}%"},
         ).fetchall()
+        logger.info("Final rows fetched: %d", len(final_rows))
 
-        row_map = {r["id"]: r for r in final_rows}
-        result = []
-
+        row_map = {str(r["id"]): r for r in final_rows}
+        result: List[TopicSearchResultItem] = []
         for tid, score, m_type in ordered_candidates:
-            r = row_map.get(int(tid))
-            if r:
-                matched_kws = [kw for kw in (r["matched_kws"] or []) if kw is not None]
-
-                item = TopicSearchResultItem(
+            r = row_map.get(tid)
+            if not r:
+                logger.warning("Topic %s missing from final fetch", tid)
+                continue
+            matched_kws = [kw for kw in (r["matched_kws"] or []) if kw is not None]
+            top_words_raw = r["top_words_json"]
+            if not top_words_raw:
+                top_words = []
+            elif isinstance(top_words_raw, str):
+                top_words = json.loads(top_words_raw)
+            else:
+                top_words = top_words_raw
+            result.append(
+                TopicSearchResultItem(
                     run_id=str(r["run_id"]),
                     code=r["code"],
-                    topic_id=r["id"],
+                    topic_id=r["topic_id"],
                     topic_name=r["name"],
                     representative_doc_count=r["representative_doc_count"],
                     created_at=r["created_at"],
                     relevance_score=score,
                     matched_keywords=matched_kws,
                     match_type=m_type,
+                    top_words=top_words,
+                    representative_snippet=r["rep_snippet"],
                 )
-                result.append(item)
+            )
 
-    logger.info("Hybrid topic search took %.1fms", (time.perf_counter() - t0) * 1000)
+    logger.info(
+        "Hybrid topic search done: %d results in %.1fms",
+        len(result),
+        (time.perf_counter() - t0) * 1000,
+    )
     return result
 
 

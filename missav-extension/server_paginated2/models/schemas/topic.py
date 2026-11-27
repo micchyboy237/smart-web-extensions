@@ -5,8 +5,6 @@ from pydantic import BaseModel, Field
 
 from models.types.topic import MatchType, WordScoreTD
 
-# --- Request Models ---
-
 
 class TopicSearchRequest(BaseModel):
     word: str = Field(..., min_length=1)
@@ -22,9 +20,6 @@ class SaveTopicsRequest(BaseModel):
     n_docs: int = Field(100, ge=1)
     top_k: int = Field(10, ge=1)
     no_llm: bool = Field(False)
-
-
-# --- Response Models ---
 
 
 class TopicRunListItem(BaseModel):
@@ -45,6 +40,14 @@ class TopicSearchResultItem(BaseModel):
     relevance_score: float
     matched_keywords: List[str] = Field(default_factory=list)
     match_type: Literal["semantic", "keyword", "hybrid"]
+
+    # New fields for rich client rendering
+    top_words: List[WordScoreTD] = Field(
+        default_factory=list, description="Top 5 defining words for this topic"
+    )
+    representative_snippet: Optional[str] = Field(
+        None, description="Content snippet from the most representative document"
+    )
 
     class Config:
         populate_by_name = True
