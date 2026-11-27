@@ -62,6 +62,8 @@ function app() {
       loading: false,
       error: null,
       searchQuery: "", // Separate search for topics
+      searchResults: [], // Store search results
+      searchExhausted: false, // For pagination if needed
     },
 
     // ── preview state ──
@@ -88,13 +90,23 @@ function app() {
             this.fetchTopicDashboard().then(() => {
               // Logic to re-open specific run if needed could go here
             });
+          } else if (!this.topics.searchQuery) {
+            // If no search query, show dashboard
+            this.fetchTopicDashboard();
+          } else {
+            // If there is a search query in state (from history?), perform search
+            this.fetchTopicSearch();
           }
         }
       });
 
       // Initial Load Logic
       if (this.mode === "topics") {
-        this.fetchTopicDashboard();
+        if (this.topics.searchQuery) {
+          this.fetchTopicSearch();
+        } else {
+          this.fetchTopicDashboard();
+        }
       } else {
         this.refetch();
       }
@@ -124,7 +136,7 @@ function app() {
       const io = new IntersectionObserver(
         (entries) => {
           if (
-            this.mode !== "topics" && // Disable infinite scroll in topic mode
+            this.mode !== "topics" && // Disable infinite scroll in topic mode for now, or implement if needed
             entries[0].isIntersecting &&
             !this.exhausted &&
             !this.loading &&
@@ -157,9 +169,28 @@ function app() {
       this.$watch("detail.open", () =>
         this.$nextTick(() => this.refreshIcons()),
       );
+
       this.$watch("showPreview", (key) => {
         this._pauseCurrentPreview();
         if (key) this.$nextTick(() => this._playPreview(key));
+      });
+
+      // Watch topic search query for debounced search
+      this.$watch("topics.searchQuery", (val) => {
+        clearTimeout(this._topicDeb);
+        this._topicDeb = setTimeout(() => {
+          if (val.trim()) {
+            this.fetchTopicSearch();
+          } else if (val === "") {
+            // Optional: Clear results or go back to dashboard?
+            // Let's keep results until user clears or navigates away,
+            // or we could switch back to dashboard.
+            // For now, let's just clear results if empty to show dashboard logic if we wanted,
+            // but usually empty search shows nothing or dashboard.
+            // Let's stick to: if empty, don't auto-fetch dashboard, just clear results.
+            this.topics.searchResults = [];
+          }
+        }, 600);
       });
     },
 
@@ -251,17 +282,25 @@ function app() {
       if (urlMode === "topics") {
         this.mode = "topics";
         const runId = p.get("run");
-        if (runId) {
+        const topicQ = p.get("tq"); // Topic Query param
+
+        if (topicQ) {
+          this.topics.searchQuery = topicQ;
+          this.topics.currentRun = null;
+        } else if (runId) {
           // We will handle opening the run in boot/fetch logic to avoid race conditions
           this.topics.currentRun = { run: { id: runId } }; // Placeholder to trigger UI
+          this.topics.searchQuery = "";
         } else {
           this.topics.currentRun = null;
+          this.topics.searchQuery = "";
         }
       } else {
         this.mode = "search";
         this.query = p.get("q") || "";
         this.lastQuery = this.query;
         this.topics.currentRun = null;
+        this.topics.searchQuery = "";
       }
 
       this.filters.code = p.get("code") || "";
@@ -281,7 +320,9 @@ function app() {
       const p = new URLSearchParams();
       if (this.mode === "topics") {
         p.set("mode", "topics");
-        if (this.topics.currentRun) {
+        if (this.topics.searchQuery) {
+          p.set("tq", this.topics.searchQuery);
+        } else if (this.topics.currentRun) {
           p.set("run", this.topics.currentRun.run.id);
         }
       } else {
@@ -291,7 +332,6 @@ function app() {
           p.set("sim", this.similarOf);
         }
       }
-
       if (this.filters.code) p.set("code", this.filters.code);
       if (this.filters.from) p.set("from", this.filters.from);
       if (this.filters.to) p.set("to", this.filters.to);
@@ -339,8 +379,13 @@ function app() {
     toggleTopicMode() {
       this.mode = "topics";
       this.topics.currentRun = null;
+      // Don't clear search query immediately, let UI decide
       this.syncURL(true);
-      this.fetchTopicDashboard();
+      if (this.topics.searchQuery) {
+        this.fetchTopicSearch();
+      } else {
+        this.fetchTopicDashboard();
+      }
     },
 
     setDiversity(level) {
@@ -498,7 +543,6 @@ function app() {
     loadMore() {
       if (!this.exhausted && !this.loading) this.fetchPage();
     },
-
     async fetchPage({ reset = false } = {}) {
       this.loading = true;
       const gen = ++this._gen;
@@ -508,7 +552,6 @@ function app() {
           if (gen === this._gen) this.loading = false;
           return;
         }
-
         const res = await fetch(`${API}${params.path}`, {
           method: params.method,
           headers: params.body
@@ -516,20 +559,16 @@ function app() {
             : undefined,
           body: params.body ? JSON.stringify(params.body) : undefined,
         });
-
         if (gen !== this._gen) return;
         this.online = true;
         if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-
         const page = await res.json();
         if (gen !== this._gen) return;
-
         if (reset) {
           this.items = [];
           this.cursor = null;
           this.exhausted = false;
         }
-
         const incoming =
           params.kind === "grouped"
             ? page.items.map(normalizeGrouped)
@@ -557,7 +596,6 @@ function app() {
         if (!res.ok) throw new Error("Failed to load dashboard");
         const data = await res.json();
         this.topics.dashboard = data.codes || [];
-
         // If we had a run ID in URL, open it now
         const p = new URLSearchParams(location.search);
         const runId = p.get("run");
@@ -566,6 +604,36 @@ function app() {
         }
       } catch (e) {
         this.topics.error = e.message;
+      } finally {
+        this.topics.loading = false;
+      }
+    },
+
+    async fetchTopicSearch() {
+      if (!this.topics.searchQuery.trim()) return;
+
+      this.topics.loading = true;
+      this.topics.error = null;
+      this.topics.currentRun = null; // Ensure we are not in detail view
+
+      try {
+        const params = new URLSearchParams({
+          query: this.topics.searchQuery,
+          limit: 20, // Initial limit
+          min_topic_score: 0.0,
+          use_ngram_fusion: true,
+          require_word_match: true,
+        });
+
+        const res = await fetch(`${API}/topics/search?${params}`);
+        if (!res.ok) throw new Error("Failed to search topics");
+
+        const data = await res.json();
+        this.topics.searchResults = data;
+        this.syncURL(true);
+      } catch (e) {
+        this.topics.error = e.message;
+        this.toast("error", e.message);
       } finally {
         this.topics.loading = false;
       }
@@ -587,7 +655,17 @@ function app() {
 
     closeTopicDetail() {
       this.topics.currentRun = null;
+      // If we have a search query, stay in search results, otherwise go to dashboard
+      if (!this.topics.searchQuery) {
+        // Optionally refetch dashboard if needed, but usually it's cached
+      }
       this.syncURL(true);
+    },
+
+    clearTopicSearch() {
+      this.topics.searchQuery = "";
+      this.topics.searchResults = [];
+      this.fetchTopicDashboard();
     },
 
     // ── Shared Filter Helpers ──
@@ -613,7 +691,6 @@ function app() {
         ? new Date(this.filters.to + "T23:59:59Z").toISOString()
         : null;
     },
-
     buildParams(reset) {
       if (this.mode === "similar") {
         const p = new URLSearchParams();
@@ -637,7 +714,6 @@ function app() {
           method: "GET",
         };
       }
-
       const p = new URLSearchParams();
       if (this.lastQuery) p.set("query", this.lastQuery);
       p.set("limit", String(PAGE_SIZE));
@@ -655,7 +731,6 @@ function app() {
       if (div > 0) p.set("diversity", String(div));
       return { kind: "grouped", path: `/search_grouped?${p}`, method: "GET" };
     },
-
     async fetchFacets() {
       try {
         let qs = "";
@@ -694,7 +769,6 @@ function app() {
     closeDetail() {
       this.detail = { open: false, loading: false, video: null };
     },
-
     toast(type, msg) {
       const id = Math.random().toString(36).slice(2);
       this.toasts.push({ id, type, msg });

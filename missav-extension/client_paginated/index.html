@@ -70,7 +70,7 @@
 
         <!-- Dynamic Search Bar -->
         <form
-          @submit.prevent="doSearch()"
+          @submit.prevent="mode === 'topics' ? fetchTopicSearch() : doSearch()"
           class="flex flex-1 items-center gap-2"
         >
           <!-- Standard Search Input -->
@@ -104,8 +104,16 @@
               x-model="topics.searchQuery"
               type="search"
               placeholder="Search topics by keyword (e.g. 'wife', 'office')..."
-              class="w-full rounded-xl border border-white/10 bg-ink-800/70 py-2.5 pl-10 pr-4 text-sm text-slate-100 placeholder:text-slate-500 transition focus:border-violet-500/60 focus:bg-ink-800 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+              class="w-full rounded-xl border border-white/10 bg-ink-800/70 py-2.5 pl-10 pr-10 text-sm text-slate-100 placeholder:text-slate-500 transition focus:border-violet-500/60 focus:bg-ink-800 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
             />
+            <button
+              x-show="topics.searchQuery"
+              @click.prevent="clearTopicSearch()"
+              type="button"
+              class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+            >
+              <i data-lucide="x" class="h-4 w-4"></i>
+            </button>
           </div>
 
           <button
@@ -138,14 +146,14 @@
           <span>Topics</span>
         </button>
 
-        <!-- Add Code Button -->
+        <!-- Add Code Button -> Opens Codes Modal -->
         <button
           @click="codesModalOpen = true"
           class="hidden items-center gap-1.5 rounded-xl border border-white/10 px-3 py-2.5 text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:bg-white/5 md:flex"
-          title="Add Series Code"
+          title="Filter by Series Code"
         >
-          <i data-lucide="plus" class="h-4 w-4"></i>
-          <span class="hidden lg:inline">Code</span>
+          <i data-lucide="hash" class="h-4 w-4"></i>
+          <span class="hidden lg:inline">Filter Code</span>
         </button>
 
         <div class="hidden items-center gap-2 md:flex">
@@ -160,6 +168,7 @@
             <span x-text="online ? 'live' : 'offline'"></span>
           </span>
         </div>
+
         <button
           @click="filtersOpen = !filtersOpen"
           class="rounded-xl border border-white/10 p-2.5 text-slate-300 lg:hidden"
@@ -429,10 +438,22 @@
               <button
                 @click="closeTopicDetail()"
                 class="flex items-center gap-1 text-slate-400 hover:text-white transition"
+                x-show="topics.currentRun"
               >
                 <i data-lucide="arrow-left" class="h-4 w-4"></i>
                 <span>Back to Dashboard</span>
               </button>
+
+              <template x-if="!topics.currentRun && topics.searchQuery">
+                <button
+                  @click="clearTopicSearch()"
+                  class="flex items-center gap-1 text-slate-400 hover:text-white transition"
+                >
+                  <i data-lucide="arrow-left" class="h-4 w-4"></i>
+                  <span>Back to Dashboard</span>
+                </button>
+              </template>
+
               <template x-if="topics.currentRun">
                 <div class="flex items-center gap-2">
                   <span class="text-slate-600">/</span>
@@ -442,11 +463,20 @@
                   ></span>
                 </div>
               </template>
+
+              <template x-if="topics.searchQuery && !topics.currentRun">
+                <div class="flex items-center gap-2">
+                  <span class="text-slate-600">/</span>
+                  <span class="font-bold text-slate-200"
+                    >Search: "<span x-text="topics.searchQuery"></span>"</span
+                  >
+                </div>
+              </template>
             </div>
           </div>
 
-          <!-- Topic Dashboard Grid -->
-          <div x-show="!topics.currentRun">
+          <!-- Topic Dashboard Grid (Only show if no search query and no current run) -->
+          <div x-show="!topics.currentRun && !topics.searchQuery">
             <div
               x-show="topics.loading"
               class="grid gap-4"
@@ -458,14 +488,12 @@
                 ><div class="h-48 skeleton rounded-2xl"></div
               ></template>
             </div>
-
             <div
               x-show="!topics.loading && topics.error"
               class="text-center py-12 text-rose-400"
             >
               <p x-text="topics.error"></p>
             </div>
-
             <div
               x-show="!topics.loading && !topics.error"
               class="grid gap-4"
@@ -519,6 +547,137 @@
             </div>
           </div>
 
+          <!-- Topic Search Results -->
+          <div x-show="topics.searchQuery && !topics.currentRun" x-cloak>
+            <div
+              x-show="topics.loading"
+              class="grid gap-4"
+              style="
+                grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+              "
+            >
+              <template x-for="i in 4" :key="i"
+                ><div class="h-64 skeleton rounded-2xl"></div
+              ></template>
+            </div>
+
+            <div
+              x-show="!topics.loading && topics.error"
+              class="text-center py-12 text-rose-400"
+            >
+              <p x-text="topics.error"></p>
+            </div>
+
+            <div
+              x-show="!topics.loading && !topics.error && topics.searchResults.length === 0"
+              class="text-center py-12 text-slate-500"
+            >
+              <p>
+                No topics found for "<span x-text="topics.searchQuery"></span>"
+              </p>
+            </div>
+
+            <div
+              x-show="!topics.loading && !topics.error && topics.searchResults.length > 0"
+              class="space-y-6"
+            >
+              <template
+                x-for="result in topics.searchResults"
+                :key="result.run_id + '-' + result.topic_id"
+              >
+                <div
+                  class="rounded-2xl border border-white/10 bg-ink-900 p-5 transition hover:border-violet-500/30"
+                >
+                  <div
+                    class="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-4"
+                  >
+                    <div>
+                      <div class="flex items-center gap-2 mb-1">
+                        <h2
+                          class="text-lg font-bold text-violet-300"
+                          x-text="result.topic_name || 'Untitled Topic'"
+                        ></h2>
+                        <span
+                          class="rounded-full bg-ink-800 px-2 py-0.5 text-[10px] text-slate-400 font-mono"
+                          x-text="result.code"
+                        ></span>
+                      </div>
+                      <p class="text-xs text-slate-500">
+                        <span x-text="result.representative_doc_count"></span>
+                        videos · Relevance:
+                        <span
+                          class="text-accent-400"
+                          x-text="(result.relevance_score * 100).toFixed(1) + '%'"
+                        ></span>
+                      </p>
+                    </div>
+
+                    <!-- Keywords / Matched N-grams -->
+                    <div class="flex flex-wrap gap-1 max-w-md justify-end">
+                      <template x-for="w in result.top_words" :key="w.word">
+                        <span
+                          class="rounded-full border border-white/10 bg-ink-800 px-2 py-0.5 text-[10px] text-slate-400"
+                        >
+                          <span x-text="w.word"></span>
+                        </span>
+                      </template>
+                      <template
+                        x-if="result.matched_ngrams && result.matched_ngrams.length"
+                      >
+                        <span
+                          class="text-[10px] text-slate-600 self-center ml-2"
+                        >
+                          Matched:
+                          <span
+                            x-text="result.matched_ngrams.join(', ')"
+                          ></span>
+                        </span>
+                      </template>
+                    </div>
+                  </div>
+
+                  <!-- Representative Videos Horizontal Scroll -->
+                  <div class="relative">
+                    <div
+                      class="flex gap-3 overflow-x-auto pb-2 custom-scrollbar snap-x"
+                    >
+                      <template
+                        x-for="doc in result.representative_docs"
+                        :key="doc.video_id"
+                      >
+                        <div
+                          class="snap-start shrink-0 w-40 group relative overflow-hidden rounded-xl border border-white/5 bg-ink-800 cursor-pointer"
+                          @click="openDetail(doc.video_id)"
+                        >
+                          <div class="aspect-video relative">
+                            <img
+                              :src="doc.thumbnail"
+                              class="h-full w-full object-cover opacity-80 transition group-hover:opacity-100"
+                            />
+                            <div
+                              class="absolute inset-0 flex items-center justify-center opacity-0 transition group-hover:opacity-100 bg-black/40"
+                            >
+                              <i
+                                data-lucide="play"
+                                class="h-6 w-6 text-white"
+                              ></i>
+                            </div>
+                          </div>
+                          <div class="p-2">
+                            <p
+                              class="line-clamp-2 text-[10px] text-slate-300 leading-tight"
+                              x-text="doc.title"
+                            ></p>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- Topic Detail View -->
           <div x-show="topics.currentRun" x-cloak class="space-y-6">
             <template x-for="topic in topics.currentRun.topics" :key="topic.id">
@@ -533,7 +692,6 @@
                     videos</span
                   >
                 </div>
-
                 <!-- Representative Videos -->
                 <div
                   class="mb-4 grid gap-4"
@@ -576,7 +734,6 @@
                     </div>
                   </template>
                 </div>
-
                 <!-- Keywords -->
                 <div class="flex flex-wrap gap-1">
                   <template x-for="w in topic.words" :key="w.word">
@@ -790,13 +947,13 @@
                         class="pointer-events-auto absolute inset-x-0 bottom-0 flex items-center justify-end gap-1.5 bg-gradient-to-t from-ink-950/90 via-ink-950/40 to-transparent p-2"
                       >
                         <button
-                          @click.stop="openDetail(v.id)"
+                          @stop="openDetail(v.id)"
                           class="flex items-center gap-1 rounded-full bg-accent-500/90 px-2.5 py-1 text-[11px] font-bold text-ink-950 shadow transition hover:bg-accent-400"
                         >
                           <i data-lucide="play" class="h-3 w-3"></i> Preview
                         </button>
                         <button
-                          @click.stop="findSimilar(v.id)"
+                          @stop="findSimilar(v.id)"
                           class="grid h-7 w-7 place-items-center rounded-full bg-white/15 text-white ring-1 ring-white/25 transition hover:bg-white/25"
                           title="Find Similar"
                         >
@@ -1150,10 +1307,10 @@
         <div
           class="pointer-events-auto flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm shadow-lg backdrop-blur-md"
           :class="{
-          'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
-          'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
-          'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
-        }"
+        'border-rose-500/30 bg-rose-950/80 text-rose-200': t.type === 'error',
+        'border-emerald-500/30 bg-emerald-950/80 text-emerald-200': t.type === 'success',
+        'border-accent-500/30 bg-ink-800/90 text-slate-200': t.type === 'info',
+      }"
           x-transition
         >
           <i
