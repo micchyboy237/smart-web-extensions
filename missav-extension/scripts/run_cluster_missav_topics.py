@@ -17,7 +17,7 @@ from jet.adapters.llama_cpp.config import (
     EMBED_MODEL,
     EMBED_QUERY_PREFIX,
 )
-from jet.libs.bertopic.examples.mock import load_missav_videos
+from jet.adapters.turftopic.missav import get_missav_videos_by_code_videos
 from jet.logger import logger
 from jet.wordnet.histogram import TextAnalysis
 
@@ -170,7 +170,7 @@ def get_args():
         type=str,
         nargs="+",
         default=None,
-        help="List of codes to filter missav videos on (e.g. -c ssni ssis snis). Defaults to load_missav_videos default when omitted.",
+        help="List of codes to filter missav videos on (e.g. -c ssni ssis snis). Defaults to from jet.adapters.turftopic.missav import get_missav_videos_by_code_videos default when omitted.",
     )
     parser.add_argument(
         "-l",
@@ -204,7 +204,7 @@ def get_args():
 
 if __name__ == "__main__":
     args = get_args()
-    docs, embeddings = load_missav_videos(
+    docs, embeddings = get_missav_videos_by_code_videos(
         code=args.code,
         limit=args.limit,
         include_embeddings=True,

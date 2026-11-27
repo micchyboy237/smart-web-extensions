@@ -10,8 +10,12 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 if __name__ == "__main__":
     CONNECTION_STRING = "postgresql://jethroestrada:@localhost:5432/missav_db1"
+    tables_filter = None
+    # tables_filter = ["videos"]
 
-    context = generate_rag_context(CONNECTION_STRING, schema="public")
+    context = generate_rag_context(
+        CONNECTION_STRING, schema="public", tables_filter=tables_filter
+    )
 
     output_file = OUTPUT_DIR / "missav_db_context.txt"
     with open(output_file, "w") as f:

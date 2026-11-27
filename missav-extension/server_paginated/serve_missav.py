@@ -2814,35 +2814,59 @@ def save_topics(req: SaveTopicsRequest) -> CodeDashboardSummaryTD:
 
             conn.commit()
 
-        # 4. Fetch the newly created Dashboard Summary directly from DB
-        # This ensures the response matches exactly what the grid expects
-        summary_row = conn.execute(
-            """
-            SELECT 
-                lr.code, lr.id as run_id, lr.created_at, lr.n_topics, lr.n_docs,
-                tt.name as top_topic_name, tt.representative_doc_count as top_topic_rep_count,
-                COALESCE(
-                    jsonb_agg(jsonb_build_object('word', rw.word, 'score', rw.score) ORDER BY rw.rn ASC) 
-                    FILTER (WHERE rw.rn <= lr.n_topics), '[]'::jsonb
-                ) as top_topic_words
-            FROM public.topic_runs lr
-            LEFT JOIN public.topics tt ON tt.run_id = lr.id AND tt.topic_id = 0
-            LEFT JOIN public.topic_words rw ON rw.topic_id = tt.id
-            WHERE lr.id = %s
-            GROUP BY lr.id, lr.code, lr.created_at, lr.n_topics, lr.n_docs, tt.name, tt.representative_doc_count
-        """,
-            (run_id,),
-        ).fetchone()
+            # 4. Fetch the newly created Dashboard Summary directly from DB
+            # FIXED: Using a subquery for ranked words to avoid alias visibility issues
+            summary_row = conn.execute(
+                """
+                WITH latest_run AS (
+                    SELECT id, code, n_topics, n_docs, created_at
+                    FROM public.topic_runs
+                    WHERE id = %s
+                ),
+                primary_topic AS (
+                    SELECT t.id as topic_uuid, t.name, t.representative_doc_count
+                    FROM public.topics t
+                    JOIN latest_run lr ON t.run_id = lr.id
+                    WHERE t.topic_id = 0
+                ),
+                ranked_words AS (
+                    SELECT 
+                        tw.word, 
+                        tw.score,
+                        ROW_NUMBER() OVER (ORDER BY tw.rank ASC) as rn
+                    FROM public.topic_words tw
+                    JOIN primary_topic pt ON tw.topic_id = pt.topic_uuid
+                )
+                SELECT 
+                    lr.code, 
+                    lr.id as run_id, 
+                    lr.created_at, 
+                    lr.n_topics, 
+                    lr.n_docs,
+                    pt.name as top_topic_name, 
+                    pt.representative_doc_count as top_topic_rep_count,
+                    COALESCE(
+                        jsonb_agg(jsonb_build_object('word', rw.word, 'score', rw.score) ORDER BY rw.rn ASC) 
+                        FILTER (WHERE rw.rn <= lr.n_topics), 
+                        '[]'::jsonb
+                    ) as top_topic_words
+                FROM latest_run lr
+                LEFT JOIN primary_topic pt ON true
+                LEFT JOIN ranked_words rw ON true
+                GROUP BY lr.id, lr.code, lr.created_at, lr.n_topics, lr.n_docs, pt.name, pt.representative_doc_count
+            """,
+                (run_id,),
+            ).fetchone()
 
-        if not summary_row:
-            raise Exception("Failed to retrieve summary after save")
+            if not summary_row:
+                raise Exception("Failed to retrieve summary after save")
 
-        item = dict(summary_row)
-        item["run_id"] = str(item["run_id"])
-        if isinstance(item["top_topic_words"], str):
-            item["top_topic_words"] = json.loads(item["top_topic_words"])
+            item = dict(summary_row)
+            item["run_id"] = str(item["run_id"])
+            if isinstance(item["top_topic_words"], str):
+                item["top_topic_words"] = json.loads(item["top_topic_words"])
 
-        return item
+            return item
 
     except Exception as e:
         logger.error("Failed to save topics: %s", e)

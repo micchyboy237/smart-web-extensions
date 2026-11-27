@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 from jet.adapters.llama_cpp.cluster_utils.clusterer_llm import run_clustering_pipeline
-from jet.libs.bertopic.examples.mock import load_missav_videos
+from jet.adapters.turftopic.missav import get_missav_videos_by_code_videos
 from jet.logger import logger
 from rich.console import Console
 
@@ -110,7 +110,7 @@ if __name__ == "__main__":
     logger.info("🚀 Starting document clustering pipeline with file I/O")
 
     # Load documents
-    documents = load_missav_videos(code=["gvh"])
+    documents = get_missav_videos_by_code_videos(code=["gvh"])
     documents = documents[:30]
     logger.info(f"📄 Loaded {len(documents)} documents")
 
