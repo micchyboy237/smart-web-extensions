@@ -1,6 +1,6 @@
 ================================================================================
 POSTGRESQL DATABASE SCHEMA & METADATA CONTEXT
-Generated: 2026-11-27T17:33:30.021430
+Generated: 2026-11-27T21:52:09.672047
 ================================================================================
 
 ## DATABASE OVERVIEW
@@ -161,7 +161,7 @@ CREATE TABLE "public"."topics" (
 - `topics_pkey` [UNIQUE] [PRIMARY]: CREATE UNIQUE INDEX topics_pkey ON public.topics USING btree (id)
 - `topics_run_id_topic_id_key` [UNIQUE]: CREATE UNIQUE INDEX topics_run_id_topic_id_key ON public.topics USING btree (run_id, topic_id)
 
-### Table: public.videos (100105 rows)
+### Table: public.videos (106767 rows)
 ```sql
 CREATE TABLE "public"."videos" (
     "id" text NOT NULL,
@@ -318,7 +318,7 @@ CREATE TABLE "public"."videos" (
 ### Table: videos (first 3 rows)
 | id | embedding | url | code | episode | video_id | title | thumbnail | preview | details | release_date | created_at | updated_at | genres |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| jav-y0rc2l | [-0.010765085,-0.0190089,-0.026374446,-0.03577045,… | https://missav.ws/dm2/en/juy-613-english-subtitle | juy | 613 | juy-613-english-subtitle | The second Madonna 15th Anniversary blockbuster! !… | https://fourhoi.com/juy-613-english-subtitle/cover… | https://fourhoi.com/juy-613-english-subtitle/previ… | The second Madonna 15th Anniversary blockbuster! !… | 2018-09-22 12:00:37+08 | 2026-11-21 20:57:32.643039+08 | 2026-11-22 07:58:19.370239+08 | {"English subtitle","Mature Woman",Wife,"Big Breas… |
-| jav-1rs3ewc | [0.016308395,0.010440801,-0.027916398,-0.028947825… | https://missav.ws/en/juy-794-uncensored-leak | juy | 794 | juy-794-uncensored-leak | I Unexpectedly Ended Up Sharing A Room In A Busine… | https://fourhoi.com/juy-794-uncensored-leak/cover-… | https://fourhoi.com/juy-794-uncensored-leak/previe… | I came on a day trip to get a contract with my bos… | 2019-03-22 11:00:49+08 | 2026-11-21 20:56:55.050656+08 | 2026-11-22 07:58:19.370239+08 | {"Uncensored leak","Mature Woman","Various Occupat… |
-| jav-xaskr5 | [0.017317552,0.0093119545,-0.012490331,0.007112350… | https://missav.ws/dm1/en/juy-833-uncensored-leak | juy | 833 | juy-833-uncensored-leak | Nozomi, the mother of a serious and hard friend, w… | https://fourhoi.com/juy-833-uncensored-leak/cover-… | https://fourhoi.com/juy-833-uncensored-leak/previe… | Nozomi, a mother who has been rigorously raised wi… | 2019-04-20 12:00:19+08 | 2026-11-21 20:56:55.050656+08 | 2026-11-22 07:58:19.370239+08 | {"Uncensored leak","Beautiful Breasts","Mature Wom… |
+| jav-myzakk | [-0.010145451,0.07498144,-0.049438883,0.011776894,… | https://missav.ws/dm2/en/meyd-720-uncensored-leak | meyd | 720 | meyd-720-uncensored-leak | When You Abandon An Unparalleled AV, The Neighbor'… | https://fourhoi.com/meyd-720-uncensored-leak/cover… | https://fourhoi.com/meyd-720-uncensored-leak/previ… | Every time a man throws away an AV, only the unequ… | 2021-11-12 11:00:12+08 | 2026-11-16 16:07:55.903044+08 | 2026-11-16 21:12:37.409468+08 | {"Uncensored leak",Wife,"Big Breasts",Individual,N… |
+| jav-1mcxs0y | [0.010837235,-0.010413623,-0.044193137,0.034788333… | https://missav.ws/dm26/en/rvg-176 | rvg | 176 | rvg-176 | Ai Mukai BEST - Mukai Ai | https://d.surrit.com/rvg-176/cover-n.jpg | https://d.surrit.com/rvg-176/preview.mp4 | When I first saw Ai Mukai, I had the impression th… | 2022-09-17 10:00:00+08 | 2026-11-27 20:59:08.383918+08 | 2026-11-27 20:59:59.088+08 | {Slut,Slim,Individual,Orgy,"4 Hours Or More",Hd,Ex… |
+| jav-n0ekec | [0.034110144,0.1024632,-0.0034217164,0.0077166613,… | https://missav.ws/dm87/en/meyd-636 | meyd | 636 | meyd-636 | Actually, I Keep Getting Fucked By My Husband's Bo… | https://fourhoi.com/meyd-636/cover-n.jpg | https://fourhoi.com/meyd-636/preview.mp4 | Sakura who quit her entertainment job and became a… | 2020-12-12 11:00:13+08 | 2026-11-16 16:07:55.903044+08 | 2026-11-16 21:12:37.409468+08 | {Wife,Individual,Ntr,Artist,Creampie,Hd,Exclusive} |
 ================================================================================
